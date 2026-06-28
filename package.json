@@ -1,0 +1,129 @@
+{
+  "name": "@spider-bot/desktop",
+  "version": "1.1.13",
+  "description": "Spider BOT desktop multi-login browser profile manager",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "native/*"
+  ],
+  "main": "dist-electron/main/index.js",
+  "scripts": {
+    "dev": "npm run build:main && concurrently -k -n renderer,main,electron -c cyan,magenta,green \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1 --port 5173",
+    "dev:main": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
+    "dev:electron": "wait-on http://127.0.0.1:5173 file:dist-electron/main/index.js file:dist-electron/preload/index.js file:dist-electron/main/services/browser-runtime.js file:dist-electron/main/services/database.js file:dist-electron/main/services/geetest-solver.js file:dist-electron/main/services/instance-registry.js file:dist-electron/main/services/proxy-chain.js file:dist-electron/main/services/update-service.js file:dist-electron/shared/contracts.js file:dist-electron/shared/defaults.js && node scripts/wait-for-dist-stable.mjs && electronmon dist-electron/main/index.js",
+    "build": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build.ps1",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.electron.json",
+    "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish never",
+    "publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish always",
+    "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "check": "npm run typecheck",
+    "test": "tsx --test test/*.test.ts",
+    "postinstall": "patch-package && npm run napi:build -w @spider-bot/license-core && node scripts/setup-python.mjs",
+    "setup:python": "node scripts/setup-python.mjs"
+  },
+  "build": {
+    "appId": "com.spiderbot.desktop",
+    "productName": "Spider BOT",
+    "electronVersion": "42.4.0",
+    "directories": {
+      "output": "release"
+    },
+    "afterPack": "scripts/after-pack-win-icon.cjs",
+    "files": [
+      "dist-electron/**",
+      "dist-renderer/**",
+      "assets/**",
+      "package.json",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-renderer",
+        "to": "dist-renderer"
+      },
+      {
+        "from": "assets/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "scripts",
+        "to": "scripts",
+        "filter": [
+          "geetest_solver_bridge.py",
+          "geetest_solver_worker.py"
+        ]
+      },
+      {
+        "from": "GeekedTest-main",
+        "to": "GeekedTest-main"
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "forceCodeSigning": true,
+      "verifyUpdateCodeSignature": true,
+      "signExts": [
+        ".exe",
+        ".dll",
+        ".node"
+      ],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Spider-BOT-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "henocdejesusferreirafarias",
+        "repo": "spider-bot-releases",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "@spider-bot/license-core": "*",
+    "@spider-bot/licensing-contracts": "git+https://github.com/henocdejesusferreirafarias/spider-bot-contracts.git#v1.1.1",
+    "electron-updater": "^6.8.3",
+    "patchright": "^1.60.0",
+    "proxy-chain": "^3.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@electron/fuses": "^2.1.2",
+    "@vitejs/plugin-react-swc": "^4.3.1",
+    "concurrently": "^10.0.3",
+    "electron": "^42.4.0",
+    "electron-builder": "^26.8.1",
+    "electronmon": "^2.0.3",
+    "patch-package": "^8.0.1",
+    "tsx": "^4.22.4",
+    "typescript": "^5.8.3",
+    "vite": "^8.0.16",
+    "wait-on": "^8.0.3"
+  }
+}

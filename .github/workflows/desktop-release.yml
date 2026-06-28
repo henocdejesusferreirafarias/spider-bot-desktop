@@ -1,0 +1,80 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to spider-bot-releases"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+      CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+      WINDOWS_PUBLISHER_NAME: ${{ vars.WINDOWS_PUBLISHER_NAME }}
+      PAYLOAD_SIGNING_PUBLIC_KEY: ${{ secrets.PAYLOAD_SIGNING_PUBLIC_KEY }}
+      PAYLOAD_SIGNING_KID: ${{ vars.PAYLOAD_SIGNING_KID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate desktop tag
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          $expectedTag = "desktop-v$($pkg.version)"
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne $expectedTag) {
+            throw "Tag ${{ github.ref_name }} does not match package.json version $($pkg.version). Expected $expectedTag."
+          }
+
+      - name: Require Windows signing
+        shell: pwsh
+        run: |
+          if (
+            -not $env:CSC_LINK -or
+            -not $env:CSC_KEY_PASSWORD -or
+            -not $env:WINDOWS_PUBLISHER_NAME -or
+            -not $env:PAYLOAD_SIGNING_PUBLIC_KEY -or
+            -not $env:PAYLOAD_SIGNING_KID
+          ) {
+            throw "Windows signing and payload trust secrets/variables are required for every CI desktop artifact."
+          }
+
+      - name: Check
+        run: npm run check
+
+      - name: Test desktop
+        run: npm test
+
+      - name: Build installer
+        if: ${{ github.ref_type != 'tag' && github.event.inputs.publish != 'true' }}
+        run: npm run dist:win
+
+      - name: Publish release
+        if: ${{ github.ref_type == 'tag' || github.event.inputs.publish == 'true' }}
+        run: npm run publish:win
