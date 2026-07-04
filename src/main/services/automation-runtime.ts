@@ -11,13 +11,13 @@ import type {
   PixPhoneKeyRecord,
   ProfileSummary,
   RuntimeEvent,
-  WithdrawalPreparationControlResult
+  WithdrawalPreparationControlResult,
 } from "../../shared/contracts.js";
 import type {
   AutomationAction,
   AutomationReceipt,
   AutomationStep,
-  WorkflowLocalPrimitive
+  WorkflowLocalPrimitive,
 } from "@spider-bot/licensing-contracts";
 import { PredatorDatabase } from "./database.js";
 import { BrowserRuntimeService } from "./browser-runtime.js";
@@ -29,7 +29,7 @@ import {
   resolveRemoteStepTimeoutMs,
   resolveAutomationOrigin,
   trustCurrentAutomationOrigin,
-  trustRedirectedAutomationOrigin
+  trustRedirectedAutomationOrigin,
 } from "./automation-helpers.js";
 import type { LicenseService } from "./license-service.js";
 import {
@@ -40,7 +40,7 @@ import {
   programmaticPixUiAction,
   resolvePlatformDescriptor,
   resolveRouteTarget,
-  routerPush
+  routerPush,
 } from "./spa-navigation.js";
 import type { PlatformDescriptor, SpaHandle } from "./spa-navigation.js";
 import { writeFileSync } from "node:fs";
@@ -52,7 +52,7 @@ import {
   type BrowserRuntimeElement,
   type BrowserRuntimeInputElement,
   type BrowserRuntimeRect,
-  type BrowserRuntimeWindow
+  type BrowserRuntimeWindow,
 } from "./automation-dom.js";
 import {
   hasActiveSession,
@@ -65,7 +65,7 @@ import {
   hasVisibleNumberKeyboard,
   hasDepositSurface,
   detectRegistrationUiFamily,
-  isDetachedDepositRouteState
+  isDetachedDepositRouteState,
 } from "./screen-detection.js";
 import {
   waitForLoginSuccess,
@@ -77,11 +77,19 @@ import {
   waitForPixRegistrationSaved,
   waitForVisibleNumberKeyboard,
 } from "./screen-waits.js";
-import { extractQrCode, detectQrSignature, qrOverlayTheme, QR_DETECT_SELECTOR } from "./qr-dom.js";
+import {
+  extractQrCode,
+  detectQrSignature,
+  qrOverlayTheme,
+  QR_DETECT_SELECTOR,
+} from "./qr-dom.js";
 
 const GEETEST_AUTO_SOLVE_ATTEMPTS = 5;
 
-export function isPlausibleQrImageDimensions(width: number, height: number): boolean {
+export function isPlausibleQrImageDimensions(
+  width: number,
+  height: number,
+): boolean {
   if (!Number.isFinite(width) || !Number.isFinite(height)) {
     return false;
   }
@@ -92,7 +100,9 @@ export function isPlausibleQrImageDimensions(width: number, height: number): boo
   return aspect >= 0.72 && aspect <= 1.38;
 }
 
-function readPngDimensions(buffer: Buffer): { width: number; height: number } | undefined {
+function readPngDimensions(
+  buffer: Buffer,
+): { width: number; height: number } | undefined {
   if (
     buffer.length < 24 ||
     buffer[0] !== 0x89 ||
@@ -104,14 +114,15 @@ function readPngDimensions(buffer: Buffer): { width: number; height: number } | 
   }
   return {
     width: buffer.readUInt32BE(16),
-    height: buffer.readUInt32BE(20)
+    height: buffer.readUInt32BE(20),
   };
 }
 
-
-
 type Broadcast = (event: RuntimeEvent) => void;
-type RemoteSecretRef = Extract<AutomationAction, { type: "typeSecretRef" }>["secretRef"];
+type RemoteSecretRef = Extract<
+  AutomationAction,
+  { type: "typeSecretRef" }
+>["secretRef"];
 const LOGIN_WORKFLOW_ID = "login";
 const POST_REGISTRATION_DEPOSIT_WORKFLOW_ID = "post-registration-deposit";
 const MANUAL_DEPOSIT_WORKFLOW_ID = "manual-deposit";
@@ -141,7 +152,6 @@ interface ManualCaptchaOptions {
   appearanceTimeoutMs?: number;
   solvedTimeoutMs?: number;
 }
-
 
 interface GeetestBridgeResult {
   resolved: boolean;
@@ -192,7 +202,7 @@ export class AutomationRuntimeService {
       LicenseService,
       "startAutomationRun" | "nextAutomationRun" | "abortAutomationRun"
     >,
-    private readonly allowLocalAutomationFallback = true
+    private readonly allowLocalAutomationFallback = true,
   ) {}
 
   async shutdown(timeoutMs = 5000): Promise<void> {
@@ -207,12 +217,18 @@ export class AutomationRuntimeService {
     }
   }
 
-  async runAutomation(automationId: string, settings: AppSettings): Promise<AutomationRunRecord> {
+  async runAutomation(
+    automationId: string,
+    settings: AppSettings,
+  ): Promise<AutomationRunRecord> {
     this.ensureLicensed();
     const automation = this.database.getAutomation(automationId);
     const profile = this.database.getProfile(automation.profileId);
 
-    if (this.activeAutomationIds.has(automation.id) || this.activeProfileIds.has(profile.id)) {
+    if (
+      this.activeAutomationIds.has(automation.id) ||
+      this.activeProfileIds.has(profile.id)
+    ) {
       throw new Error(`Ja existe uma rotina em execucao para ${profile.name}.`);
     }
 
@@ -225,31 +241,45 @@ export class AutomationRuntimeService {
     this.database.updateProfileStatus(profile.id, "running-automation");
     this.log(run.id, "info", `🤖 Rotina ${automation.name} iniciada.`);
 
-    let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
+    let session:
+      | Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>>
+      | undefined;
     let closeBrowserOnRelease = false;
 
     try {
-      session = await this.browserRuntime.getAutomationSession(profile, settings);
+      session = await this.browserRuntime.getAutomationSession(
+        profile,
+        settings,
+      );
       await this.browserRuntime.setPageAutoClosePopups(session.page, true);
       this.activeRuns.set(run.id, {
         run,
         cancelRequested: false,
         interruptPage: async () => {
           await session?.page.keyboard.press("Escape").catch(() => null);
-        }
+        },
       });
 
       await this.ensureLoggedIn(run.id, profile, session.page);
-      await this.executeAutomation(run.id, automation, profile, session.page, settings);
+      await this.executeAutomation(
+        run.id,
+        automation,
+        profile,
+        session.page,
+        settings,
+      );
 
       const finalRun = this.database.updateRun(run.id, {
-        status: this.activeRuns.get(run.id)?.cancelRequested ? "cancelled" : "succeeded",
+        status: this.activeRuns.get(run.id)?.cancelRequested
+          ? "cancelled"
+          : "succeeded",
         finishedAt: new Date().toISOString(),
         metrics: {
-          durationMs: Date.now() - new Date(run.startedAt).getTime()
-        }
+          durationMs: Date.now() - new Date(run.startedAt).getTime(),
+        },
       });
-      const finalStatus = finalRun.status === "cancelled" ? "draft" : "succeeded";
+      const finalStatus =
+        finalRun.status === "cancelled" ? "draft" : "succeeded";
       this.database.markAutomationStatus(automation.id, finalStatus);
       this.database.updateProfileStatus(profile.id, "active");
       this.database.logActivity({
@@ -261,36 +291,45 @@ export class AutomationRuntimeService {
           finalRun.status === "cancelled"
             ? `⏹️ Rotina ${automation.name} interrompida.`
             : `✅ Rotina ${automation.name} concluída.`,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       this.broadcast({
         type: "run-status-changed",
         payload: {
           runId: finalRun.id,
-          status: finalRun.status
-        }
+          status: finalRun.status,
+        },
       });
 
       return finalRun;
     } catch (error) {
       const isBrowserGone =
         error instanceof Error &&
-        /target closed|browser.*closed|browser.*disconnected|context.*destroyed/i.test(error.message);
+        /target closed|browser.*closed|browser.*disconnected|context.*destroyed/i.test(
+          error.message,
+        );
       closeBrowserOnRelease = isBrowserGone;
       const failedRun = this.database.updateRun(run.id, {
-        status: this.activeRuns.get(run.id)?.cancelRequested ? "cancelled" : "failed",
+        status: this.activeRuns.get(run.id)?.cancelRequested
+          ? "cancelled"
+          : "failed",
         finishedAt: new Date().toISOString(),
         metrics: {
-          durationMs: Date.now() - new Date(run.startedAt).getTime()
-        }
+          durationMs: Date.now() - new Date(run.startedAt).getTime(),
+        },
       });
-      this.database.markAutomationStatus(automation.id, failedRun.status === "cancelled" ? "draft" : "failed");
+      this.database.markAutomationStatus(
+        automation.id,
+        failedRun.status === "cancelled" ? "draft" : "failed",
+      );
       this.database.updateProfileStatus(profile.id, "error");
       this.log(
         run.id,
         "error",
-        error instanceof Error ? `🚨 ${error.message}` : "🚨 A rotina parou por um erro inesperado."
+        error instanceof Error
+          ? `🚨 ${error.message}`
+          : "🚨 A rotina parou por um erro inesperado.",
       );
       this.database.logActivity({
         id: crypto.randomUUID(),
@@ -299,16 +338,20 @@ export class AutomationRuntimeService {
         level: "error",
         message: `🚨 Rotina ${automation.name} parou com erro.`,
         details: {
-          runId: failedRun.id
+          runId: failedRun.id,
         },
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
       return failedRun;
     } finally {
       if (session) {
-        await this.browserRuntime.setPageAutoClosePopups(session.page, undefined).catch(() => undefined);
+        await this.browserRuntime
+          .setPageAutoClosePopups(session.page, undefined)
+          .catch(() => undefined);
       }
-      await session?.release({ closeBrowser: closeBrowserOnRelease }).catch(() => undefined);
+      await session
+        ?.release({ closeBrowser: closeBrowserOnRelease })
+        .catch(() => undefined);
       this.activeRuns.delete(run.id);
       this.activeAutomationIds.delete(automation.id);
       this.activeProfileIds.delete(profile.id);
@@ -340,7 +383,11 @@ export class AutomationRuntimeService {
   async runAutoLogin(profileId: string, settings: AppSettings): Promise<void> {
     const profile = this.database.getProfile(profileId);
     const account = this.database.getOrCreateProfileAccount(profile.id);
-    if (account.status !== "registered" || !account.username || !account.password) {
+    if (
+      account.status !== "registered" ||
+      !account.username ||
+      !account.password
+    ) {
       return;
     }
 
@@ -351,16 +398,21 @@ export class AutomationRuntimeService {
     this.activeProfileIds.add(profile.id);
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
-    let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
+    let session:
+      | Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>>
+      | undefined;
 
     try {
-      session = await this.browserRuntime.getAutomationSession(profile, settings);
+      session = await this.browserRuntime.getAutomationSession(
+        profile,
+        settings,
+      );
       this.activeRuns.set(run.id, {
         run,
         cancelRequested: false,
         interruptPage: async () => {
           await session?.page.keyboard.press("Escape").catch(() => null);
-        }
+        },
       });
 
       await this.ensureLoggedIn(run.id, profile, session.page);
@@ -368,15 +420,26 @@ export class AutomationRuntimeService {
       this.database.updateRun(run.id, {
         status: "succeeded",
         finishedAt: new Date().toISOString(),
-        metrics: { durationMs: Date.now() - new Date(run.startedAt).getTime(), autoLogin: true }
+        metrics: {
+          durationMs: Date.now() - new Date(run.startedAt).getTime(),
+          autoLogin: true,
+        },
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "erro inesperado";
-      this.log(run.id, "error", `[${profile.name}] Auto-login falhou: ${message}`);
+      const message =
+        error instanceof Error ? error.message : "erro inesperado";
+      this.log(
+        run.id,
+        "error",
+        `[${profile.name}] Auto-login falhou: ${message}`,
+      );
       this.database.updateRun(run.id, {
         status: "failed",
         finishedAt: new Date().toISOString(),
-        metrics: { durationMs: Date.now() - new Date(run.startedAt).getTime(), autoLogin: true }
+        metrics: {
+          durationMs: Date.now() - new Date(run.startedAt).getTime(),
+          autoLogin: true,
+        },
       });
     } finally {
       await session?.release();
@@ -388,7 +451,7 @@ export class AutomationRuntimeService {
   async runManualDeposit(
     profileIds: string[],
     depositAmounts: string[],
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<ManualDepositControlResult[]> {
     const amounts = this.normalizeManualDepositAmounts(depositAmounts);
     if (amounts.length === 0) {
@@ -397,13 +460,19 @@ export class AutomationRuntimeService {
 
     const uniqueProfileIds = Array.from(new Set(profileIds));
     if (uniqueProfileIds.length === 0) {
-      throw new Error("Nenhuma janela ativa encontrada para executar deposito.");
+      throw new Error(
+        "Nenhuma janela ativa encontrada para executar deposito.",
+      );
     }
 
     const settled = await Promise.allSettled(
       uniqueProfileIds.map((profileId, index) =>
-        this.runManualDepositForProfile(profileId, amounts[index % amounts.length] as string, settings)
-      )
+        this.runManualDepositForProfile(
+          profileId,
+          amounts[index % amounts.length] as string,
+          settings,
+        ),
+      ),
     );
 
     return settled.map((result, index) => {
@@ -412,13 +481,18 @@ export class AutomationRuntimeService {
       }
 
       const profileId = uniqueProfileIds[index] ?? "";
-      const profile = profileId ? this.database.getProfile(profileId) : undefined;
+      const profile = profileId
+        ? this.database.getProfile(profileId)
+        : undefined;
       return {
         amount: amounts[index % amounts.length] ?? amounts[0] ?? "",
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        error:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
         profileId,
         profileName: profile?.name ?? "Perfil",
-        status: "failed"
+        status: "failed",
       };
     });
   }
@@ -426,28 +500,36 @@ export class AutomationRuntimeService {
   async runManualPixKeyRegistration(
     profileIds: string[],
     pixType: PixRegistrationType,
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<PixKeyRegistrationControlResult[]> {
     if (pixType !== "PHONE") {
-      throw new Error("Somente cadastro PIX PHONE esta disponivel neste fluxo.");
+      throw new Error(
+        "Somente cadastro PIX PHONE esta disponivel neste fluxo.",
+      );
     }
 
     const uniqueProfileIds = Array.from(new Set(profileIds));
     if (uniqueProfileIds.length === 0) {
-      throw new Error("Nenhuma janela ativa encontrada para cadastrar chave PIX.");
+      throw new Error(
+        "Nenhuma janela ativa encontrada para cadastrar chave PIX.",
+      );
     }
 
     const availablePixKeyCount = this.database.listPixPhoneKeys().length;
     if (availablePixKeyCount < uniqueProfileIds.length) {
       throw new Error(
-        `Voce selecionou ${uniqueProfileIds.length} perfil(is), mas ha apenas ${availablePixKeyCount} chave(s) PIX telefone disponiveis.`
+        `Voce selecionou ${uniqueProfileIds.length} perfil(is), mas ha apenas ${availablePixKeyCount} chave(s) PIX telefone disponiveis.`,
       );
     }
 
     const settled = await Promise.allSettled(
       uniqueProfileIds.map((profileId) =>
-        this.runManualPixKeyRegistrationForProfile(profileId, pixType, settings)
-      )
+        this.runManualPixKeyRegistrationForProfile(
+          profileId,
+          pixType,
+          settings,
+        ),
+      ),
     );
 
     return settled.map((result, index) => {
@@ -456,20 +538,25 @@ export class AutomationRuntimeService {
       }
 
       const profileId = uniqueProfileIds[index] ?? "";
-      const profile = profileId ? this.database.getProfile(profileId) : undefined;
+      const profile = profileId
+        ? this.database.getProfile(profileId)
+        : undefined;
       return {
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        error:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
         pixType,
         profileId,
         profileName: profile?.name ?? "Perfil",
-        status: "failed"
+        status: "failed",
       };
     });
   }
 
   async runWithdrawalPreparation(
     profileIds: string[],
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<WithdrawalPreparationControlResult[]> {
     const uniqueProfileIds = Array.from(new Set(profileIds));
     if (uniqueProfileIds.length === 0) {
@@ -477,7 +564,9 @@ export class AutomationRuntimeService {
     }
 
     const settled = await Promise.allSettled(
-      uniqueProfileIds.map((profileId) => this.runWithdrawalPreparationForProfile(profileId, settings))
+      uniqueProfileIds.map((profileId) =>
+        this.runWithdrawalPreparationForProfile(profileId, settings),
+      ),
     );
 
     return settled.map((result, index) => {
@@ -486,19 +575,24 @@ export class AutomationRuntimeService {
       }
 
       const profileId = uniqueProfileIds[index] ?? "";
-      const profile = profileId ? this.database.getProfile(profileId) : undefined;
+      const profile = profileId
+        ? this.database.getProfile(profileId)
+        : undefined;
       return {
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        error:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
         profileId,
         profileName: profile?.name ?? "Perfil",
-        status: "failed"
+        status: "failed",
       };
     });
   }
 
   private async runWithdrawalPreparationForProfile(
     profileId: string,
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<WithdrawalPreparationControlResult> {
     const profile = this.database.getProfile(profileId);
     if (this.activeProfileIds.has(profile.id)) {
@@ -508,20 +602,25 @@ export class AutomationRuntimeService {
     this.activeProfileIds.add(profile.id);
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
-    let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
+    let session:
+      | Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>>
+      | undefined;
 
     this.database.updateProfileStatus(profile.id, "running-automation");
     this.log(run.id, "info", `[${profile.name}] Abrindo tela de saques.`);
 
     try {
-      session = await this.browserRuntime.getAutomationSession(profile, settings);
+      session = await this.browserRuntime.getAutomationSession(
+        profile,
+        settings,
+      );
       await this.browserRuntime.setPageAutoClosePopups(session.page, true);
       this.activeRuns.set(run.id, {
         run,
         cancelRequested: false,
         interruptPage: async () => {
           await session?.page.keyboard.press("Escape").catch(() => null);
-        }
+        },
       });
 
       await this.ensureLoggedIn(run.id, profile, session.page);
@@ -533,8 +632,8 @@ export class AutomationRuntimeService {
         metrics: {
           durationMs: Date.now() - new Date(run.startedAt).getTime(),
           manual: true,
-          withdrawalScreenReady: true
-        }
+          withdrawalScreenReady: true,
+        },
       });
       this.database.updateProfileStatus(profile.id, "active");
       this.database.logActivity({
@@ -544,29 +643,36 @@ export class AutomationRuntimeService {
         level: "success",
         message: `[${profile.name}] Tela de saques pronta para preenchimento manual.`,
         details: {
-          runId: finalRun.id
+          runId: finalRun.id,
         },
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       return {
         profileId: profile.id,
         profileName: profile.name,
-        status: "succeeded"
+        status: "succeeded",
       };
     } catch (error) {
       const failedRun = this.database.updateRun(run.id, {
-        status: this.activeRuns.get(run.id)?.cancelRequested ? "cancelled" : "failed",
+        status: this.activeRuns.get(run.id)?.cancelRequested
+          ? "cancelled"
+          : "failed",
         finishedAt: new Date().toISOString(),
         metrics: {
           durationMs: Date.now() - new Date(run.startedAt).getTime(),
           manual: true,
-          withdrawalScreenReady: false
-        }
+          withdrawalScreenReady: false,
+        },
       });
       this.database.updateProfileStatus(profile.id, "active");
-      const message = error instanceof Error ? error.message : "erro inesperado";
-      this.log(run.id, "error", `[${profile.name}] Abertura de saques falhou: ${message}`);
+      const message =
+        error instanceof Error ? error.message : "erro inesperado";
+      this.log(
+        run.id,
+        "error",
+        `[${profile.name}] Abertura de saques falhou: ${message}`,
+      );
       this.database.logActivity({
         id: crypto.randomUUID(),
         scope: "automation",
@@ -574,20 +680,23 @@ export class AutomationRuntimeService {
         level: "error",
         message: `[${profile.name}] Nao foi possivel abrir a tela de saques.`,
         details: {
-          runId: failedRun.id
+          runId: failedRun.id,
         },
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       return {
         error: message,
         profileId: profile.id,
         profileName: profile.name,
-        status: "failed"
+        status: "failed",
       };
     } finally {
       if (session) {
-        await this.browserRuntime.setPageAutoClosePopups(session.page, undefined);
+        await this.browserRuntime.setPageAutoClosePopups(
+          session.page,
+          undefined,
+        );
       }
       await session?.release();
       this.activeRuns.delete(run.id);
@@ -598,7 +707,7 @@ export class AutomationRuntimeService {
   private async runManualPixKeyRegistrationForProfile(
     profileId: string,
     pixType: PixRegistrationType,
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<PixKeyRegistrationControlResult> {
     const profile = this.database.getProfile(profileId);
     if (this.activeProfileIds.has(profile.id)) {
@@ -608,10 +717,16 @@ export class AutomationRuntimeService {
     this.activeProfileIds.add(profile.id);
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
-    let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
+    let session:
+      | Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>>
+      | undefined;
 
     this.database.updateProfileStatus(profile.id, "running-automation");
-    this.log(run.id, "info", `[${profile.name}] Cadastro PIX ${pixType} iniciado.`);
+    this.log(
+      run.id,
+      "info",
+      `[${profile.name}] Cadastro PIX ${pixType} iniciado.`,
+    );
 
     let reservedPixKey: PixPhoneKeyRecord | undefined;
     let pixKeyConsumed = false;
@@ -619,27 +734,44 @@ export class AutomationRuntimeService {
     try {
       reservedPixKey = this.database.reservePixPhoneKey(profile.id);
       if (!reservedPixKey) {
-        throw new Error("Nenhuma chave PIX telefone disponivel no estoque. Cadastre chaves PIX telefone e tente novamente.");
+        throw new Error(
+          "Nenhuma chave PIX telefone disponivel no estoque. Cadastre chaves PIX telefone e tente novamente.",
+        );
       }
-      session = await this.browserRuntime.getAutomationSession(profile, settings);
+      session = await this.browserRuntime.getAutomationSession(
+        profile,
+        settings,
+      );
       await this.browserRuntime.setPageAutoClosePopups(session.page, true);
       this.activeRuns.set(run.id, {
         run,
         cancelRequested: false,
         interruptPage: async () => {
           await session?.page.keyboard.press("Escape").catch(() => null);
-        }
+        },
       });
 
       await this.ensureLoggedIn(run.id, profile, session.page);
-      await this.executePixKeyRegistration(run.id, profile, session.page, pixType, reservedPixKey.phoneNumber);
+      await this.executePixKeyRegistration(
+        run.id,
+        profile,
+        session.page,
+        pixType,
+        reservedPixKey.phoneNumber,
+      );
 
       if (reservedPixKey && !pixKeyConsumed) {
         this.database.getOrCreateProfileAccount(profile.id);
-        this.database.updateProfileAccountPhoneNumber(profile.id, reservedPixKey.phoneNumber);
+        this.database.updateProfileAccountPhoneNumber(
+          profile.id,
+          reservedPixKey.phoneNumber,
+        );
         this.database.deletePixPhoneKey(reservedPixKey.id);
         pixKeyConsumed = true;
-        void this.browserRuntime.refreshAccountInfoForProfile(profile.id, this.database.getProfile(profile.id));
+        void this.browserRuntime.refreshAccountInfoForProfile(
+          profile.id,
+          this.database.getProfile(profile.id),
+        );
       }
 
       const finalRun = this.database.updateRun(run.id, {
@@ -648,8 +780,8 @@ export class AutomationRuntimeService {
         metrics: {
           manual: true,
           pixType,
-          durationMs: Date.now() - new Date(run.startedAt).getTime()
-        }
+          durationMs: Date.now() - new Date(run.startedAt).getTime(),
+        },
       });
       this.database.updateProfileStatus(profile.id, "active");
       this.database.logActivity({
@@ -659,33 +791,40 @@ export class AutomationRuntimeService {
         level: "success",
         message: `[${profile.name}] Chave PIX ${pixType} cadastrada.`,
         details: {
-          runId: finalRun.id
+          runId: finalRun.id,
         },
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       return {
         pixType,
         profileId: profile.id,
         profileName: profile.name,
-        status: "succeeded"
+        status: "succeeded",
       };
     } catch (error) {
       if (reservedPixKey && !pixKeyConsumed) {
         this.database.releasePixPhoneKeyReservation(reservedPixKey.id);
       }
       const failedRun = this.database.updateRun(run.id, {
-        status: this.activeRuns.get(run.id)?.cancelRequested ? "cancelled" : "failed",
+        status: this.activeRuns.get(run.id)?.cancelRequested
+          ? "cancelled"
+          : "failed",
         finishedAt: new Date().toISOString(),
         metrics: {
           manual: true,
           pixType,
-          durationMs: Date.now() - new Date(run.startedAt).getTime()
-        }
+          durationMs: Date.now() - new Date(run.startedAt).getTime(),
+        },
       });
       this.database.updateProfileStatus(profile.id, "active");
-      const message = error instanceof Error ? error.message : "erro inesperado";
-      this.log(run.id, "error", `[${profile.name}] Cadastro PIX falhou: ${message}`);
+      const message =
+        error instanceof Error ? error.message : "erro inesperado";
+      this.log(
+        run.id,
+        "error",
+        `[${profile.name}] Cadastro PIX falhou: ${message}`,
+      );
       this.database.logActivity({
         id: crypto.randomUUID(),
         scope: "automation",
@@ -693,9 +832,9 @@ export class AutomationRuntimeService {
         level: "error",
         message: `[${profile.name}] Cadastro PIX falhou.`,
         details: {
-          runId: failedRun.id
+          runId: failedRun.id,
         },
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       return {
@@ -703,11 +842,14 @@ export class AutomationRuntimeService {
         pixType,
         profileId: profile.id,
         profileName: profile.name,
-        status: "failed"
+        status: "failed",
       };
     } finally {
       if (session) {
-        await this.browserRuntime.setPageAutoClosePopups(session.page, undefined);
+        await this.browserRuntime.setPageAutoClosePopups(
+          session.page,
+          undefined,
+        );
       }
       await session?.release();
       this.activeRuns.delete(run.id);
@@ -718,7 +860,7 @@ export class AutomationRuntimeService {
   private async runManualDepositForProfile(
     profileId: string,
     depositAmount: string,
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<ManualDepositControlResult> {
     const profile = this.database.getProfile(profileId);
     if (this.activeProfileIds.has(profile.id)) {
@@ -728,24 +870,38 @@ export class AutomationRuntimeService {
     this.activeProfileIds.add(profile.id);
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
-    let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
+    let session:
+      | Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>>
+      | undefined;
 
     this.database.updateProfileStatus(profile.id, "running-automation");
-    this.log(run.id, "info", `[${profile.name}] Deposito manual iniciado para ${depositAmount}.`);
+    this.log(
+      run.id,
+      "info",
+      `[${profile.name}] Deposito manual iniciado para ${depositAmount}.`,
+    );
 
     try {
-      session = await this.browserRuntime.getAutomationSession(profile, settings);
+      session = await this.browserRuntime.getAutomationSession(
+        profile,
+        settings,
+      );
       await this.browserRuntime.setPageAutoClosePopups(session.page, true);
       this.activeRuns.set(run.id, {
         run,
         cancelRequested: false,
         interruptPage: async () => {
           await session?.page.keyboard.press("Escape").catch(() => null);
-        }
+        },
       });
 
       await this.ensureLoggedIn(run.id, profile, session.page);
-      await this.executeManualDeposit(run.id, profile, session.page, depositAmount);
+      await this.executeManualDeposit(
+        run.id,
+        profile,
+        session.page,
+        depositAmount,
+      );
 
       const finalRun = this.database.updateRun(run.id, {
         status: "succeeded",
@@ -753,8 +909,8 @@ export class AutomationRuntimeService {
         metrics: {
           depositAmount,
           durationMs: Date.now() - new Date(run.startedAt).getTime(),
-          manual: true
-        }
+          manual: true,
+        },
       });
       this.database.updateProfileStatus(profile.id, "active");
       this.database.logActivity({
@@ -764,30 +920,37 @@ export class AutomationRuntimeService {
         level: "success",
         message: `[${profile.name}] Deposito manual gerado para ${depositAmount}.`,
         details: {
-          runId: finalRun.id
+          runId: finalRun.id,
         },
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       return {
         amount: depositAmount,
         profileId: profile.id,
         profileName: profile.name,
-        status: "succeeded"
+        status: "succeeded",
       };
     } catch (error) {
       const failedRun = this.database.updateRun(run.id, {
-        status: this.activeRuns.get(run.id)?.cancelRequested ? "cancelled" : "failed",
+        status: this.activeRuns.get(run.id)?.cancelRequested
+          ? "cancelled"
+          : "failed",
         finishedAt: new Date().toISOString(),
         metrics: {
           depositAmount,
           durationMs: Date.now() - new Date(run.startedAt).getTime(),
-          manual: true
-        }
+          manual: true,
+        },
       });
       this.database.updateProfileStatus(profile.id, "active");
-      const message = error instanceof Error ? error.message : "erro inesperado";
-      this.log(run.id, "error", `[${profile.name}] Deposito manual falhou: ${message}`);
+      const message =
+        error instanceof Error ? error.message : "erro inesperado";
+      this.log(
+        run.id,
+        "error",
+        `[${profile.name}] Deposito manual falhou: ${message}`,
+      );
       this.database.logActivity({
         id: crypto.randomUUID(),
         scope: "automation",
@@ -795,9 +958,9 @@ export class AutomationRuntimeService {
         level: "error",
         message: `[${profile.name}] Deposito manual falhou.`,
         details: {
-          runId: failedRun.id
+          runId: failedRun.id,
         },
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       return {
@@ -805,11 +968,14 @@ export class AutomationRuntimeService {
         error: message,
         profileId: profile.id,
         profileName: profile.name,
-        status: "failed"
+        status: "failed",
       };
     } finally {
       if (session) {
-        await this.browserRuntime.setPageAutoClosePopups(session.page, undefined);
+        await this.browserRuntime.setPageAutoClosePopups(
+          session.page,
+          undefined,
+        );
       }
       await session?.release();
       this.activeRuns.delete(run.id);
@@ -822,10 +988,11 @@ export class AutomationRuntimeService {
     automation: AutomationRecord,
     profile: ProfileSummary,
     page: Page,
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<void> {
     if (automation.kind === ACCOUNT_REGISTRATION_KIND) {
-      const postRegistrationDepositEnabled = this.isPostRegistrationDepositEnabled(automation, settings);
+      const postRegistrationDepositEnabled =
+        this.isPostRegistrationDepositEnabled(automation, settings);
       if (this.remoteAutomation) {
         const trustedNavigationOrigins = new Set<string>();
         try {
@@ -836,7 +1003,7 @@ export class AutomationRuntimeService {
             profile,
             page,
             { postRegistrationDepositEnabled },
-            trustedNavigationOrigins
+            trustedNavigationOrigins,
           );
           if (postRegistrationDepositEnabled) {
             await this.executeRemoteAutomation(
@@ -848,16 +1015,16 @@ export class AutomationRuntimeService {
               {
                 depositAmount: this.resolveDepositAmount(automation.params),
                 postRegistrationDepositEnabled,
-                startUrl: profile.homeUrl
+                startUrl: profile.homeUrl,
               },
-              trustedNavigationOrigins
+              trustedNavigationOrigins,
             ).catch((error) => {
               this.log(
                 runId,
                 "warning",
                 `[${profile.name}] Cadastro remoto concluido, mas nao consegui abrir automaticamente o deposito: ${
                   error instanceof Error ? error.message : "erro inesperado"
-                }`
+                }`,
               );
             });
           }
@@ -871,11 +1038,17 @@ export class AutomationRuntimeService {
             "warning",
             `Workflow remoto indisponivel em desenvolvimento; usando fluxo local: ${
               error instanceof Error ? error.message : String(error)
-            }`
+            }`,
           );
         }
       }
-      await this.executeAccountRegistration(runId, automation, profile, page, settings);
+      await this.executeAccountRegistration(
+        runId,
+        automation,
+        profile,
+        page,
+        settings,
+      );
       return;
     }
 
@@ -889,7 +1062,7 @@ export class AutomationRuntimeService {
     profile: ProfileSummary,
     page: Page,
     context: RemoteExecutionContext = {},
-    trustedNavigationOrigins = new Set<string>()
+    trustedNavigationOrigins = new Set<string>(),
   ): Promise<void> {
     const remote = this.remoteAutomation;
     if (!remote) {
@@ -901,7 +1074,11 @@ export class AutomationRuntimeService {
       while (!checkpoint.complete) {
         this.ensureRunActive(runId);
         this.ensureLicensed();
-        if (!checkpoint.step || !checkpoint.stepSha256 || !checkpoint.stepNonce) {
+        if (
+          !checkpoint.step ||
+          !checkpoint.stepSha256 ||
+          !checkpoint.stepNonce
+        ) {
           throw new Error("Servidor retornou checkpoint sem etapa assinada.");
         }
         const step = checkpoint.step;
@@ -913,7 +1090,7 @@ export class AutomationRuntimeService {
           step,
           targets,
           context,
-          trustedNavigationOrigins
+          trustedNavigationOrigins,
         );
         const receipt: AutomationReceipt = {
           runNonce: checkpoint.runNonce,
@@ -922,26 +1099,37 @@ export class AutomationRuntimeService {
           stepSha256: checkpoint.stepSha256,
           status: "succeeded",
           observations: {
-            checkpoint: step.checkpoint
-          }
+            checkpoint: step.checkpoint,
+          },
         };
         checkpoint = await remote.nextAutomationRun(checkpoint.runId, receipt);
       }
       if (workflowId === ACCOUNT_REGISTRATION_KIND) {
         if (context.registrationPhoneNumber) {
-          this.database.updateProfileAccountPhoneNumber(profile.id, context.registrationPhoneNumber);
+          this.database.updateProfileAccountPhoneNumber(
+            profile.id,
+            context.registrationPhoneNumber,
+          );
         }
         this.database.updateProfileAccountStatus(profile.id, "registered", {
           registeredAt: new Date().toISOString(),
-          registeredOrigin: page.url()
+          registeredOrigin: page.url(),
         });
-        this.log(runId, "success", `[${profile.name}] Workflow remoto de cadastro concluido.`);
+        this.log(
+          runId,
+          "success",
+          `[${profile.name}] Workflow remoto de cadastro concluido.`,
+        );
       }
     } catch (error) {
-      await remote.abortAutomationRun(
-        checkpoint.runId,
-        error instanceof Error ? error.message.slice(0, 240) : "Falha no executor local."
-      ).catch(() => undefined);
+      await remote
+        .abortAutomationRun(
+          checkpoint.runId,
+          error instanceof Error
+            ? error.message.slice(0, 240)
+            : "Falha no executor local.",
+        )
+        .catch(() => undefined);
       throw error;
     }
   }
@@ -954,24 +1142,35 @@ export class AutomationRuntimeService {
     step: AutomationStep,
     targets: Map<string, Locator>,
     context: RemoteExecutionContext,
-    trustedNavigationOrigins: Set<string>
+    trustedNavigationOrigins: Set<string>,
   ): Promise<void> {
     const startedAt = Date.now();
-    const stepTimeoutMs = resolveRemoteStepTimeoutMs(step.workflowId, step.maxDurationMs);
-    const allowedOrigins = new Set(step.allowedOrigins.map((value) =>
-      value === "$profile.homeUrl"
-        ? resolveAutomationOrigin(profile.homeUrl)
-        : resolveAutomationOrigin(value)
-    ));
+    const stepTimeoutMs = resolveRemoteStepTimeoutMs(
+      step.workflowId,
+      step.maxDurationMs,
+    );
+    const allowedOrigins = new Set(
+      step.allowedOrigins.map((value) =>
+        value === "$profile.homeUrl"
+          ? resolveAutomationOrigin(profile.homeUrl)
+          : resolveAutomationOrigin(value),
+      ),
+    );
     for (const origin of trustedNavigationOrigins) {
       allowedOrigins.add(origin);
     }
-    this.syncTrustedCurrentOrigin(page, allowedOrigins, trustedNavigationOrigins);
+    this.syncTrustedCurrentOrigin(
+      page,
+      allowedOrigins,
+      trustedNavigationOrigins,
+    );
     for (const action of step.actions) {
       this.ensureRunActive(runId);
       this.ensureLicensed();
       if (Date.now() - startedAt > stepTimeoutMs) {
-        throw new Error(`Checkpoint remoto '${step.checkpoint}' excedeu o tempo maximo.`);
+        throw new Error(
+          `Checkpoint remoto '${step.checkpoint}' excedeu o tempo maximo.`,
+        );
       }
       await this.executeRemoteAction(
         runId,
@@ -983,7 +1182,7 @@ export class AutomationRuntimeService {
         allowedOrigins,
         context,
         trustedNavigationOrigins,
-        step.workflowId
+        step.workflowId,
       );
     }
   }
@@ -998,7 +1197,7 @@ export class AutomationRuntimeService {
     allowedOrigins: Set<string>,
     context: RemoteExecutionContext,
     trustedNavigationOrigins: Set<string>,
-    workflowId: string
+    workflowId: string,
   ): Promise<void> {
     if (action.type === "navigate") {
       if (Boolean(action.url) === Boolean(action.urlRef)) {
@@ -1011,21 +1210,28 @@ export class AutomationRuntimeService {
       }
       await page.goto(targetUrl, {
         waitUntil: "domcontentloaded",
-        timeout: resolveRemoteNavigationTimeoutMs(workflowId)
+        timeout: resolveRemoteNavigationTimeoutMs(workflowId),
       });
       const redirectedOrigin = trustRedirectedAutomationOrigin(
         allowedOrigins,
         targetUrl,
-        page.url()
+        page.url(),
       );
       trustedNavigationOrigins.add(redirectedOrigin);
       return;
     }
 
-    this.syncTrustedCurrentOrigin(page, allowedOrigins, trustedNavigationOrigins);
+    this.syncTrustedCurrentOrigin(
+      page,
+      allowedOrigins,
+      trustedNavigationOrigins,
+    );
     this.assertCurrentOriginAllowed(page, allowedOrigins);
     if (action.type === "findField") {
-      const actionTimeoutMs = resolveRemoteActionTimeoutMs(workflowId, action.timeoutMs);
+      const actionTimeoutMs = resolveRemoteActionTimeoutMs(
+        workflowId,
+        action.timeoutMs,
+      );
       const locator = await this.getVisibleInputByHints(
         runId,
         page,
@@ -1034,8 +1240,8 @@ export class AutomationRuntimeService {
         {
           optional: action.optional,
           rejectHints: action.rejectHints,
-          timeoutMs: actionTimeoutMs
-        }
+          timeoutMs: actionTimeoutMs,
+        },
       );
       if (!locator && !action.optional) {
         throw new Error(`Campo remoto '${action.target}' nao encontrado.`);
@@ -1046,27 +1252,32 @@ export class AutomationRuntimeService {
       return;
     }
     if (action.type === "findControl") {
-      const actionTimeoutMs = resolveRemoteActionTimeoutMs(workflowId, action.timeoutMs);
+      const actionTimeoutMs = resolveRemoteActionTimeoutMs(
+        workflowId,
+        action.timeoutMs,
+      );
       const isRegistrationSubmit =
         workflowId === ACCOUNT_REGISTRATION_KIND &&
         action.target === "registration.submit";
       const locator = isRegistrationSubmit
         ? await this.getVisibleRegistrationSubmitControl(runId, page, {
-            timeoutMs: actionTimeoutMs
+            timeoutMs: actionTimeoutMs,
           })
-        : page.getByRole(
-            action.role,
-            {
+        : page
+            .getByRole(action.role, {
               name: new RegExp(
-                action.labels.map((label) => this.escapeRegExp(label)).join("|"),
-                "i"
-              )
-            }
-          ).first();
+                action.labels
+                  .map((label) => this.escapeRegExp(label))
+                  .join("|"),
+                "i",
+              ),
+            })
+            .first();
       const visible = locator
-        ? await locator.waitFor({ state: "visible", timeout: actionTimeoutMs })
-          .then(() => true)
-          .catch(() => false)
+        ? await locator
+            .waitFor({ state: "visible", timeout: actionTimeoutMs })
+            .then(() => true)
+            .catch(() => false)
         : false;
       if (!visible && !action.optional) {
         throw new Error(`Controle remoto '${action.target}' nao encontrado.`);
@@ -1081,7 +1292,12 @@ export class AutomationRuntimeService {
       if (!locator) {
         throw new Error(`Alvo remoto '${action.target}' nao foi localizado.`);
       }
-      const secret = this.resolveRemoteSecret(action.secretRef, automation, profile, context);
+      const secret = this.resolveRemoteSecret(
+        action.secretRef,
+        automation,
+        profile,
+        context,
+      );
       if (!secret) {
         throw new Error(`Segredo local '${action.secretRef}' indisponivel.`);
       }
@@ -1103,37 +1319,62 @@ export class AutomationRuntimeService {
       return;
     }
     if (action.type === "waitFor") {
-      const actionTimeoutMs = resolveRemoteActionTimeoutMs(workflowId, action.timeoutMs);
-      if (action.state === "network-idle" || action.state === "dom-content-loaded") {
+      const actionTimeoutMs = resolveRemoteActionTimeoutMs(
+        workflowId,
+        action.timeoutMs,
+      );
+      if (
+        action.state === "network-idle" ||
+        action.state === "dom-content-loaded"
+      ) {
         await page.waitForLoadState(
           action.state === "network-idle" ? "networkidle" : "domcontentloaded",
-          { timeout: actionTimeoutMs }
+          { timeout: actionTimeoutMs },
         );
         return;
       }
       const locator = action.target ? targets.get(action.target) : undefined;
       if (!locator) {
-        throw new Error(`Alvo remoto '${action.target ?? ""}' nao foi localizado.`);
+        throw new Error(
+          `Alvo remoto '${action.target ?? ""}' nao foi localizado.`,
+        );
       }
       await locator.waitFor({ state: action.state, timeout: actionTimeoutMs });
       return;
     }
     if (action.type === "pauseForManualAction") {
-      const actionTimeoutMs = resolveRemoteActionTimeoutMs(workflowId, action.timeoutMs);
+      const actionTimeoutMs = resolveRemoteActionTimeoutMs(
+        workflowId,
+        action.timeoutMs,
+      );
       if (action.reason === "captcha") {
-        await this.waitForManualCaptchaIfPresent(runId, page, profile.name, "workflow remoto", {
-          appearanceTimeoutMs: actionTimeoutMs
-        });
+        await this.waitForManualCaptchaIfPresent(
+          runId,
+          page,
+          profile.name,
+          "workflow remoto",
+          {
+            appearanceTimeoutMs: actionTimeoutMs,
+          },
+        );
         return;
       }
-      this.log(runId, "warning", `[${profile.name}] Acao manual necessaria: ${action.reason}.`);
+      this.log(
+        runId,
+        "warning",
+        `[${profile.name}] Acao manual necessaria: ${action.reason}.`,
+      );
       await this.waitForRunDelay(runId, page, actionTimeoutMs);
       return;
     }
     if (action.type === "findText") {
-      const actionTimeoutMs = resolveRemoteActionTimeoutMs(workflowId, action.timeoutMs);
+      const actionTimeoutMs = resolveRemoteActionTimeoutMs(
+        workflowId,
+        action.timeoutMs,
+      );
       const locator = this.locatorByTextHints(page, action.labels).first();
-      const visible = await locator.waitFor({ state: "visible", timeout: actionTimeoutMs })
+      const visible = await locator
+        .waitFor({ state: "visible", timeout: actionTimeoutMs })
         .then(() => true)
         .catch(() => false);
       if (!visible && !action.optional) {
@@ -1145,9 +1386,13 @@ export class AutomationRuntimeService {
       return;
     }
     if (action.type === "clickText") {
-      const actionTimeoutMs = resolveRemoteActionTimeoutMs(workflowId, action.timeoutMs);
+      const actionTimeoutMs = resolveRemoteActionTimeoutMs(
+        workflowId,
+        action.timeoutMs,
+      );
       const locator = this.locatorByTextHints(page, action.labels).first();
-      const visible = await locator.waitFor({ state: "visible", timeout: actionTimeoutMs })
+      const visible = await locator
+        .waitFor({ state: "visible", timeout: actionTimeoutMs })
         .then(() => true)
         .catch(() => false);
       if (!visible && !action.optional) {
@@ -1160,7 +1405,14 @@ export class AutomationRuntimeService {
     }
     if (action.type === "localPrimitive") {
       try {
-        await this.executeRemoteLocalPrimitive(runId, automation, profile, page, action.primitive, context);
+        await this.executeRemoteLocalPrimitive(
+          runId,
+          automation,
+          profile,
+          page,
+          action.primitive,
+          context,
+        );
       } catch (error) {
         if (!action.optional) {
           throw error;
@@ -1173,7 +1425,7 @@ export class AutomationRuntimeService {
     runId: string,
     profile: ProfileSummary,
     page: Page,
-    context: RemoteExecutionContext
+    context: RemoteExecutionContext,
   ): Promise<void> {
     const account = this.database.getOrCreateProfileAccount(profile.id);
     const filledFields: string[] = [];
@@ -1182,11 +1434,15 @@ export class AutomationRuntimeService {
       account.phoneNumber ||
       this.generateRegistrationPhoneNumber();
 
-    const fastFilled = await this.fastFillRegistrationOptionalFields(runId, page, {
-      cpf: account.cpf,
-      phoneNumber,
-      realName: account.realName
-    });
+    const fastFilled = await this.fastFillRegistrationOptionalFields(
+      runId,
+      page,
+      {
+        cpf: account.cpf,
+        phoneNumber,
+        realName: account.realName,
+      },
+    );
 
     if (fastFilled.phone) {
       context.registrationPhoneNumber = phoneNumber;
@@ -1206,7 +1462,10 @@ export class AutomationRuntimeService {
     }
   }
 
-  private assertCurrentOriginAllowed(page: Page, allowedOrigins: Set<string>): void {
+  private assertCurrentOriginAllowed(
+    page: Page,
+    allowedOrigins: Set<string>,
+  ): void {
     const currentUrl = page.url();
     if (!currentUrl || currentUrl === "about:blank") {
       return;
@@ -1220,7 +1479,7 @@ export class AutomationRuntimeService {
   private syncTrustedCurrentOrigin(
     page: Page,
     allowedOrigins: Set<string>,
-    trustedNavigationOrigins: Set<string>
+    trustedNavigationOrigins: Set<string>,
   ): void {
     const currentUrl = page.url();
     if (
@@ -1233,7 +1492,7 @@ export class AutomationRuntimeService {
 
     const currentOrigin = trustCurrentAutomationOrigin(
       trustedNavigationOrigins,
-      currentUrl
+      currentUrl,
     );
     allowedOrigins.add(currentOrigin);
   }
@@ -1242,7 +1501,7 @@ export class AutomationRuntimeService {
     secretRef: RemoteSecretRef,
     automation: AutomationRecord,
     profile: ProfileSummary,
-    context: RemoteExecutionContext
+    context: RemoteExecutionContext,
   ): string | undefined {
     const account = this.database.getOrCreateProfileAccount(profile.id);
     const values: Record<string, string | undefined> = {
@@ -1253,7 +1512,8 @@ export class AutomationRuntimeService {
       "account.cpf": account.cpf,
       "account.withdrawalPassword": account.withdrawalPassword,
       "pix.phoneNumber": context.pixPhoneNumber,
-      "deposit.amount": context.depositAmount ?? this.resolveDepositAmount(automation.params)
+      "deposit.amount":
+        context.depositAmount ?? this.resolveDepositAmount(automation.params),
     };
     return values[secretRef];
   }
@@ -1264,7 +1524,7 @@ export class AutomationRuntimeService {
     const hints = Array.isArray(labels) ? labels : [labels];
     const labelPattern = new RegExp(
       hints.map((label) => this.escapeRegExp(label)).join("|"),
-      "i"
+      "i",
     );
     return page.getByText(labelPattern);
   }
@@ -1275,7 +1535,7 @@ export class AutomationRuntimeService {
     profile: ProfileSummary,
     page: Page,
     primitive: WorkflowLocalPrimitive,
-    context: RemoteExecutionContext
+    context: RemoteExecutionContext,
   ): Promise<void> {
     if (primitive === "loginFlow") {
       await this.executeLocalLoginFlow(runId, profile, page);
@@ -1290,7 +1550,7 @@ export class AutomationRuntimeService {
         page,
         profile,
         context.startUrl ?? profile.homeUrl,
-        context.depositAmount ?? this.resolveDepositAmount(automation.params)
+        context.depositAmount ?? this.resolveDepositAmount(automation.params),
       );
       return;
     }
@@ -1306,7 +1566,13 @@ export class AutomationRuntimeService {
       if (context.pixType !== "PHONE" || !context.pixPhoneNumber) {
         throw new Error("Contexto PIX PHONE ausente para workflow remoto.");
       }
-      await this.executeProgrammaticPixKeyRegistration(runId, profile, page, context.pixType, context.pixPhoneNumber);
+      await this.executeProgrammaticPixKeyRegistration(
+        runId,
+        profile,
+        page,
+        context.pixType,
+        context.pixPhoneNumber,
+      );
       return;
     }
     if (primitive === "withdrawalPreparationFlow") {
@@ -1327,7 +1593,7 @@ export class AutomationRuntimeService {
   private async ensureLoggedIn(
     runId: string,
     profile: ProfileSummary,
-    page: Page
+    page: Page,
   ): Promise<void> {
     // Todo fluxo (login, navegacao, slots, chave PIX, saque, deposito) passa por aqui
     // antes de interagir com a pagina. Encerra qualquer overlay de QR remanescente de
@@ -1335,7 +1601,11 @@ export class AutomationRuntimeService {
     // deposito reabre o seu proprio overlay logo depois (novo watcher supera este stop).
     await this.stopQrOverlay(page);
     const account = this.database.getOrCreateProfileAccount(profile.id);
-    if (account.status !== "registered" || !account.username || !account.password) {
+    if (
+      account.status !== "registered" ||
+      !account.username ||
+      !account.password
+    ) {
       return;
     }
     if (this.remoteAutomation) {
@@ -1345,7 +1615,7 @@ export class AutomationRuntimeService {
           LOGIN_WORKFLOW_ID,
           this.database.getSystemAutomationForProfile(profile.id),
           profile,
-          page
+          page,
         );
         return;
       } catch (error) {
@@ -1357,7 +1627,7 @@ export class AutomationRuntimeService {
           "warning",
           `Workflow remoto de login indisponivel em desenvolvimento; usando fluxo local: ${
             error instanceof Error ? error.message : String(error)
-          }`
+          }`,
         );
       }
     }
@@ -1367,10 +1637,14 @@ export class AutomationRuntimeService {
   private async executeLocalLoginFlow(
     runId: string,
     profile: ProfileSummary,
-    page: Page
+    page: Page,
   ): Promise<void> {
     const account = this.database.getOrCreateProfileAccount(profile.id);
-    if (account.status !== "registered" || !account.username || !account.password) {
+    if (
+      account.status !== "registered" ||
+      !account.username ||
+      !account.password
+    ) {
       return;
     }
 
@@ -1390,52 +1664,82 @@ export class AutomationRuntimeService {
       return;
     }
 
-    await loggedPage.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await this.waitForPlatformLoadingToClear(runId, loggedPage, { retryWithReload: true });
-    await loggedPage.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
-    await this.normalizeRegistrationEntryPage(runId, loggedPage, profile.name).catch(() => undefined);
+    await loggedPage.goto(startUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
+    await this.waitForPlatformLoadingToClear(runId, loggedPage, {
+      retryWithReload: true,
+    });
+    await loggedPage
+      .waitForLoadState("networkidle", { timeout: 3000 })
+      .catch(() => null);
+    await this.normalizeRegistrationEntryPage(
+      runId,
+      loggedPage,
+      profile.name,
+    ).catch(() => undefined);
     await loggedPage.waitForTimeout(400).catch(() => undefined);
 
     if (await hasActiveSession(loggedPage)) {
       return;
     }
 
-    this.log(runId, "info", `[${profile.name}] Sessao expirada — iniciando login automatico para ${account.username}.`);
+    this.log(
+      runId,
+      "info",
+      `[${profile.name}] Sessao expirada — iniciando login automatico para ${account.username}.`,
+    );
 
-    await this.dismissInitialPopupsBeforeRegistration(runId, loggedPage, profile.name);
+    await this.dismissInitialPopupsBeforeRegistration(
+      runId,
+      loggedPage,
+      profile.name,
+    );
 
     if (await hasActiveSession(loggedPage)) {
       return;
     }
 
-    const loginDialogState = await this.ensureLoginDialogOpen(runId, loggedPage, profile.name);
+    const loginDialogState = await this.ensureLoginDialogOpen(
+      runId,
+      loggedPage,
+      profile.name,
+    );
     if (loginDialogState === "active-session") {
       return;
     }
 
-    const accountInput = await this.getVisibleInputByHints(runId, loggedPage, "conta (login)", [
-      "Digite o Numero do Celular/Conta",
-      "Digite o Celular/Conta",
-      "Digite o Conta",
-      "Conta",
-      "account",
-      "usuario",
-      "usuário",
-      "username",
-      "celular",
-      "phone",
-      "mobile"
-    ], { timeoutMs: 8000 });
+    const accountInput = await this.getVisibleInputByHints(
+      runId,
+      loggedPage,
+      "conta (login)",
+      [
+        "Digite o Numero do Celular/Conta",
+        "Digite o Celular/Conta",
+        "Digite o Conta",
+        "Conta",
+        "account",
+        "usuario",
+        "usuário",
+        "username",
+        "celular",
+        "phone",
+        "mobile",
+      ],
+      { timeoutMs: 8000 },
+    );
     if (!accountInput) {
       throw new Error("Campo de conta nao encontrado no formulario de login.");
     }
 
-    const passwordInput = await this.getVisibleInputByHints(runId, loggedPage, "senha (login)", [
-      "Insira a senha",
-      "senha",
-      "password",
-      "userpass"
-    ], { timeoutMs: 4000 });
+    const passwordInput = await this.getVisibleInputByHints(
+      runId,
+      loggedPage,
+      "senha (login)",
+      ["Insira a senha", "senha", "password", "userpass"],
+      { timeoutMs: 4000 },
+    );
     if (!passwordInput) {
       throw new Error("Campo de senha nao encontrado no formulario de login.");
     }
@@ -1443,7 +1747,11 @@ export class AutomationRuntimeService {
     await this.humanTypeField(runId, page, accountInput, account.username);
     await this.humanTypeField(runId, page, passwordInput, account.password);
 
-    const submitButton = await this.getVisibleLoginSubmitControl(runId, loggedPage, { timeoutMs: 4000 });
+    const submitButton = await this.getVisibleLoginSubmitControl(
+      runId,
+      loggedPage,
+      { timeoutMs: 4000 },
+    );
     if (!submitButton) {
       throw new Error("Botao de login nao encontrado no formulario.");
     }
@@ -1452,24 +1760,47 @@ export class AutomationRuntimeService {
     await this.humanPause(runId, page, 8, 20);
     await this.humanMouseClick(runId, page, submitButton);
 
-    let handledCaptcha = await this.waitForManualCaptchaIfPresent(runId, page, profile.name, "login", {
-      appearanceTimeoutMs: 2500
-    });
+    let handledCaptcha = await this.waitForManualCaptchaIfPresent(
+      runId,
+      page,
+      profile.name,
+      "login",
+      {
+        appearanceTimeoutMs: 2500,
+      },
+    );
 
-    const loginSucceeded = await waitForLoginSuccess(loggedPage, handledCaptcha ? 15000 : 20000);
+    const loginSucceeded = await waitForLoginSuccess(
+      loggedPage,
+      handledCaptcha ? 15000 : 20000,
+    );
 
     if (!loginSucceeded && !handledCaptcha) {
-      handledCaptcha = await this.waitForManualCaptchaIfPresent(runId, page, profile.name, "login", {
-        appearanceTimeoutMs: 1200
-      });
+      handledCaptcha = await this.waitForManualCaptchaIfPresent(
+        runId,
+        page,
+        profile.name,
+        "login",
+        {
+          appearanceTimeoutMs: 1200,
+        },
+      );
       if (handledCaptcha) {
         const retrySucceeded = await waitForLoginSuccess(loggedPage, 15000);
         if (!retrySucceeded) {
           const errorMsg = await detectLoginErrorMessage(loggedPage);
-          await this.dismissPlatformErrorDialog(loggedPage).catch(() => undefined);
-          throw new Error(errorMsg || "login nao confirmou apos resolver captcha");
+          await this.dismissPlatformErrorDialog(loggedPage).catch(
+            () => undefined,
+          );
+          throw new Error(
+            errorMsg || "login nao confirmou apos resolver captcha",
+          );
         }
-        this.log(runId, "success", `[${profile.name}] Login automatico concluido.`);
+        this.log(
+          runId,
+          "success",
+          `[${profile.name}] Login automatico concluido.`,
+        );
         return;
       }
     }
@@ -1486,7 +1817,7 @@ export class AutomationRuntimeService {
   private async ensureLoginDialogOpen(
     runId: string,
     page: Page,
-    profileName: string
+    profileName: string,
   ): Promise<"form" | "active-session"> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       this.ensureRunActive(runId);
@@ -1499,7 +1830,11 @@ export class AutomationRuntimeService {
         return "form";
       }
 
-      await this.dismissInitialPopupsBeforeRegistration(runId, page, profileName);
+      await this.dismissInitialPopupsBeforeRegistration(
+        runId,
+        page,
+        profileName,
+      );
 
       if (await hasActiveSession(page)) {
         return "active-session";
@@ -1525,13 +1860,22 @@ export class AutomationRuntimeService {
         return "form";
       }
 
-      await this.dismissInitialPopupsBeforeRegistration(runId, page, profileName);
+      await this.dismissInitialPopupsBeforeRegistration(
+        runId,
+        page,
+        profileName,
+      );
     }
 
-    throw new Error("Formulario de login nao abriu apos fechar popups e clicar em Login.");
+    throw new Error(
+      "Formulario de login nao abriu apos fechar popups e clicar em Login.",
+    );
   }
 
-  private async clickLoginEntryPoint(runId: string, page: Page): Promise<string | undefined> {
+  private async clickLoginEntryPoint(
+    runId: string,
+    page: Page,
+  ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `login-entry-${Date.now()}-${this.randomInt(1000, 9999)}`;
     const label = await resolveContentFrame(page)
@@ -1540,54 +1884,109 @@ export class AutomationRuntimeService {
           closest?: (selector: string) => RuntimeElement | null;
           getAttribute?: (name: string) => string | null;
           getBoundingClientRect: () => {
-            bottom: number; height: number; left: number; right: number; top: number; width: number;
+            bottom: number;
+            height: number;
+            left: number;
+            right: number;
+            top: number;
+            width: number;
           };
           setAttribute?: (name: string, value: string) => void;
           textContent?: string | null;
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string };
+          document: {
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
+          getComputedStyle: (element: RuntimeElement) => {
+            display: string;
+            opacity: string;
+            visibility: string;
+          };
           innerHeight: number;
           innerWidth: number;
         };
         const normalize = (value: string | null | undefined) =>
-          (value || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+          (value || "")
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
         const readAttrs = (el: RuntimeElement) =>
-          normalize([
-            el.getAttribute?.("id"), el.getAttribute?.("class"), el.getAttribute?.("href"),
-            el.getAttribute?.("to"), el.getAttribute?.("data-name"), el.getAttribute?.("data-route"),
-            el.getAttribute?.("data-testid"), el.getAttribute?.("aria-label"), el.getAttribute?.("title")
-          ].join(" "));
+          normalize(
+            [
+              el.getAttribute?.("id"),
+              el.getAttribute?.("class"),
+              el.getAttribute?.("href"),
+              el.getAttribute?.("to"),
+              el.getAttribute?.("data-name"),
+              el.getAttribute?.("data-route"),
+              el.getAttribute?.("data-testid"),
+              el.getAttribute?.("aria-label"),
+              el.getAttribute?.("title"),
+            ].join(" "),
+          );
         const isVisible = (el: RuntimeElement) => {
           const style = runtimeWindow.getComputedStyle(el);
           const rect = el.getBoundingClientRect();
-          return style.display !== "none" && style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 && rect.width > 8 && rect.height > 8 &&
-            rect.right > 0 && rect.bottom > 0 && rect.left < runtimeWindow.innerWidth && rect.top < runtimeWindow.innerHeight;
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            Number(style.opacity || "1") > 0.01 &&
+            rect.width > 8 &&
+            rect.height > 8 &&
+            rect.right > 0 &&
+            rect.bottom > 0 &&
+            rect.left < runtimeWindow.innerWidth &&
+            rect.top < runtimeWindow.innerHeight
+          );
         };
         const clickSelector =
           "button,a,[role='button'],[role='tab'],.ui-tabbar-item,[id*='login' i],[id*='signin' i]," +
           "[class*='login' i],[class*='signin' i],[class*='sign-in' i],[class*='navItem' i]," +
           "[class*='menu-item' i],[class*='menuItem' i],[class*='itemContent' i],[class*='item_' i]";
-        const candidates = new Map<RuntimeElement, { element: RuntimeElement; label: string; score: number; y: number }>();
+        const candidates = new Map<
+          RuntimeElement,
+          { element: RuntimeElement; label: string; score: number; y: number }
+        >();
 
-        for (const el of runtimeWindow.document.querySelectorAll("button,a,[role='button'],[role='tab'],div,span")) {
+        for (const el of runtimeWindow.document.querySelectorAll(
+          "button,a,[role='button'],[role='tab'],div,span",
+        )) {
           const clickable = el.closest?.(clickSelector) ?? el;
           if (!isVisible(clickable)) continue;
 
           const rect = clickable.getBoundingClientRect();
           const area = rect.width * rect.height;
-          const viewportArea = runtimeWindow.innerWidth * runtimeWindow.innerHeight;
-          const text = normalize(`${el.textContent || ""} ${clickable.textContent || ""}`);
+          const viewportArea =
+            runtimeWindow.innerWidth * runtimeWindow.innerHeight;
+          const text = normalize(
+            `${el.textContent || ""} ${clickable.textContent || ""}`,
+          );
           const attrs = `${readAttrs(el)} ${readAttrs(clickable)}`;
           const haystack = normalize(`${text} ${attrs}`);
-          const exact = /^(login|entrar|sign in|signin|iniciar sessao|acessar|log in)$/i.test(text);
-          const contains = /login|entrar|sign in|signin|iniciar sessao|acessar|log in/.test(haystack);
-          const strongAttr = /(^|\s|_|-|\/)(login|signin|sign-in|entrar|acessar)(\s|_|-|\/|$)|loginclick|loginmodal/.test(attrs);
+          const exact =
+            /^(login|entrar|sign in|signin|iniciar sessao|acessar|log in)$/i.test(
+              text,
+            );
+          const contains =
+            /login|entrar|sign in|signin|iniciar sessao|acessar|log in/.test(
+              haystack,
+            );
+          const strongAttr =
+            /(^|\s|_|-|\/)(login|signin|sign-in|entrar|acessar)(\s|_|-|\/|$)|loginclick|loginmodal/.test(
+              attrs,
+            );
 
-          if (/tenho mais de 18|termos|terms|agreement|suporte|download|cadastro|registro|registrar|sign up|signup|register/.test(haystack)) continue;
-          if (/checkbox|footer|dating-img|agreement|terms/.test(attrs)) continue;
+          if (
+            /tenho mais de 18|termos|terms|agreement|suporte|download|cadastro|registro|registrar|sign up|signup|register/.test(
+              haystack,
+            )
+          )
+            continue;
+          if (/checkbox|footer|dating-img|agreement|terms/.test(attrs))
+            continue;
 
           if (!exact && !contains && !strongAttr) continue;
 
@@ -1595,20 +1994,41 @@ export class AutomationRuntimeService {
           if (strongAttr) score += 100;
           if (exact) score += 92;
           else if (contains) score += 55;
-          if (/button|btn|tabbar|navitem|menu-item|menuitem|primary/.test(haystack)) score += 22;
-          if (rect.top < runtimeWindow.innerHeight * 0.35 || rect.top > runtimeWindow.innerHeight * 0.62) score += 10;
-          if (/deposit|deposito|recarga|saque|withdraw|bonus|promocao|promotion|close|fechar|captcha/.test(haystack)) score -= 85;
+          if (
+            /button|btn|tabbar|navitem|menu-item|menuitem|primary/.test(
+              haystack,
+            )
+          )
+            score += 22;
+          if (
+            rect.top < runtimeWindow.innerHeight * 0.35 ||
+            rect.top > runtimeWindow.innerHeight * 0.62
+          )
+            score += 10;
+          if (
+            /deposit|deposito|recarga|saque|withdraw|bonus|promocao|promotion|close|fechar|captcha/.test(
+              haystack,
+            )
+          )
+            score -= 85;
           if (area > viewportArea * 0.3 || text.length > 90) score -= 60;
           if (score < 45) continue;
 
           const lbl = text || attrs.split(" ")[0] || "login";
           const existing = candidates.get(clickable);
           if (!existing || score > existing.score) {
-            candidates.set(clickable, { element: clickable, label: lbl, score, y: rect.top + rect.height / 2 });
+            candidates.set(clickable, {
+              element: clickable,
+              label: lbl,
+              score,
+              y: rect.top + rect.height / 2,
+            });
           }
         }
 
-        const best = Array.from(candidates.values()).sort((a, b) => b.score - a.score || a.y - b.y)[0];
+        const best = Array.from(candidates.values()).sort(
+          (a, b) => b.score - a.score || a.y - b.y,
+        )[0];
         best?.element.setAttribute?.("data-predator-login-entry-target", token);
         return best?.label;
       }, targetToken)
@@ -1616,17 +2036,23 @@ export class AutomationRuntimeService {
 
     if (!label) return undefined;
 
-    const target = page.locator(`[data-predator-login-entry-target="${targetToken}"]`).first();
+    const target = page
+      .locator(`[data-predator-login-entry-target="${targetToken}"]`)
+      .first();
     await this.withPopupPageGuard(page, async () => {
       await this.humanMouseClick(runId, page, target).catch(async () => {
         await target.click({ timeout: 1200, force: true }).catch(async () => {
-          await target.evaluate((el) => {
-            (el as unknown as { click: () => void }).click();
-          }).catch(() => undefined);
+          await target
+            .evaluate((el) => {
+              (el as unknown as { click: () => void }).click();
+            })
+            .catch(() => undefined);
         });
       });
     }).catch(() => undefined);
-    await target.evaluate((el) => el.removeAttribute("data-predator-login-entry-target")).catch(() => undefined);
+    await target
+      .evaluate((el) => el.removeAttribute("data-predator-login-entry-target"))
+      .catch(() => undefined);
 
     return label;
   }
@@ -1634,7 +2060,7 @@ export class AutomationRuntimeService {
   private async getVisibleLoginSubmitControl(
     runId: string,
     page: Page,
-    options?: { timeoutMs?: number }
+    options?: { timeoutMs?: number },
   ): Promise<Locator | undefined> {
     const timeoutMs = options?.timeoutMs ?? 8000;
     const startedAt = Date.now();
@@ -1649,82 +2075,146 @@ export class AutomationRuntimeService {
             closest?: (selector: string) => RuntimeElement | null;
             getAttribute?: (name: string) => string | null;
             getBoundingClientRect: () => {
-              bottom: number; height: number; left: number; right: number; top: number; width: number;
+              bottom: number;
+              height: number;
+              left: number;
+              right: number;
+              top: number;
+              width: number;
             };
             querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
             setAttribute?: (name: string, value: string) => void;
             textContent?: string | null;
           };
           const runtimeWindow = globalThis as unknown as {
-            document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-            getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string };
+            document: {
+              body: RuntimeElement;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+            };
             innerHeight: number;
             innerWidth: number;
           };
           const normalize = (value: string | null | undefined) =>
-            (value || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+            (value || "")
+              .normalize("NFD")
+              .replace(/[̀-ͯ]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
           const readAttrs = (el: RuntimeElement) =>
-            normalize([
-              el.getAttribute?.("id"), el.getAttribute?.("class"), el.getAttribute?.("name"),
-              el.getAttribute?.("role"), el.getAttribute?.("type"), el.getAttribute?.("aria-label"),
-              el.getAttribute?.("title")
-            ].join(" "));
+            normalize(
+              [
+                el.getAttribute?.("id"),
+                el.getAttribute?.("class"),
+                el.getAttribute?.("name"),
+                el.getAttribute?.("role"),
+                el.getAttribute?.("type"),
+                el.getAttribute?.("aria-label"),
+                el.getAttribute?.("title"),
+              ].join(" "),
+            );
           const isRendered = (el: RuntimeElement) => {
             const style = runtimeWindow.getComputedStyle(el);
             const rect = el.getBoundingClientRect();
-            return style.display !== "none" && style.visibility !== "hidden" &&
-              Number(style.opacity || "1") > 0.01 && rect.width > 8 && rect.height > 8;
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 8 &&
+              rect.height > 8
+            );
           };
-          const inputType = (el: RuntimeElement) => normalize(el.getAttribute?.("type"));
+          const inputType = (el: RuntimeElement) =>
+            normalize(el.getAttribute?.("type"));
           const sectionSelector =
             "form,.ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true']," +
             ".modal,.popup,.dialog,.m_sign_in,.sign_in_body,.login_content,.form_box";
           const sections = Array.from(
-            new Set([runtimeWindow.document.body, ...Array.from(runtimeWindow.document.querySelectorAll(sectionSelector))])
+            new Set([
+              runtimeWindow.document.body,
+              ...Array.from(
+                runtimeWindow.document.querySelectorAll(sectionSelector),
+              ),
+            ]),
           )
             .filter(isRendered)
             .map((section) => {
-              const inputs = Array.from(section.querySelectorAll?.("input") ?? []).filter(isRendered);
-              const passwordInputs = inputs.filter((i) => inputType(i) === "password");
+              const inputs = Array.from(
+                section.querySelectorAll?.("input") ?? [],
+              ).filter(isRendered);
+              const passwordInputs = inputs.filter(
+                (i) => inputType(i) === "password",
+              );
               const text = normalize(section.textContent).slice(0, 2500);
               const rect = section.getBoundingClientRect();
               let score = 0;
               if (passwordInputs.length === 1) score += 100;
-              if (/login|entrar|sign in|iniciar sessao|acessar/.test(text)) score += 45;
+              if (/login|entrar|sign in|iniciar sessao|acessar/.test(text))
+                score += 45;
               if (/senha|password/.test(text)) score += 20;
               if (passwordInputs.length >= 2) score -= 60;
               return {
                 area: rect.width * rect.height,
                 element: section,
-                passwordBottom: Math.max(0, ...passwordInputs.map((i) => i.getBoundingClientRect().bottom)),
-                score
+                passwordBottom: Math.max(
+                  0,
+                  ...passwordInputs.map(
+                    (i) => i.getBoundingClientRect().bottom,
+                  ),
+                ),
+                score,
               };
             })
             .filter((s) => s.score >= 100)
             .sort((a, b) => b.score - a.score || a.area - b.area);
 
-          const roots = sections.length > 0 ? sections : [{ element: runtimeWindow.document.body, passwordBottom: 0 }];
+          const roots =
+            sections.length > 0
+              ? sections
+              : [{ element: runtimeWindow.document.body, passwordBottom: 0 }];
           const clickSelector =
             "button,a,[role='button'],input[type='submit'],input[type='button'],.sing_btn,.login_sign_btn," +
             ".submit,.btn,.primary,[class*='submit' i],[class*='login' i],[id*='submit' i],[id*='login' i]";
-          const candidates = new Map<RuntimeElement, { element: RuntimeElement; label: string; score: number; y: number }>();
+          const candidates = new Map<
+            RuntimeElement,
+            { element: RuntimeElement; label: string; score: number; y: number }
+          >();
 
           for (const root of roots) {
-            for (const el of Array.from(root.element.querySelectorAll?.("button,a,input,[role='button'],div,span") ?? [])) {
+            for (const el of Array.from(
+              root.element.querySelectorAll?.(
+                "button,a,input,[role='button'],div,span",
+              ) ?? [],
+            )) {
               const clickable = el.closest?.(clickSelector) ?? el;
               if (!isRendered(clickable)) continue;
 
               const rect = clickable.getBoundingClientRect();
-              const viewportArea = runtimeWindow.innerWidth * runtimeWindow.innerHeight;
+              const viewportArea =
+                runtimeWindow.innerWidth * runtimeWindow.innerHeight;
               const elText = normalize(el.textContent);
               const clickableText = normalize(clickable.textContent);
               const label = clickableText || elText || "login";
               const attrs = `${readAttrs(el)} ${readAttrs(clickable)}`;
               const haystack = normalize(`${label} ${attrs}`);
-              const exactSubmit = /^(login|entrar|sign in|signin|acessar|log in|iniciar sessao)$/i.test(label) ||
-                /^(login|entrar|sign in|signin|acessar|log in|iniciar sessao)$/i.test(elText);
-              const containsSubmit = /login|entrar|sign in|signin|acessar|log in/.test(haystack);
-              const strongSubmit = /login_sign_btn|sing_btn|submit|primary|(^|\s)btn(\s|$)/.test(attrs);
+              const exactSubmit =
+                /^(login|entrar|sign in|signin|acessar|log in|iniciar sessao)$/i.test(
+                  label,
+                ) ||
+                /^(login|entrar|sign in|signin|acessar|log in|iniciar sessao)$/i.test(
+                  elText,
+                );
+              const containsSubmit =
+                /login|entrar|sign in|signin|acessar|log in/.test(haystack);
+              const strongSubmit =
+                /login_sign_btn|sing_btn|submit|primary|(^|\s)btn(\s|$)/.test(
+                  attrs,
+                );
 
               if (!exactSubmit && !containsSubmit && !strongSubmit) continue;
 
@@ -1732,29 +2222,53 @@ export class AutomationRuntimeService {
               if (strongSubmit) score += 55;
               if (exactSubmit) score += 92;
               else if (containsSubmit) score += 38;
-              if (root.passwordBottom > 0) score += rect.top >= root.passwordBottom - 8 ? 70 : -100;
+              if (root.passwordBottom > 0)
+                score += rect.top >= root.passwordBottom - 8 ? 70 : -100;
               if (/tab|van-tab|sing_type_item/.test(attrs)) score -= 80;
-              if (/checkbox|radio|switch|icon|img|image/.test(attrs)) score -= 120;
-              if (!strongSubmit && (rect.width < 80 || rect.height < 24)) score -= 70;
-              if (/registro|registrar|cadastro|cadastrar|sign up|signup|register|suporte|download|termos/.test(label)) score -= 75;
-              if (rect.width * rect.height > viewportArea * 0.45 || label.length > 90) score -= 70;
+              if (/checkbox|radio|switch|icon|img|image/.test(attrs))
+                score -= 120;
+              if (!strongSubmit && (rect.width < 80 || rect.height < 24))
+                score -= 70;
+              if (
+                /registro|registrar|cadastro|cadastrar|sign up|signup|register|suporte|download|termos/.test(
+                  label,
+                )
+              )
+                score -= 75;
+              if (
+                rect.width * rect.height > viewportArea * 0.45 ||
+                label.length > 90
+              )
+                score -= 70;
               if (score < 55) continue;
 
               const existing = candidates.get(clickable);
               if (!existing || score > existing.score) {
-                candidates.set(clickable, { element: clickable, label, score, y: rect.top + rect.height / 2 });
+                candidates.set(clickable, {
+                  element: clickable,
+                  label,
+                  score,
+                  y: rect.top + rect.height / 2,
+                });
               }
             }
           }
 
-          const best = Array.from(candidates.values()).sort((a, b) => b.score - a.score || b.y - a.y)[0];
-          best?.element.setAttribute?.("data-predator-login-submit-target", token);
+          const best = Array.from(candidates.values()).sort(
+            (a, b) => b.score - a.score || b.y - a.y,
+          )[0];
+          best?.element.setAttribute?.(
+            "data-predator-login-submit-target",
+            token,
+          );
           return best ? { label: best.label, score: best.score } : undefined;
         }, targetToken)
         .catch(() => undefined);
 
       if (match) {
-        const target = page.locator(`[data-predator-login-submit-target="${targetToken}"]`).first();
+        const target = page
+          .locator(`[data-predator-login-submit-target="${targetToken}"]`)
+          .first();
         if (await target.isVisible({ timeout: 300 }).catch(() => false)) {
           return target;
         }
@@ -1774,17 +2288,27 @@ export class AutomationRuntimeService {
           querySelector: (selector: string) => { click?: () => void } | null;
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<RuntimeOverlay> };
-          getComputedStyle: (element: unknown) => { display: string; zIndex: string };
+          document: {
+            querySelectorAll: (selector: string) => Iterable<RuntimeOverlay>;
+          };
+          getComputedStyle: (element: unknown) => {
+            display: string;
+            zIndex: string;
+          };
         };
-        for (const overlay of runtimeWindow.document.querySelectorAll(".ui-overlay")) {
+        for (const overlay of runtimeWindow.document.querySelectorAll(
+          ".ui-overlay",
+        )) {
           const style = runtimeWindow.getComputedStyle(overlay);
           if (style.display === "none") continue;
           const z = parseInt(style.zIndex || "0");
           if (z <= 2001) continue;
           if (overlay.getAttribute("data-hidden") === "1") continue;
           const close = overlay.querySelector(".ui-dialog-close-box");
-          if (close?.click) { close.click(); return true; }
+          if (close?.click) {
+            close.click();
+            return true;
+          }
         }
         return false;
       })
@@ -1796,15 +2320,18 @@ export class AutomationRuntimeService {
     automation: AutomationRecord,
     profile: ProfileSummary,
     page: Page,
-    settings: AppSettings
+    settings: AppSettings,
   ): Promise<void> {
     const account = this.database.getOrCreateProfileAccount(profile.id);
     const startUrl = (profile.homeUrl || automation.startUrl || "").trim();
     if (!startUrl) {
-      throw new Error("Configure um link inicial no perfil antes de executar o cadastro.");
+      throw new Error(
+        "Configure um link inicial no perfil antes de executar o cadastro.",
+      );
     }
     const loggedPage = this.createLoggedPage(runId, page);
-    const autoCaptchaSolverEnabled = automation.params.autoCaptchaSolverEnabled === "true";
+    const autoCaptchaSolverEnabled =
+      automation.params.autoCaptchaSolverEnabled === "true";
     if (autoCaptchaSolverEnabled) {
       this.autoCaptchaSolverRuns.add(runId);
       // Worker do solver sobe SOB DEMANDA (lazy): so ao ver o 1o trafego de rede geetest
@@ -1816,88 +2343,153 @@ export class AutomationRuntimeService {
       await this.geetestSolver?.stopIfIdle().catch(() => undefined);
     }
 
-    this.log(runId, "info", `[${profile.name}] Preparando cadastro da plataforma para ${account.username}.`);
+    this.log(
+      runId,
+      "info",
+      `[${profile.name}] Preparando cadastro da plataforma para ${account.username}.`,
+    );
 
     await loggedPage.goto(startUrl, {
-      waitUntil: "domcontentloaded"
+      waitUntil: "domcontentloaded",
     });
     await this.browserRuntime.setPageAutoClosePopups(loggedPage, true);
-    await this.waitForPlatformLoadingToClear(runId, loggedPage, { retryWithReload: true });
-    await loggedPage.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
+    await this.waitForPlatformLoadingToClear(runId, loggedPage, {
+      retryWithReload: true,
+    });
+    await loggedPage
+      .waitForLoadState("networkidle", { timeout: 3000 })
+      .catch(() => null);
     await this.normalizeRegistrationEntryPage(runId, loggedPage, profile.name);
     await loggedPage.waitForTimeout(250);
 
-    await this.dismissInitialPopupsBeforeRegistration(runId, loggedPage, profile.name);
+    await this.dismissInitialPopupsBeforeRegistration(
+      runId,
+      loggedPage,
+      profile.name,
+    );
 
     await this.ensureRegistrationDialogOpen(runId, loggedPage, profile.name);
 
-    const accountInput = await this.getRequiredVisibleInputByHints(runId, loggedPage, "conta", [
-      "Digite o Conta",
-      "Conta",
-      "account",
-      "usuario",
-      "usuário"
-    ]);
-    const passwordInput = await this.getRequiredVisibleInputByHints(runId, loggedPage, "senha", [
-      "Insira a senha",
+    const accountInput = await this.getRequiredVisibleInputByHints(
+      runId,
+      loggedPage,
+      "conta",
+      ["Digite o Conta", "Conta", "account", "usuario", "usuário"],
+    );
+    const passwordInput = await this.getRequiredVisibleInputByHints(
+      runId,
+      loggedPage,
       "senha",
-      "userpass",
-      "password"
-    ]);
-    const confirmPasswordInput = await this.getRequiredVisibleInputByHints(runId, loggedPage, "confirmacao de senha", [
-      "Confirmar senha",
-      "confirme a senha",
-      "confirmacao senha",
-      "confirmar",
-      "confirmPassword",
-      "confirm password"
-    ]);
+      ["Insira a senha", "senha", "userpass", "password"],
+    );
+    const confirmPasswordInput = await this.getRequiredVisibleInputByHints(
+      runId,
+      loggedPage,
+      "confirmacao de senha",
+      [
+        "Confirmar senha",
+        "confirme a senha",
+        "confirmacao senha",
+        "confirmar",
+        "confirmPassword",
+        "confirm password",
+      ],
+    );
 
-    const fastMainFieldsFilled = await this.fastFillRegistrationMainFields(runId, page, [
-      { fieldName: "conta", locator: accountInput, value: account.username },
-      { fieldName: "senha", locator: passwordInput, value: account.password },
-      { fieldName: "confirmacao de senha", locator: confirmPasswordInput, value: account.password }
-    ]);
+    const fastMainFieldsFilled = await this.fastFillRegistrationMainFields(
+      runId,
+      page,
+      [
+        { fieldName: "conta", locator: accountInput, value: account.username },
+        { fieldName: "senha", locator: passwordInput, value: account.password },
+        {
+          fieldName: "confirmacao de senha",
+          locator: confirmPasswordInput,
+          value: account.password,
+        },
+      ],
+    );
     if (!fastMainFieldsFilled) {
       await this.humanTypeField(runId, page, accountInput, account.username);
       await this.humanTypeField(runId, page, passwordInput, account.password);
-      await this.humanTypeField(runId, page, confirmPasswordInput, account.password);
+      await this.humanTypeField(
+        runId,
+        page,
+        confirmPasswordInput,
+        account.password,
+      );
     }
 
-    const submitButton = await this.getRequiredRegistrationSubmitControl(runId, loggedPage);
+    const submitButton = await this.getRequiredRegistrationSubmitControl(
+      runId,
+      loggedPage,
+    );
 
     const registrationContext: RemoteExecutionContext = {};
     try {
-      await this.completeRegistrationFields(runId, profile, loggedPage, registrationContext);
+      await this.completeRegistrationFields(
+        runId,
+        profile,
+        loggedPage,
+        registrationContext,
+      );
       await this.browserRuntime.setPageAutoClosePopups(loggedPage, false);
 
       this.ensureRunActive(runId);
       await this.fastClickControl(runId, page, submitButton);
 
       try {
-        let handledCaptcha = await this.waitForManualCaptchaIfPresent(runId, page, profile.name, "cadastro", {
-          appearanceTimeoutMs: 2500
-        });
+        let handledCaptcha = await this.waitForManualCaptchaIfPresent(
+          runId,
+          page,
+          profile.name,
+          "cadastro",
+          {
+            appearanceTimeoutMs: 2500,
+          },
+        );
         let registered = await accountInput
           .waitFor({ state: "hidden", timeout: handledCaptcha ? 15000 : 25000 })
           .then(() => true)
           .catch(() => false);
 
         if (!registered && !handledCaptcha) {
-          handledCaptcha = await this.waitForManualCaptchaIfPresent(runId, page, profile.name, "cadastro", {
-            appearanceTimeoutMs: 1200
-          });
+          handledCaptcha = await this.waitForManualCaptchaIfPresent(
+            runId,
+            page,
+            profile.name,
+            "cadastro",
+            {
+              appearanceTimeoutMs: 1200,
+            },
+          );
           if (handledCaptcha) {
-            registered = await accountInput.waitFor({ state: "hidden", timeout: 15000 }).then(() => true).catch(() => false);
+            registered = await accountInput
+              .waitFor({ state: "hidden", timeout: 15000 })
+              .then(() => true)
+              .catch(() => false);
           }
         }
 
-        if (!registered && handledCaptcha && (await submitButton.isVisible().catch(() => false))) {
+        if (
+          !registered &&
+          handledCaptcha &&
+          (await submitButton.isVisible().catch(() => false))
+        ) {
           await this.fastClickControl(runId, page, submitButton);
-          await this.waitForManualCaptchaIfPresent(runId, page, profile.name, "confirmacao do cadastro", {
-            appearanceTimeoutMs: 1800
-          });
-          registered = await accountInput.waitFor({ state: "hidden", timeout: 20000 }).then(() => true).catch(() => false);
+          await this.waitForManualCaptchaIfPresent(
+            runId,
+            page,
+            profile.name,
+            "confirmacao do cadastro",
+            {
+              appearanceTimeoutMs: 1800,
+            },
+          );
+          registered = await accountInput
+            .waitFor({ state: "hidden", timeout: 20000 })
+            .then(() => true)
+            .catch(() => false);
         }
 
         if (!registered) {
@@ -1905,40 +2497,49 @@ export class AutomationRuntimeService {
           if (platformError) {
             await this.dismissPlatformErrorDialog(page).catch(() => undefined);
           }
-          throw new Error(platformError || "cadastro nao confirmou apos o envio");
+          throw new Error(
+            platformError || "cadastro nao confirmou apos o envio",
+          );
         }
 
         if (registrationContext.registrationPhoneNumber) {
           this.database.updateProfileAccountPhoneNumber(
             profile.id,
-            registrationContext.registrationPhoneNumber
+            registrationContext.registrationPhoneNumber,
           );
         }
         this.database.updateProfileAccountStatus(profile.id, "registered", {
           registeredAt: new Date().toISOString(),
-          registeredOrigin: startUrl
+          registeredOrigin: startUrl,
         });
-        this.log(runId, "success", `[${profile.name}] Conta ${account.username} registrada na plataforma.`);
+        this.log(
+          runId,
+          "success",
+          `[${profile.name}] Conta ${account.username} registrada na plataforma.`,
+        );
         if (this.isPostRegistrationDepositEnabled(automation, settings)) {
           await this.prepareDepositAfterSuccessfulRegistration(
             runId,
             page,
             profile,
             startUrl,
-            this.resolveDepositAmount(automation.params)
+            this.resolveDepositAmount(automation.params),
           ).catch((error) => {
             this.log(
               runId,
               "warning",
               `[${profile.name}] Cadastro concluido, mas nao consegui abrir automaticamente o deposito: ${
                 error instanceof Error ? error.message : "erro inesperado"
-              }`
+              }`,
             );
           });
         }
         return;
       } catch {
-        const pageText = await loggedPage.locator("body").innerText().catch(() => "");
+        const pageText = await loggedPage
+          .locator("body")
+          .innerText()
+          .catch(() => "");
         const knownErrors = [
           "Conta ja existe",
           "Conta já existe",
@@ -1947,15 +2548,21 @@ export class AutomationRuntimeService {
           "senha",
           "erro",
           "inválido",
-          "invalido"
-        ].find((snippet) => pageText.toLowerCase().includes(snippet.toLowerCase()));
+          "invalido",
+        ].find((snippet) =>
+          pageText.toLowerCase().includes(snippet.toLowerCase()),
+        );
         const reason =
           knownErrors ??
           "Nao foi possivel confirmar o sucesso do cadastro apos o envio do formulario.";
 
-        this.database.updateProfileAccountStatus(profile.id, account.registeredOrigins.length > 0 ? "registered" : "failed", {
-          lastError: reason
-        });
+        this.database.updateProfileAccountStatus(
+          profile.id,
+          account.registeredOrigins.length > 0 ? "registered" : "failed",
+          {
+            lastError: reason,
+          },
+        );
         throw new Error(reason);
       }
     } finally {
@@ -1973,7 +2580,7 @@ export class AutomationRuntimeService {
     runId: string,
     profile: ProfileSummary,
     page: Page,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<void> {
     if (this.remoteAutomation) {
       try {
@@ -1983,7 +2590,7 @@ export class AutomationRuntimeService {
           this.database.getSystemAutomationForProfile(profile.id),
           profile,
           page,
-          { depositAmount }
+          { depositAmount },
         );
         return;
       } catch (error) {
@@ -1995,7 +2602,7 @@ export class AutomationRuntimeService {
           "warning",
           `Workflow remoto de deposito indisponivel em desenvolvimento; usando fluxo local: ${
             error instanceof Error ? error.message : String(error)
-          }`
+          }`,
         );
       }
     }
@@ -2006,38 +2613,67 @@ export class AutomationRuntimeService {
     runId: string,
     profile: ProfileSummary,
     page: Page,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<void> {
     const startUrl = profile.homeUrl.trim();
     if (!startUrl) {
       throw new Error("Perfil sem link inicial para executar deposito manual.");
     }
 
-    const depositPage = await this.resolveDepositFlowPage(runId, page, profile, startUrl);
+    const depositPage = await this.resolveDepositFlowPage(
+      runId,
+      page,
+      profile,
+      startUrl,
+    );
     await this.browserRuntime.setPageAutoClosePopups(depositPage, false);
-    await this.browserRuntime.clearLayoutViewportOverride(depositPage).catch(() => undefined);
+    await this.browserRuntime
+      .clearLayoutViewportOverride(depositPage)
+      .catch(() => undefined);
 
     try {
       await this.browserRuntime.setPageAutoClosePopups(depositPage, false);
-      await this.ensurePlatformHomeLoaded(runId, depositPage, profile, startUrl);
-      await depositPage.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
-      await this.normalizeRegistrationEntryPage(runId, depositPage, profile.name).catch(() => undefined);
+      await this.ensurePlatformHomeLoaded(
+        runId,
+        depositPage,
+        profile,
+        startUrl,
+      );
+      await depositPage
+        .waitForLoadState("networkidle", { timeout: 3000 })
+        .catch(() => null);
+      await this.normalizeRegistrationEntryPage(
+        runId,
+        depositPage,
+        profile.name,
+      ).catch(() => undefined);
       await depositPage.waitForTimeout(700).catch(() => undefined);
 
       this.ensureRunActive(runId);
-      await this.fillDepositAmountAndGenerateQr(runId, depositPage, profile.name, depositAmount);
+      await this.fillDepositAmountAndGenerateQr(
+        runId,
+        depositPage,
+        profile.name,
+        depositAmount,
+      );
       // Usa armQrOverlayObserverForManualDeposit que observa o DOM e aplica a overlay
       // quando o QR code aparece (mais robusto para depositos manuais)
-      this.armQrOverlayObserverForManualDeposit(runId, depositPage, depositAmount).catch(() => undefined);
+      this.armQrOverlayObserverForManualDeposit(
+        runId,
+        depositPage,
+        depositAmount,
+      ).catch(() => undefined);
     } finally {
-      await this.browserRuntime.clearLayoutViewportOverride(depositPage).catch(() => undefined);
+      await this.browserRuntime
+        .clearLayoutViewportOverride(depositPage)
+        .catch(() => undefined);
     }
   }
 
   private async executeWithdrawalPreparation(
     runId: string,
     profile: ProfileSummary,
-    page: Page
+    page: Page,
   ): Promise<void> {
     await this.executeLocalWithdrawalPreparation(runId, profile, page);
   }
@@ -2046,9 +2682,11 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     profile: ProfileSummary,
-    startUrl: string
+    startUrl: string,
   ): Promise<PlatformDescriptor | undefined> {
-    await this.browserRuntime.setPageAutoClosePopups(page, false).catch(() => undefined);
+    await this.browserRuntime
+      .setPageAutoClosePopups(page, false)
+      .catch(() => undefined);
 
     let spa = resolveContentFrame(page);
     let routerReady = false;
@@ -2081,19 +2719,38 @@ export class AutomationRuntimeService {
     }
 
     await this.dismissPostRegistrationPopups(runId, page);
-    const descriptor = await detectPlatformDescriptor(spa, page.url() || startUrl);
-    const withdrawalTarget = await resolveRouteTarget(spa, "withdrawal", descriptor);
+    const descriptor = await detectPlatformDescriptor(
+      spa,
+      page.url() || startUrl,
+    );
+    const withdrawalTarget = await resolveRouteTarget(
+      spa,
+      "withdrawal",
+      descriptor,
+    );
     if (!withdrawalTarget) {
-      throw new Error(`nao consegui resolver a rota de saque (${await describeSpaState(spa)})`);
+      throw new Error(
+        `nao consegui resolver a rota de saque (${await describeSpaState(spa)})`,
+      );
     }
 
     this.ensureRunActive(runId);
     if (descriptor?.id === "777clube-outlier") {
-      await this.selectOutlierWithdrawalRequestTab(runId, page, profile.name, 1200).catch(() => undefined);
+      await this.selectOutlierWithdrawalRequestTab(
+        runId,
+        page,
+        profile.name,
+        1200,
+      ).catch(() => undefined);
     }
     await routerPush(spa, withdrawalTarget);
     if (descriptor?.id === "777clube-outlier") {
-      await this.selectOutlierWithdrawalRequestTab(runId, page, profile.name, 5000);
+      await this.selectOutlierWithdrawalRequestTab(
+        runId,
+        page,
+        profile.name,
+        5000,
+      );
     } else {
       await page.waitForTimeout(800).catch(() => undefined);
     }
@@ -2103,28 +2760,51 @@ export class AutomationRuntimeService {
   private async executeLocalWithdrawalPreparation(
     runId: string,
     profile: ProfileSummary,
-    page: Page
+    page: Page,
   ): Promise<void> {
     const startUrl = profile.homeUrl.trim();
     if (!startUrl) {
       throw new Error("Perfil sem link inicial para abrir saques.");
     }
 
-    const withdrawalPage = await this.resolveDepositFlowPage(runId, page, profile, startUrl);
+    const withdrawalPage = await this.resolveDepositFlowPage(
+      runId,
+      page,
+      profile,
+      startUrl,
+    );
     await this.browserRuntime.setPageAutoClosePopups(withdrawalPage, false);
-    await this.ensurePlatformHomeLoaded(runId, withdrawalPage, profile, startUrl);
-    await withdrawalPage.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
-    await this.normalizeRegistrationEntryPage(runId, withdrawalPage, profile.name).catch(() => undefined);
+    await this.ensurePlatformHomeLoaded(
+      runId,
+      withdrawalPage,
+      profile,
+      startUrl,
+    );
+    await withdrawalPage
+      .waitForLoadState("networkidle", { timeout: 3000 })
+      .catch(() => null);
+    await this.normalizeRegistrationEntryPage(
+      runId,
+      withdrawalPage,
+      profile.name,
+    ).catch(() => undefined);
     await withdrawalPage.waitForTimeout(700).catch(() => undefined);
 
     this.ensureRunActive(runId);
-    const descriptor = await this.openWithdrawalViaRoute(runId, withdrawalPage, profile, startUrl);
+    const descriptor = await this.openWithdrawalViaRoute(
+      runId,
+      withdrawalPage,
+      profile,
+      startUrl,
+    );
 
     if (
       (await hasWithdrawalPasswordSetupSurface(withdrawalPage)) ||
       (await hasWithdrawalPasswordRequiredCallToAction(withdrawalPage))
     ) {
-      throw new Error("A senha de saque precisa ser configurada manualmente antes de usar esta acao.");
+      throw new Error(
+        "A senha de saque precisa ser configurada manualmente antes de usar esta acao.",
+      );
     }
 
     if (!(await waitForWithdrawalRequestSurface(withdrawalPage, 5000))) {
@@ -2132,7 +2812,7 @@ export class AutomationRuntimeService {
         runId,
         withdrawalPage,
         /^solicitar saque$/,
-        /conta para recebimento|registro de saques/
+        /conta para recebimento|registro de saques/,
       ).catch(() => undefined);
     }
 
@@ -2140,143 +2820,214 @@ export class AutomationRuntimeService {
       throw new Error("formulario de solicitacao de saque nao ficou visivel");
     }
 
-    this.log(runId, "info", `[${profile.name}] Tela de saques aberta; preenchendo valor e senha.`);
+    this.log(
+      runId,
+      "info",
+      `[${profile.name}] Tela de saques aberta; preenchendo valor e senha.`,
+    );
 
-    const amountPrepared = descriptor?.id === "777clube-outlier"
-      ? await this.applyOutlierWithdrawalAllAmount(runId, withdrawalPage, profile.name)
-      : false;
+    const amountPrepared =
+      descriptor?.id === "777clube-outlier"
+        ? await this.applyOutlierWithdrawalAllAmount(
+            runId,
+            withdrawalPage,
+            profile.name,
+          )
+        : false;
     if (!amountPrepared) {
       await this.clickWithdrawalAllButton(runId, withdrawalPage, profile.name);
     }
 
     const withdrawalPassword = profile.account?.withdrawalPassword;
     if (withdrawalPassword) {
-      const passwordPrepared = descriptor?.id === "777clube-outlier"
-        ? await this.fillOutlierWithdrawalPasswordState(runId, withdrawalPage, withdrawalPassword, profile.name)
-        : false;
+      const passwordPrepared =
+        descriptor?.id === "777clube-outlier"
+          ? await this.fillOutlierWithdrawalPasswordState(
+              runId,
+              withdrawalPage,
+              withdrawalPassword,
+              profile.name,
+            )
+          : false;
       if (!passwordPrepared) {
-        await this.fillWithdrawalPasswordField(runId, withdrawalPage, withdrawalPassword, profile.name);
+        await this.fillWithdrawalPasswordField(
+          runId,
+          withdrawalPage,
+          withdrawalPassword,
+          profile.name,
+        );
       }
     } else {
-      this.log(runId, "warning", `[${profile.name}] Senha de saque nao configurada no perfil; preenchimento manual necessario.`);
+      this.log(
+        runId,
+        "warning",
+        `[${profile.name}] Senha de saque nao configurada no perfil; preenchimento manual necessario.`,
+      );
     }
 
-    this.log(runId, "success", `[${profile.name}] Valor e senha de saque preenchidos; confirmacao manual necessaria.`);
+    this.log(
+      runId,
+      "success",
+      `[${profile.name}] Valor e senha de saque preenchidos; confirmacao manual necessaria.`,
+    );
   }
 
   private async selectOutlierWithdrawalRequestTab(
     runId: string,
     page: Page,
     _profileName: string,
-    timeoutMs: number
+    timeoutMs: number,
   ): Promise<boolean> {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
       this.ensureRunActive(runId);
       const state = await resolveContentFrame(page)
-        .evaluate(() => {
-          type RuntimeVue = {
-            $children?: RuntimeVue[];
-            $forceUpdate?: () => void;
-            $store?: { state?: { config?: { withdrawalsideWrapperIndex?: number } } };
-          };
-          type RuntimeElement = BrowserRuntimeElement & {
-            __vue__?: RuntimeVue;
-            __vue_app__?: { config?: { globalProperties?: { $store?: RuntimeVue["$store"] } } };
-          };
-          const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow & {
-            changeWrapper?: (index: number, scrollMode?: number) => void;
-            location: { pathname: string; search: string };
-          };
-          const normalize = (value: string | null | undefined) =>
-            (value || "")
-              .normalize("NFD")
-              .replace(/[\u0300-\u036f]/g, "")
-              .replace(/\s+/g, " ")
-              .trim()
-              .toLowerCase();
-          const seen = new Set<RuntimeVue>();
-          const visitVm = (vm: RuntimeVue | undefined, list: RuntimeVue[]) => {
-            if (!vm || seen.has(vm)) return;
-            seen.add(vm);
-            list.push(vm);
-            for (const child of vm.$children ?? []) visitVm(child, list);
-          };
-          const vms: RuntimeVue[] = [];
-          for (const raw of runtimeWindow.document.querySelectorAll("#withdrawal,#withdrawal *,body,body *") ?? []) {
-            const element = raw as RuntimeElement;
-            visitVm(element.__vue__, vms);
-            const store = element.__vue_app__?.config?.globalProperties?.$store;
-            if (store?.state?.config) {
-              store.state.config.withdrawalsideWrapperIndex = 0;
+        .evaluate(
+          () => {
+            type RuntimeVue = {
+              $children?: RuntimeVue[];
+              $forceUpdate?: () => void;
+              $store?: {
+                state?: { config?: { withdrawalsideWrapperIndex?: number } };
+              };
+            };
+            type RuntimeElement = BrowserRuntimeElement & {
+              __vue__?: RuntimeVue;
+              __vue_app__?: {
+                config?: {
+                  globalProperties?: { $store?: RuntimeVue["$store"] };
+                };
+              };
+            };
+            const runtimeWindow =
+              globalThis as unknown as BrowserRuntimeWindow & {
+                changeWrapper?: (index: number, scrollMode?: number) => void;
+                location: { pathname: string; search: string };
+              };
+            const normalize = (value: string | null | undefined) =>
+              (value || "")
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLowerCase();
+            const seen = new Set<RuntimeVue>();
+            const visitVm = (
+              vm: RuntimeVue | undefined,
+              list: RuntimeVue[],
+            ) => {
+              if (!vm || seen.has(vm)) return;
+              seen.add(vm);
+              list.push(vm);
+              for (const child of vm.$children ?? []) visitVm(child, list);
+            };
+            const vms: RuntimeVue[] = [];
+            for (const raw of runtimeWindow.document.querySelectorAll(
+              "#withdrawal,#withdrawal *,body,body *",
+            ) ?? []) {
+              const element = raw as RuntimeElement;
+              visitVm(element.__vue__, vms);
+              const store =
+                element.__vue_app__?.config?.globalProperties?.$store;
+              if (store?.state?.config) {
+                store.state.config.withdrawalsideWrapperIndex = 0;
+              }
             }
-          }
 
-          let storeSet = false;
-          for (const vm of vms) {
-            const config = vm.$store?.state?.config;
-            if (config && "withdrawalsideWrapperIndex" in config) {
-              config.withdrawalsideWrapperIndex = 0;
-              vm.$forceUpdate?.();
-              storeSet = true;
+            let storeSet = false;
+            for (const vm of vms) {
+              const config = vm.$store?.state?.config;
+              if (config && "withdrawalsideWrapperIndex" in config) {
+                config.withdrawalsideWrapperIndex = 0;
+                vm.$forceUpdate?.();
+                storeSet = true;
+              }
             }
-          }
 
-          let wrapperCalled = false;
-          if (typeof runtimeWindow.changeWrapper === "function") {
-            try {
-              runtimeWindow.changeWrapper(0, 1);
-              wrapperCalled = true;
-            } catch {
-              // Keep the store mutation above.
+            let wrapperCalled = false;
+            if (typeof runtimeWindow.changeWrapper === "function") {
+              try {
+                runtimeWindow.changeWrapper(0, 1);
+                wrapperCalled = true;
+              } catch {
+                // Keep the store mutation above.
+              }
             }
-          }
 
-          let tabClicked = false;
-          const tabs = Array.from(runtimeWindow.document.querySelectorAll(".van-tab,[role='tab']"));
-          const saqueTab = tabs.find((tab) => {
-            const text = normalize((tab as BrowserRuntimeElement).textContent);
-            return /^saque$|^solicitar saque$/.test(text);
-          }) as BrowserRuntimeElement | undefined;
-          if (saqueTab) {
-            const activeTextBefore = normalize(
-              Array.from(runtimeWindow.document.querySelectorAll(".van-tab--active,[aria-selected='true']"))
-                .map((element) => (element as BrowserRuntimeElement).textContent || "")
-                .join(" ")
+            let tabClicked = false;
+            const tabs = Array.from(
+              runtimeWindow.document.querySelectorAll(".van-tab,[role='tab']"),
             );
-            if (!/^saque$|solicitar saque/.test(activeTextBefore)) {
-              saqueTab.click?.();
-              tabClicked = true;
+            const saqueTab = tabs.find((tab) => {
+              const text = normalize(
+                (tab as BrowserRuntimeElement).textContent,
+              );
+              return /^saque$|^solicitar saque$/.test(text);
+            }) as BrowserRuntimeElement | undefined;
+            if (saqueTab) {
+              const activeTextBefore = normalize(
+                Array.from(
+                  runtimeWindow.document.querySelectorAll(
+                    ".van-tab--active,[aria-selected='true']",
+                  ),
+                )
+                  .map(
+                    (element) =>
+                      (element as BrowserRuntimeElement).textContent || "",
+                  )
+                  .join(" "),
+              );
+              if (!/^saque$|solicitar saque/.test(activeTextBefore)) {
+                saqueTab.click?.();
+                tabClicked = true;
+              }
             }
-          }
 
-          const activeText = normalize(
-            Array.from(runtimeWindow.document.querySelectorAll(".van-tab--active,[aria-selected='true']"))
-              .map((element) => (element as BrowserRuntimeElement).textContent || "")
-              .join(" ")
-          );
-          const bodyText = normalize(runtimeWindow.document.body?.innerText || "");
-          const routeText = normalize(`${runtimeWindow.location.pathname} ${runtimeWindow.location.search}`);
-          const hasOutlierRequestForm =
-            /confirmar saque/.test(bodyText) &&
-            /senha de saque|valor de retirada|valor do saque|retirada/.test(bodyText);
-          const requestTabActive =
-            (/(^|\s)saque(\s|$)|solicitar saque/.test(activeText) && !/registro|auditoria|conta|gerenciar/.test(activeText)) ||
-            (hasOutlierRequestForm && !/adicionar pix|adicionar conta para saque/.test(bodyText));
-          const requestSurface =
-            /withdrawal|withdraw|saque/.test(routeText) &&
-            requestTabActive &&
-            hasOutlierRequestForm;
-          return {
-            activeText,
-            requestSurface,
-            routeText,
-            storeSet,
-            tabClicked,
-            wrapperCalled
-          };
-        }, undefined, PATCHRIGHT_MAIN_WORLD)
+            const activeText = normalize(
+              Array.from(
+                runtimeWindow.document.querySelectorAll(
+                  ".van-tab--active,[aria-selected='true']",
+                ),
+              )
+                .map(
+                  (element) =>
+                    (element as BrowserRuntimeElement).textContent || "",
+                )
+                .join(" "),
+            );
+            const bodyText = normalize(
+              runtimeWindow.document.body?.innerText || "",
+            );
+            const routeText = normalize(
+              `${runtimeWindow.location.pathname} ${runtimeWindow.location.search}`,
+            );
+            const hasOutlierRequestForm =
+              /confirmar saque/.test(bodyText) &&
+              /senha de saque|valor de retirada|valor do saque|retirada/.test(
+                bodyText,
+              );
+            const requestTabActive =
+              (/(^|\s)saque(\s|$)|solicitar saque/.test(activeText) &&
+                !/registro|auditoria|conta|gerenciar/.test(activeText)) ||
+              (hasOutlierRequestForm &&
+                !/adicionar pix|adicionar conta para saque/.test(bodyText));
+            const requestSurface =
+              /withdrawal|withdraw|saque/.test(routeText) &&
+              requestTabActive &&
+              hasOutlierRequestForm;
+            return {
+              activeText,
+              requestSurface,
+              routeText,
+              storeSet,
+              tabClicked,
+              wrapperCalled,
+            };
+          },
+          undefined,
+          PATCHRIGHT_MAIN_WORLD,
+        )
         .catch(() => undefined);
 
       if (state?.requestSurface) {
@@ -2291,7 +3042,7 @@ export class AutomationRuntimeService {
   private async applyOutlierWithdrawalAllAmount(
     runId: string,
     page: Page,
-    _profileName: string
+    _profileName: string,
   ): Promise<boolean> {
     const startedAt = Date.now();
     let lastAmount = "";
@@ -2299,54 +3050,72 @@ export class AutomationRuntimeService {
     while (Date.now() - startedAt < 3500) {
       this.ensureRunActive(runId);
       const result = await resolveContentFrame(page)
-        .evaluate(() => {
-          type RuntimeVue = {
-            $children?: RuntimeVue[];
-            $forceUpdate?: () => void;
-            AllMoney?: () => void;
-            inputche?: () => void;
-            max?: number | string;
-            UserMoney?: number | string;
-            withdrawNumber?: number | string;
-          };
-          type RuntimeElement = BrowserRuntimeElement & { __vue__?: RuntimeVue };
-          const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-          const seen = new Set<RuntimeVue>();
-          const visitVm = (vm: RuntimeVue | undefined, list: RuntimeVue[]) => {
-            if (!vm || seen.has(vm)) return;
-            seen.add(vm);
-            list.push(vm);
-            for (const child of vm.$children ?? []) visitVm(child, list);
-          };
-          const vms: RuntimeVue[] = [];
-          for (const raw of runtimeWindow.document.querySelectorAll("#withdrawal,#withdrawal *,body,body *") ?? []) {
-            visitVm((raw as RuntimeElement).__vue__, vms);
-          }
-
-          for (const vm of vms) {
-            if (!("withdrawNumber" in vm) && typeof vm.AllMoney !== "function") {
-              continue;
+        .evaluate(
+          () => {
+            type RuntimeVue = {
+              $children?: RuntimeVue[];
+              $forceUpdate?: () => void;
+              AllMoney?: () => void;
+              inputche?: () => void;
+              max?: number | string;
+              UserMoney?: number | string;
+              withdrawNumber?: number | string;
+            };
+            type RuntimeElement = BrowserRuntimeElement & {
+              __vue__?: RuntimeVue;
+            };
+            const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+            const seen = new Set<RuntimeVue>();
+            const visitVm = (
+              vm: RuntimeVue | undefined,
+              list: RuntimeVue[],
+            ) => {
+              if (!vm || seen.has(vm)) return;
+              seen.add(vm);
+              list.push(vm);
+              for (const child of vm.$children ?? []) visitVm(child, list);
+            };
+            const vms: RuntimeVue[] = [];
+            for (const raw of runtimeWindow.document.querySelectorAll(
+              "#withdrawal,#withdrawal *,body,body *",
+            ) ?? []) {
+              visitVm((raw as RuntimeElement).__vue__, vms);
             }
-            if (typeof vm.AllMoney === "function") {
-              vm.AllMoney();
-            } else {
-              const userMoney = Number(vm.UserMoney ?? 0);
-              const max = Number(vm.max ?? 0);
-              const amount = max > 0 && userMoney > max ? max : Math.floor(userMoney);
-              if (amount > 0) {
-                vm.withdrawNumber = String(amount);
+
+            for (const vm of vms) {
+              if (
+                !("withdrawNumber" in vm) &&
+                typeof vm.AllMoney !== "function"
+              ) {
+                continue;
+              }
+              if (typeof vm.AllMoney === "function") {
+                vm.AllMoney();
+              } else {
+                const userMoney = Number(vm.UserMoney ?? 0);
+                const max = Number(vm.max ?? 0);
+                const amount =
+                  max > 0 && userMoney > max ? max : Math.floor(userMoney);
+                if (amount > 0) {
+                  vm.withdrawNumber = String(amount);
+                }
+              }
+              vm.inputche?.();
+              vm.$forceUpdate?.();
+              const amount = String(vm.withdrawNumber ?? "").replace(
+                /[^\d.,-]/g,
+                "",
+              );
+              if (amount && Number(amount.replace(",", ".")) > 0) {
+                return { amount };
               }
             }
-            vm.inputche?.();
-            vm.$forceUpdate?.();
-            const amount = String(vm.withdrawNumber ?? "").replace(/[^\d.,-]/g, "");
-            if (amount && Number(amount.replace(",", ".")) > 0) {
-              return { amount };
-            }
-          }
 
-          return { amount: "" };
-        }, undefined, PATCHRIGHT_MAIN_WORLD)
+            return { amount: "" };
+          },
+          undefined,
+          PATCHRIGHT_MAIN_WORLD,
+        )
         .catch(() => undefined);
 
       lastAmount = result?.amount ?? "";
@@ -2363,70 +3132,98 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     withdrawalPassword: string,
-    _profileName: string
+    _profileName: string,
   ): Promise<boolean> {
     this.ensureRunActive(runId);
     const filled = await resolveContentFrame(page)
-      .evaluate((password) => {
-        type RuntimeVue = {
-          $children?: RuntimeVue[];
-          $forceUpdate?: () => void;
-          onInput1?: () => void;
-          pwvalue1?: string;
-          showKeyboard1?: boolean;
-          whatspromptFlag1?: boolean;
-          withdrawNumber?: number | string;
-        };
-        type RuntimeElement = BrowserRuntimeElement & { __vue__?: RuntimeVue };
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow & {
-          InputEvent?: new (type: string, init?: { bubbles?: boolean; data?: string; inputType?: string }) => unknown;
-        };
-        const seen = new Set<RuntimeVue>();
-        const visitVm = (vm: RuntimeVue | undefined, list: RuntimeVue[]) => {
-          if (!vm || seen.has(vm)) return;
-          seen.add(vm);
-          list.push(vm);
-          for (const child of vm.$children ?? []) visitVm(child, list);
-        };
-        const vms: RuntimeVue[] = [];
-        for (const raw of runtimeWindow.document.querySelectorAll("#withdrawal,#withdrawal *,body,body *") ?? []) {
-          visitVm((raw as RuntimeElement).__vue__, vms);
-        }
-
-        let vmSet = false;
-        for (const vm of vms) {
-          if (!("pwvalue1" in vm)) {
-            continue;
+      .evaluate(
+        (password) => {
+          type RuntimeVue = {
+            $children?: RuntimeVue[];
+            $forceUpdate?: () => void;
+            onInput1?: () => void;
+            pwvalue1?: string;
+            showKeyboard1?: boolean;
+            whatspromptFlag1?: boolean;
+            withdrawNumber?: number | string;
+          };
+          type RuntimeElement = BrowserRuntimeElement & {
+            __vue__?: RuntimeVue;
+          };
+          const runtimeWindow =
+            globalThis as unknown as BrowserRuntimeWindow & {
+              InputEvent?: new (
+                type: string,
+                init?: { bubbles?: boolean; data?: string; inputType?: string },
+              ) => unknown;
+            };
+          const seen = new Set<RuntimeVue>();
+          const visitVm = (vm: RuntimeVue | undefined, list: RuntimeVue[]) => {
+            if (!vm || seen.has(vm)) return;
+            seen.add(vm);
+            list.push(vm);
+            for (const child of vm.$children ?? []) visitVm(child, list);
+          };
+          const vms: RuntimeVue[] = [];
+          for (const raw of runtimeWindow.document.querySelectorAll(
+            "#withdrawal,#withdrawal *,body,body *",
+          ) ?? []) {
+            visitVm((raw as RuntimeElement).__vue__, vms);
           }
-          vm.pwvalue1 = password;
-          vm.whatspromptFlag1 = false;
-          vm.showKeyboard1 = false;
-          vm.onInput1?.();
-          vm.$forceUpdate?.();
-          vmSet = true;
-        }
 
-        const event = runtimeWindow.InputEvent
-          ? new runtimeWindow.InputEvent("input", { bubbles: true, data: password, inputType: "insertText" })
-          : new (runtimeWindow.Event as NonNullable<BrowserRuntimeWindow["Event"]>)("input", { bubbles: true });
-        for (const rawInput of runtimeWindow.document.querySelectorAll(
-          ".passwordInput input,.van-field__control,input[maxlength='6']"
-        ) ?? []) {
-          const input = rawInput as BrowserRuntimeInputElement;
-          const type = (input.getAttribute?.("type") || "").toLowerCase();
-          if (type && type !== "number" && type !== "tel" && type !== "text" && type !== "password") {
-            continue;
+          let vmSet = false;
+          for (const vm of vms) {
+            if (!("pwvalue1" in vm)) {
+              continue;
+            }
+            vm.pwvalue1 = password;
+            vm.whatspromptFlag1 = false;
+            vm.showKeyboard1 = false;
+            vm.onInput1?.();
+            vm.$forceUpdate?.();
+            vmSet = true;
           }
-          input.value = password;
-          input.dispatchEvent?.(event);
-          if (runtimeWindow.Event) {
-            input.dispatchEvent?.(new runtimeWindow.Event("change", { bubbles: true }));
-            input.dispatchEvent?.(new runtimeWindow.Event("blur", { bubbles: true }));
-          }
-        }
 
-        return vmSet;
-      }, withdrawalPassword, PATCHRIGHT_MAIN_WORLD)
+          const event = runtimeWindow.InputEvent
+            ? new runtimeWindow.InputEvent("input", {
+                bubbles: true,
+                data: password,
+                inputType: "insertText",
+              })
+            : new (runtimeWindow.Event as NonNullable<
+                BrowserRuntimeWindow["Event"]
+              >)("input", { bubbles: true });
+          for (const rawInput of runtimeWindow.document.querySelectorAll(
+            ".passwordInput input,.van-field__control,input[maxlength='6']",
+          ) ?? []) {
+            const input = rawInput as BrowserRuntimeInputElement;
+            const type = (input.getAttribute?.("type") || "").toLowerCase();
+            if (
+              type &&
+              type !== "number" &&
+              type !== "tel" &&
+              type !== "text" &&
+              type !== "password"
+            ) {
+              continue;
+            }
+            input.value = password;
+            input.dispatchEvent?.(event);
+            if (runtimeWindow.Event) {
+              input.dispatchEvent?.(
+                new runtimeWindow.Event("change", { bubbles: true }),
+              );
+              input.dispatchEvent?.(
+                new runtimeWindow.Event("blur", { bubbles: true }),
+              );
+            }
+          }
+
+          return vmSet;
+        },
+        withdrawalPassword,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch(() => false);
 
     if (filled) {
@@ -2436,7 +3233,11 @@ export class AutomationRuntimeService {
     return false;
   }
 
-  private async clickWithdrawalAllButton(runId: string, page: Page, _profileName: string): Promise<void> {
+  private async clickWithdrawalAllButton(
+    runId: string,
+    page: Page,
+    _profileName: string,
+  ): Promise<void> {
     this.ensureRunActive(runId);
     const frame = resolveContentFrame(page);
 
@@ -2466,7 +3267,9 @@ export class AutomationRuntimeService {
           );
         };
         const allCandidates = Array.from(
-          runtimeWindow.document.querySelectorAll("button,[role='button'],span,div,li,a")
+          runtimeWindow.document.querySelectorAll(
+            "button,[role='button'],span,div,li,a",
+          ),
         )
           .filter(isVisible)
           .filter((element) => {
@@ -2474,9 +3277,12 @@ export class AutomationRuntimeService {
             return text === "tudo" || text === "all";
           });
         if (allCandidates.length === 0) return false;
-        const leafCandidate = allCandidates.find(
-          (el) => (el as unknown as { children?: unknown[] }).children?.length === 0
-        ) ?? allCandidates[allCandidates.length - 1];
+        const leafCandidate =
+          allCandidates.find(
+            (el) =>
+              (el as unknown as { children?: unknown[] }).children?.length ===
+              0,
+          ) ?? allCandidates[allCandidates.length - 1];
         leafCandidate?.click?.();
         return true;
       })
@@ -2491,20 +3297,33 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     withdrawalPassword: string,
-    profileName: string
+    profileName: string,
   ): Promise<void> {
     this.ensureRunActive(runId);
     const frame = resolveContentFrame(page);
 
     const passwordFieldLocator = frame.locator(".ui-password-input").first();
-    const fieldCount = await frame.locator(".ui-password-input").count().catch(() => 0);
+    const fieldCount = await frame
+      .locator(".ui-password-input")
+      .count()
+      .catch(() => 0);
 
     if (fieldCount === 0) {
-      this.log(runId, "warning", `[${profileName}] Campo de senha de saque nao encontrado.`);
+      this.log(
+        runId,
+        "warning",
+        `[${profileName}] Campo de senha de saque nao encontrado.`,
+      );
       return;
     }
 
-    await this.fillPasswordGrid(runId, page, passwordFieldLocator, withdrawalPassword, "withdrawal-pw");
+    await this.fillPasswordGrid(
+      runId,
+      page,
+      passwordFieldLocator,
+      withdrawalPassword,
+      "withdrawal-pw",
+    );
   }
 
   private async prepareDepositAfterSuccessfulRegistration(
@@ -2512,7 +3331,7 @@ export class AutomationRuntimeService {
     page: Page,
     profile: ProfileSummary,
     startUrl: string,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<void> {
     if (this.remoteAutomation) {
       try {
@@ -2522,7 +3341,7 @@ export class AutomationRuntimeService {
           this.database.getSystemAutomationForProfile(profile.id),
           profile,
           page,
-          { depositAmount, startUrl }
+          { depositAmount, startUrl },
         );
         return;
       } catch (error) {
@@ -2534,11 +3353,17 @@ export class AutomationRuntimeService {
           "warning",
           `Workflow remoto de deposito pos-cadastro indisponivel em desenvolvimento; usando fluxo local: ${
             error instanceof Error ? error.message : String(error)
-          }`
+          }`,
         );
       }
     }
-    await this.prepareLocalDepositAfterSuccessfulRegistration(runId, page, profile, startUrl, depositAmount);
+    await this.prepareLocalDepositAfterSuccessfulRegistration(
+      runId,
+      page,
+      profile,
+      startUrl,
+      depositAmount,
+    );
   }
 
   private async prepareLocalDepositAfterSuccessfulRegistration(
@@ -2546,11 +3371,16 @@ export class AutomationRuntimeService {
     page: Page,
     profile: ProfileSummary,
     startUrl: string,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<void> {
     this.ensureRunActive(runId);
     const profileName = profile.name;
-    const depositPage = await this.resolveDepositFlowPage(runId, page, profile, startUrl);
+    const depositPage = await this.resolveDepositFlowPage(
+      runId,
+      page,
+      profile,
+      startUrl,
+    );
     await this.browserRuntime.setPageAutoClosePopups(depositPage, false);
 
     this.ensureRunActive(runId);
@@ -2558,8 +3388,18 @@ export class AutomationRuntimeService {
     // Depósito do bot é SEMPRE por injeção de estado (Pinia), com valor definido —
     // nunca por navegação até a área de perfil. O antigo ramo "abrir tela de depósito
     // via navegação" era um modo que o produto não expõe. Ver docs/adr/0002.
-    await this.fillDepositAmountAndGenerateQr(runId, depositPage, profileName, depositAmount);
-    await this.applyDepositQrOverlay(runId, depositPage, profileName, depositAmount);
+    await this.fillDepositAmountAndGenerateQr(
+      runId,
+      depositPage,
+      profileName,
+      depositAmount,
+    );
+    await this.applyDepositQrOverlay(
+      runId,
+      depositPage,
+      profileName,
+      depositAmount,
+    );
   }
 
   private async executePixKeyRegistration(
@@ -2567,7 +3407,7 @@ export class AutomationRuntimeService {
     profile: ProfileSummary,
     page: Page,
     pixType: PixRegistrationType,
-    pixPhoneNumber: string
+    pixPhoneNumber: string,
   ): Promise<void> {
     if (this.remoteAutomation) {
       try {
@@ -2577,7 +3417,7 @@ export class AutomationRuntimeService {
           this.database.getSystemAutomationForProfile(profile.id),
           profile,
           page,
-          { pixPhoneNumber, pixType }
+          { pixPhoneNumber, pixType },
         );
         return;
       } catch (error) {
@@ -2589,11 +3429,17 @@ export class AutomationRuntimeService {
           "warning",
           `Workflow remoto de PIX indisponivel em desenvolvimento; usando fluxo router nativo local: ${
             error instanceof Error ? error.message : String(error)
-          }`
+          }`,
         );
       }
     }
-    await this.executeProgrammaticPixKeyRegistration(runId, profile, page, pixType, pixPhoneNumber);
+    await this.executeProgrammaticPixKeyRegistration(
+      runId,
+      profile,
+      page,
+      pixType,
+      pixPhoneNumber,
+    );
   }
   // Tail do cadastro de chave PIX: a partir da surface de "conta de
   // saque" ja visivel, abre "conta para recebimento", lida com o modal de senha
@@ -2605,9 +3451,11 @@ export class AutomationRuntimeService {
     pixPage: Page,
     pixPhone: string,
     cpf: string,
-    realName: string
+    realName: string,
   ): Promise<void> {
-    const diag = (...args: unknown[]) => { console.log(`[PIX-DIAG] ${args.join(" ")}`); };
+    const diag = (...args: unknown[]) => {
+      console.log(`[PIX-DIAG] ${args.join(" ")}`);
+    };
 
     await this.openPixReceivingAccountTab(runId, pixPage, profile);
     diag("3-pix receiving tab opened");
@@ -2637,9 +3485,17 @@ export class AutomationRuntimeService {
       }
       diag(`5-add pix modal: ${hasPixModal}`);
       if (!hasPixModal) {
-        const bodyText = await resolveContentFrame(pixPage).evaluate(() => {
-          return (globalThis as unknown as { document?: { body?: { innerText?: string } } }).document?.body?.innerText?.slice(0, 200) || "";
-        }).catch(() => "");
+        const bodyText = await resolveContentFrame(pixPage)
+          .evaluate(() => {
+            return (
+              (
+                globalThis as unknown as {
+                  document?: { body?: { innerText?: string } };
+                }
+              ).document?.body?.innerText?.slice(0, 200) || ""
+            );
+          })
+          .catch(() => "");
         diag(`5-page text: ${bodyText}`);
         throw new Error("formulario Adicionar PIX nao abriu");
       }
@@ -2648,12 +3504,25 @@ export class AutomationRuntimeService {
       await this.selectPhonePixType(runId, pixPage);
       diag("6-phone type selected");
       diag("7-filling pix form");
-      await this.fillPixPhoneAccountForm(runId, pixPage, pixPhone, cpf, realName);
+      await this.fillPixPhoneAccountForm(
+        runId,
+        pixPage,
+        pixPhone,
+        cpf,
+        realName,
+      );
       diag("7-form filled");
-      const submitted = await programmaticPixUiAction(resolveContentFrame(pixPage), "submit");
-      diag(`8-submitted: ok=${submitted.ok} via=${submitted.diag ?? submitted.reason ?? "-"}`);
+      const submitted = await programmaticPixUiAction(
+        resolveContentFrame(pixPage),
+        "submit",
+      );
+      diag(
+        `8-submitted: ok=${submitted.ok} via=${submitted.diag ?? submitted.reason ?? "-"}`,
+      );
       if (!submitted.ok) {
-        throw new Error(`formulario PIX nao submeteu programaticamente (${submitted.reason ?? "motivo desconhecido"})`);
+        throw new Error(
+          `formulario PIX nao submeteu programaticamente (${submitted.reason ?? "motivo desconhecido"})`,
+        );
       }
 
       if (!(await waitForPixRegistrationSaved(pixPage, 9000))) {
@@ -2662,11 +3531,17 @@ export class AutomationRuntimeService {
       diag("9-pix registration saved");
     } finally {
       diag("9-reenabling popup closer");
-      await this.browserRuntime.setPageAutoClosePopups(pixPage, true).catch(() => undefined);
+      await this.browserRuntime
+        .setPageAutoClosePopups(pixPage, true)
+        .catch(() => undefined);
     }
 
     this.database.markProfilePixKeyRegistered(profile.id, pixPage.url());
-    this.log(runId, "success", `[${profile.name}] Conta PIX PHONE cadastrada para recebimento.`);
+    this.log(
+      runId,
+      "success",
+      `[${profile.name}] Conta PIX PHONE cadastrada para recebimento.`,
+    );
   }
 
   // Fluxo PIX nativo via router: substitui a navegacao por clique de tabbar
@@ -2680,9 +3555,11 @@ export class AutomationRuntimeService {
     profile: ProfileSummary,
     page: Page,
     pixType: PixRegistrationType,
-    pixPhoneNumber: string
+    pixPhoneNumber: string,
   ): Promise<void> {
-    const diag = (...args: unknown[]) => { console.log(`[PIX-PROG] ${args.join(" ")}`); };
+    const diag = (...args: unknown[]) => {
+      console.log(`[PIX-PROG] ${args.join(" ")}`);
+    };
     const startUrl = profile.homeUrl.trim();
     if (!startUrl) {
       throw new Error("Perfil sem link inicial para cadastrar chave PIX.");
@@ -2692,20 +3569,31 @@ export class AutomationRuntimeService {
     }
 
     let descriptor = resolvePlatformDescriptor(startUrl);
-    diag(`descritor de rota inicial: ${descriptor?.id ?? "nenhum; usando resolucao fuzzy do router"}`);
+    diag(
+      `descritor de rota inicial: ${descriptor?.id ?? "nenhum; usando resolucao fuzzy do router"}`,
+    );
 
     const account = this.database.getOrCreateProfileAccount(profile.id);
     if (account.status !== "registered") {
-      throw new Error("Conta do perfil ainda nao esta marcada como registrada.");
+      throw new Error(
+        "Conta do perfil ainda nao esta marcada como registrada.",
+      );
     }
 
     const pixPhone = pixPhoneNumber.replace(/\D+/g, "");
     if (!/^[1-9]{2}(?:9\d{8}|\d{8})$/.test(pixPhone)) {
-      throw new Error("Telefone PIX valido ausente no estoque. Cadastre chaves PIX telefone e tente novamente.");
+      throw new Error(
+        "Telefone PIX valido ausente no estoque. Cadastre chaves PIX telefone e tente novamente.",
+      );
     }
     const cpf = this.database.resolveCpfForProfile(profile.id);
 
-    const pixPage = await this.resolveDepositFlowPage(runId, page, profile, startUrl);
+    const pixPage = await this.resolveDepositFlowPage(
+      runId,
+      page,
+      profile,
+      startUrl,
+    );
     await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
 
     // router.push e navegacao client-side e funciona de QUALQUER rota — nao
@@ -2742,24 +3630,41 @@ export class AutomationRuntimeService {
       }
     }
     if (!routerReady) {
-      throw new Error("SPA sem router acessivel (modo programatico requer Vue router no main world).");
+      throw new Error(
+        "SPA sem router acessivel (modo programatico requer Vue router no main world).",
+      );
     }
     descriptor = await detectPlatformDescriptor(spa, pixPage.url() || startUrl);
-    diag(`descritor de rota ativo: ${descriptor?.id ?? "nenhum; usando resolucao fuzzy do router"}`);
+    diag(
+      `descritor de rota ativo: ${descriptor?.id ?? "nenhum; usando resolucao fuzzy do router"}`,
+    );
     diag(`router pronto; rota inicial: ${await describeSpaState(spa)}`);
 
     // Conta sem senha de saque salva: a plataforma EXIGE definir a senha primeiro.
     // O salto direto ao saque (router.push) NAO dispara o redirect que leva ao setup,
     // entao definimos pela rota de setup do descritor ANTES de ir ao saque.
-    const needsPasswordSetup = !this.database.getProfile(profile.id).account?.withdrawalPassword;
+    const needsPasswordSetup = !this.database.getProfile(profile.id).account
+      ?.withdrawalPassword;
     diag(`precisa definir senha de saque: ${needsPasswordSetup}`);
     if (needsPasswordSetup) {
-      await this.defineWithdrawalPasswordViaRoute(runId, profile, pixPage, spa, descriptor);
+      await this.defineWithdrawalPasswordViaRoute(
+        runId,
+        profile,
+        pixPage,
+        spa,
+        descriptor,
+      );
     }
 
-    const withdrawalTarget = await resolveRouteTarget(spa, "withdrawal", descriptor);
+    const withdrawalTarget = await resolveRouteTarget(
+      spa,
+      "withdrawal",
+      descriptor,
+    );
     if (!withdrawalTarget) {
-      throw new Error(`nao consegui resolver a rota de saque (${await describeSpaState(spa)})`);
+      throw new Error(
+        `nao consegui resolver a rota de saque (${await describeSpaState(spa)})`,
+      );
     }
     this.ensureRunActive(runId);
     await routerPush(spa, withdrawalTarget);
@@ -2772,26 +3677,47 @@ export class AutomationRuntimeService {
     if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
       await routerPush(spa, withdrawalTarget);
       if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
-        throw new Error(`tela de saque nao abriu via router (${await describeSpaState(spa)})`);
+        throw new Error(
+          `tela de saque nao abriu via router (${await describeSpaState(spa)})`,
+        );
       }
     }
     diag("tela de saque visivel");
 
     if (await hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
-      diag("tela de saque ainda pede adicionar senha; repetindo setup pela rota");
-      await this.defineWithdrawalPasswordViaRoute(runId, profile, pixPage, spa, descriptor);
+      diag(
+        "tela de saque ainda pede adicionar senha; repetindo setup pela rota",
+      );
+      await this.defineWithdrawalPasswordViaRoute(
+        runId,
+        profile,
+        pixPage,
+        spa,
+        descriptor,
+      );
       await routerPush(spa, withdrawalTarget);
       await waitForWithdrawalOrPasswordSignal(pixPage, 6000);
       await this.handleWithdrawalPasswordPrompts(runId, profile, pixPage);
       if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
-        throw new Error(`tela de saque nao voltou apos definir senha (${await describeSpaState(spa)})`);
+        throw new Error(
+          `tela de saque nao voltou apos definir senha (${await describeSpaState(spa)})`,
+        );
       }
       if (await hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
-        throw new Error("plataforma ainda pede adicionar senha de saque apos o setup programatico");
+        throw new Error(
+          "plataforma ainda pede adicionar senha de saque apos o setup programatico",
+        );
       }
     }
 
-    await this.completePixReceivingAccountRegistration(runId, profile, pixPage, pixPhone, cpf, account.realName);
+    await this.completePixReceivingAccountRegistration(
+      runId,
+      profile,
+      pixPage,
+      pixPhone,
+      cpf,
+      account.realName,
+    );
   }
 
   // Trata os prompts de senha de saque ONDE QUER que a plataforma os mostre — na tela
@@ -2803,9 +3729,11 @@ export class AutomationRuntimeService {
   private async handleWithdrawalPasswordPrompts(
     runId: string,
     profile: ProfileSummary,
-    pixPage: Page
+    pixPage: Page,
   ): Promise<void> {
-    const diag = (...args: unknown[]) => { console.log(`[PIX-PROG] ${args.join(" ")}`); };
+    const diag = (...args: unknown[]) => {
+      console.log(`[PIX-PROG] ${args.join(" ")}`);
+    };
     for (let iteration = 0; iteration < 3; iteration += 1) {
       this.ensureRunActive(runId);
       // ORDEM IMPORTA: o modal de ENTRAR senha existente ("Inserir PIN" + "Senha de Saque"
@@ -2815,33 +3743,59 @@ export class AutomationRuntimeService {
       // e `fillWithdrawalPasswordSetup` achava 1 campo e falhava).
       if (await hasExistingWithdrawalPasswordModal(pixPage)) {
         diag(`prompt de senha: ENTRAR (iter ${iteration})`);
-        let withdrawalPassword = this.database.getProfile(profile.id).account?.withdrawalPassword;
+        let withdrawalPassword = this.database.getProfile(profile.id).account
+          ?.withdrawalPassword;
         if (!withdrawalPassword) {
           // Tolerante: sem senha salva, gera/define (nao trava). Em tese o define
           // proativo ja rodou; isto e rede de seguranca.
           diag("modal ENTRAR sem senha salva -> gerando/definindo");
-          withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
-          void this.browserRuntime.refreshAccountInfoForProfile(profile.id, this.database.getProfile(profile.id));
+          withdrawalPassword = this.database.ensureProfileWithdrawalPassword(
+            profile.id,
+          );
+          void this.browserRuntime.refreshAccountInfoForProfile(
+            profile.id,
+            this.database.getProfile(profile.id),
+          );
         }
         await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
-        await this.fillExistingWithdrawalPasswordModal(runId, pixPage, withdrawalPassword);
+        await this.fillExistingWithdrawalPasswordModal(
+          runId,
+          pixPage,
+          withdrawalPassword,
+        );
         // espera CONDICIONAL o modal ENTRAR fechar, em vez de um waitForTimeout fixo
         const modalDeadline = Date.now() + 4000;
-        while (Date.now() < modalDeadline && (await hasExistingWithdrawalPasswordModal(pixPage))) {
+        while (
+          Date.now() < modalDeadline &&
+          (await hasExistingWithdrawalPasswordModal(pixPage))
+        ) {
           await pixPage.waitForTimeout(80).catch(() => undefined);
         }
         continue;
       }
       if (await hasWithdrawalPasswordSetupSurface(pixPage)) {
         diag(`prompt de senha: DEFINIR (iter ${iteration})`);
-        const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
-        void this.browserRuntime.refreshAccountInfoForProfile(profile.id, this.database.getProfile(profile.id));
+        const withdrawalPassword =
+          this.database.ensureProfileWithdrawalPassword(profile.id);
+        void this.browserRuntime.refreshAccountInfoForProfile(
+          profile.id,
+          this.database.getProfile(profile.id),
+        );
         await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
-        await this.fillWithdrawalPasswordSetup(runId, pixPage, withdrawalPassword);
-        const setupClosed = await waitForWithdrawalPasswordSetupToClose(pixPage, 4500);
+        await this.fillWithdrawalPasswordSetup(
+          runId,
+          pixPage,
+          withdrawalPassword,
+        );
+        const setupClosed = await waitForWithdrawalPasswordSetupToClose(
+          pixPage,
+          4500,
+        );
         diag(`prompt DEFINIR fechou=${setupClosed}`);
         if (!setupClosed) {
-          throw new Error("senha de saque nao confirmou na plataforma; tela de definicao continuou aberta");
+          throw new Error(
+            "senha de saque nao confirmou na plataforma; tela de definicao continuou aberta",
+          );
         }
         continue;
       }
@@ -2858,10 +3812,16 @@ export class AutomationRuntimeService {
     profile: ProfileSummary,
     pixPage: Page,
     spa: SpaHandle,
-    descriptor: PlatformDescriptor | undefined
+    descriptor: PlatformDescriptor | undefined,
   ): Promise<void> {
-    const diag = (...args: unknown[]) => { console.log(`[PIX-PROG] ${args.join(" ")}`); };
-    const setupTarget = await resolveRouteTarget(spa, "passwordSetup", descriptor);
+    const diag = (...args: unknown[]) => {
+      console.log(`[PIX-PROG] ${args.join(" ")}`);
+    };
+    const setupTarget = await resolveRouteTarget(
+      spa,
+      "passwordSetup",
+      descriptor,
+    );
     if (!setupTarget) {
       diag("sem rota de setup de senha no descritor; pulando define proativo");
       return;
@@ -2879,46 +3839,82 @@ export class AutomationRuntimeService {
       }
       await pixPage.waitForTimeout(200).catch(() => undefined);
     }
-    diag(`setup surface apareceu=${appeared}; rota=${await describeSpaState(spa)}`);
+    diag(
+      `setup surface apareceu=${appeared}; rota=${await describeSpaState(spa)}`,
+    );
     if (!appeared) {
       diag("setup surface nao apareceu na rota de setup; nao defini a senha");
       return;
     }
 
-    const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
-    void this.browserRuntime.refreshAccountInfoForProfile(profile.id, this.database.getProfile(profile.id));
+    const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(
+      profile.id,
+    );
+    void this.browserRuntime.refreshAccountInfoForProfile(
+      profile.id,
+      this.database.getProfile(profile.id),
+    );
     await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
     await this.fillWithdrawalPasswordSetup(runId, pixPage, withdrawalPassword);
-    let setupClosed = await waitForWithdrawalPasswordSetupToClose(pixPage, 4500);
+    let setupClosed = await waitForWithdrawalPasswordSetupToClose(
+      pixPage,
+      4500,
+    );
     if (!setupClosed) {
       diag("setup ainda visivel apos confirmar; reenviando senha uma vez");
-      await this.fillWithdrawalPasswordSetup(runId, pixPage, withdrawalPassword);
+      await this.fillWithdrawalPasswordSetup(
+        runId,
+        pixPage,
+        withdrawalPassword,
+      );
       setupClosed = await waitForWithdrawalPasswordSetupToClose(pixPage, 4500);
     }
     await this.browserRuntime.setPageAutoClosePopups(pixPage, true);
-    diag(`senha definida; setup fechou=${setupClosed}; rota apos definir=${await describeSpaState(spa)}`);
+    diag(
+      `senha definida; setup fechou=${setupClosed}; rota apos definir=${await describeSpaState(spa)}`,
+    );
     // Fotografa o texto da tela apos a definicao: revela erro de validacao,
     // "senhas nao conferem", toast de sucesso, ou se continuamos no form de senha.
     const postDefineText = await resolveContentFrame(pixPage)
       .evaluate(() => {
-        const w = globalThis as unknown as { document?: { body?: { innerText?: string } } };
-        return (w.document?.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 300);
+        const w = globalThis as unknown as {
+          document?: { body?: { innerText?: string } };
+        };
+        return (w.document?.body?.innerText || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 300);
       })
       .catch(() => "");
     diag(`texto apos definir: ${postDefineText}`);
     if (!setupClosed) {
-      throw new Error("senha de saque nao confirmou na plataforma; tela de definicao continuou aberta");
+      throw new Error(
+        "senha de saque nao confirmou na plataforma; tela de definicao continuou aberta",
+      );
     }
   }
 
-  private async openPixReceivingAccountTab(runId: string, page: Page, profile: ProfileSummary): Promise<void> {
-    const diag = (...args: unknown[]) => { console.log(`[PIX-DIAG] ${args.join(" ")}`); };
+  private async openPixReceivingAccountTab(
+    runId: string,
+    page: Page,
+    profile: ProfileSummary,
+  ): Promise<void> {
+    const diag = (...args: unknown[]) => {
+      console.log(`[PIX-DIAG] ${args.join(" ")}`);
+    };
     this.ensureRunActive(runId);
     const spa = resolveContentFrame(page);
-    const receiving = await programmaticPixUiAction(spa, "openReceivingAccount");
-    diag(`3-receiving state: ok=${receiving.ok} ${receiving.diag ?? receiving.reason ?? ""}`);
+    const receiving = await programmaticPixUiAction(
+      spa,
+      "openReceivingAccount",
+    );
+    diag(
+      `3-receiving state: ok=${receiving.ok} ${receiving.diag ?? receiving.reason ?? ""}`,
+    );
     if (!receiving.ok) {
-      throw new Error(`aba Conta para recebimento nao abriu por estado (${receiving.reason ?? "motivo desconhecido"})`);
+      throw new Error(
+        `aba Conta para recebimento nao abriu por estado (${receiving.reason ?? "motivo desconhecido"})`,
+      );
     }
 
     // ORDEM REAL DA PLATAFORMA: clicar em "adicionar conta" abre PRIMEIRO o gate de
@@ -2935,16 +3931,20 @@ export class AutomationRuntimeService {
       await page.waitForTimeout(150).catch(() => undefined);
       addResult = await programmaticPixUiAction(spa, "openAddPix");
     }
-    diag(`3-pix add handler: ok=${addResult.ok} ${addResult.diag ?? addResult.reason ?? ""}`);
+    diag(
+      `3-pix add handler: ok=${addResult.ok} ${addResult.diag ?? addResult.reason ?? ""}`,
+    );
     if (!addResult.ok) {
-      throw new Error(`modal Adicionar PIX nao abriu pelo handler Vue (${addResult.reason ?? "motivo desconhecido"})`);
+      throw new Error(
+        `modal Adicionar PIX nao abriu pelo handler Vue (${addResult.reason ?? "motivo desconhecido"})`,
+      );
     }
   }
 
   private async fillExistingWithdrawalPasswordModal(
     runId: string,
     page: Page,
-    withdrawalPassword: string
+    withdrawalPassword: string,
   ): Promise<void> {
     const frame = resolveContentFrame(page);
 
@@ -2953,11 +3953,19 @@ export class AutomationRuntimeService {
     if (vanCount >= 1) {
       await frame.evaluate((pw) => {
         const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const inputs = Array.from(runtimeWindow.document.querySelectorAll(".van-field__control"));
-        const nativeSetter = (Object.getOwnPropertyDescriptor(
-          (runtimeWindow as unknown as { HTMLInputElement?: { prototype: object } }).HTMLInputElement?.prototype ?? {},
-          "value"
-        )?.set as ((this: BrowserRuntimeInputElement, value: string) => void) | undefined);
+        const inputs = Array.from(
+          runtimeWindow.document.querySelectorAll(".van-field__control"),
+        );
+        const nativeSetter = Object.getOwnPropertyDescriptor(
+          (
+            runtimeWindow as unknown as {
+              HTMLInputElement?: { prototype: object };
+            }
+          ).HTMLInputElement?.prototype ?? {},
+          "value",
+        )?.set as
+          | ((this: BrowserRuntimeInputElement, value: string) => void)
+          | undefined;
         const el = inputs[0];
         if (el) {
           const input = el as unknown as BrowserRuntimeInputElement;
@@ -2968,65 +3976,98 @@ export class AutomationRuntimeService {
           const RuntimeEvent = runtimeWindow.Event;
           if (RuntimeEvent) {
             input.dispatchEvent?.(new RuntimeEvent("input", { bubbles: true }));
-            input.dispatchEvent?.(new RuntimeEvent("change", { bubbles: true }));
+            input.dispatchEvent?.(
+              new RuntimeEvent("change", { bubbles: true }),
+            );
           }
         }
       }, withdrawalPassword);
       await page.waitForTimeout(200).catch(() => null);
-      const proximoBox = await frame.evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (v: string | null | undefined) => v?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
-        const elements = Array.from(runtimeWindow.document.querySelectorAll("div, span, button, [role='button']"));
-        for (const el of elements) {
-          if (!el) continue;
-          const text = normalize(el.textContent);
-          if (text !== "próximo" && text !== "proximo") continue;
-          const style = runtimeWindow.getComputedStyle(el);
-          if (style.display === "none" || style.visibility === "hidden") continue;
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 40 || rect.height < 20) continue;
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-        }
-        return undefined;
-      }).catch(() => undefined);
+      const proximoBox = await frame
+        .evaluate(() => {
+          const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+          const normalize = (v: string | null | undefined) =>
+            v?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+          const elements = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "div, span, button, [role='button']",
+            ),
+          );
+          for (const el of elements) {
+            if (!el) continue;
+            const text = normalize(el.textContent);
+            if (text !== "próximo" && text !== "proximo") continue;
+            const style = runtimeWindow.getComputedStyle(el);
+            if (style.display === "none" || style.visibility === "hidden")
+              continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 40 || rect.height < 20) continue;
+            return {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+            };
+          }
+          return undefined;
+        })
+        .catch(() => undefined);
       if (proximoBox) {
         let cx = proximoBox.x;
         let cy = proximoBox.y;
         if (frame !== page) {
-          const iframeOffset = await page.evaluate(() => {
-            const w = globalThis as unknown as BrowserRuntimeWindow;
-            const iframes = Array.from(w.document.querySelectorAll("iframe"));
-            if (!iframes[0]) return undefined;
-            const r = iframes[0].getBoundingClientRect();
-            return { x: r.left, y: r.top };
-          }).catch(() => undefined);
-          if (iframeOffset) { cx += iframeOffset.x; cy += iframeOffset.y; }
+          const iframeOffset = await page
+            .evaluate(() => {
+              const w = globalThis as unknown as BrowserRuntimeWindow;
+              const iframes = Array.from(w.document.querySelectorAll("iframe"));
+              if (!iframes[0]) return undefined;
+              const r = iframes[0].getBoundingClientRect();
+              return { x: r.left, y: r.top };
+            })
+            .catch(() => undefined);
+          if (iframeOffset) {
+            cx += iframeOffset.x;
+            cy += iframeOffset.y;
+          }
         }
-        await page.touchscreen.tap(cx, cy).catch(() => page.mouse.click(cx, cy).catch(() => undefined));
+        await page.touchscreen
+          .tap(cx, cy)
+          .catch(() => page.mouse.click(cx, cy).catch(() => undefined));
       } else {
-        throw new Error("botao Proximo da senha de saque nao encontrado (vant)");
+        throw new Error(
+          "botao Proximo da senha de saque nao encontrado (vant)",
+        );
       }
       return;
     }
 
-    const fields = frame.locator(".ui-popup .ui-password-input,.ui-dialog .ui-password-input,.ui-password-input");
+    const fields = frame.locator(
+      ".ui-popup .ui-password-input,.ui-dialog .ui-password-input,.ui-password-input",
+    );
     const count = await fields.count().catch(() => 0);
     if (count < 1) {
       throw new Error("campo de senha de saque nao encontrado no modal");
     }
 
     await this.fillPasswordGrid(runId, page, fields.nth(0), withdrawalPassword);
-    const clicked = await this.clickVisibleTextControl(runId, page, /^proximo$/, /esqueceu|senha/);
+    const clicked = await this.clickVisibleTextControl(
+      runId,
+      page,
+      /^proximo$/,
+      /esqueceu|senha/,
+    );
     if (!clicked) {
       throw new Error("botao Proximo da senha de saque nao encontrado");
     }
   }
 
-  private async openPasswordGridKeyboard(runId: string, page: Page, locator: Locator): Promise<void> {
+  private async openPasswordGridKeyboard(
+    runId: string,
+    page: Page,
+    locator: Locator,
+  ): Promise<void> {
     this.ensureRunActive(runId);
     await this.waitActionable(locator, {
       budgetMs: AutomationRuntimeService.ACTIONABLE_BUDGET_MS,
-      runId
+      runId,
     });
 
     const token = `password-grid-${Date.now().toString(36)}-${this.randomInt(1000, 9999)}`;
@@ -3050,14 +4091,16 @@ export class AutomationRuntimeService {
         };
         const candidates = Array.from(
           root.querySelectorAll?.(
-            ".ui-password-input__item,li,input,[role='textbox'],[class*='password'][class*='item' i],[class*='password-input'][class*='item' i]"
-          ) ?? []
+            ".ui-password-input__item,li,input,[role='textbox'],[class*='password'][class*='item' i],[class*='password-input'][class*='item' i]",
+          ) ?? [],
         )
           .filter(isVisible)
           .sort((left, right) => {
             const leftRect = left.getBoundingClientRect();
             const rightRect = right.getBoundingClientRect();
-            return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+            return (
+              leftRect.top - rightRect.top || leftRect.left - rightRect.left
+            );
           });
         const target = candidates[0];
         if (!target) {
@@ -3075,11 +4118,16 @@ export class AutomationRuntimeService {
     try {
       await tapTarget
         .evaluate((element) => {
-          (element as unknown as {
-            scrollIntoView?: (options?: { block?: string; inline?: string }) => void;
-          }).scrollIntoView?.({
+          (
+            element as unknown as {
+              scrollIntoView?: (options?: {
+                block?: string;
+                inline?: string;
+              }) => void;
+            }
+          ).scrollIntoView?.({
             block: "center",
-            inline: "center"
+            inline: "center",
           });
         })
         .catch(() => null);
@@ -3089,11 +4137,13 @@ export class AutomationRuntimeService {
         await page.touchscreen
           .tap(
             box.x + box.width * this.randomFloat(0.38, 0.62),
-            box.y + box.height * this.randomFloat(0.35, 0.65)
+            box.y + box.height * this.randomFloat(0.35, 0.65),
           )
           .catch(() => null);
       } else {
-        await tapTarget.tap({ timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS }).catch(() => null);
+        await tapTarget
+          .tap({ timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS })
+          .catch(() => null);
       }
 
       await page.waitForTimeout(180).catch(() => null);
@@ -3101,7 +4151,10 @@ export class AutomationRuntimeService {
         const rootBox = await locator.boundingBox().catch(() => null);
         if (rootBox) {
           await page.touchscreen
-            .tap(rootBox.x + rootBox.width * 0.1, rootBox.y + rootBox.height * 0.5)
+            .tap(
+              rootBox.x + rootBox.width * 0.1,
+              rootBox.y + rootBox.height * 0.5,
+            )
             .catch(() => null);
         }
       }
@@ -3112,7 +4165,9 @@ export class AutomationRuntimeService {
             removeAttribute?: (name: string) => void;
           };
           const root = element as unknown as RuntimeElement;
-          for (const target of root.querySelectorAll?.(`[data-predator-password-grid-tap="${marker}"]`) ?? []) {
+          for (const target of root.querySelectorAll?.(
+            `[data-predator-password-grid-tap="${marker}"]`,
+          ) ?? []) {
             target.removeAttribute?.("data-predator-password-grid-tap");
           }
         }, token)
@@ -3125,9 +4180,12 @@ export class AutomationRuntimeService {
     page: Page,
     locator: Locator,
     value: string,
-    label?: string
+    label?: string,
   ): Promise<void> {
-    const diag = (...args: unknown[]) => { const msg = `[PASS-DIAG] ${args.join(" ")}`; console.log(msg); };
+    const diag = (...args: unknown[]) => {
+      const msg = `[PASS-DIAG] ${args.join(" ")}`;
+      console.log(msg);
+    };
     const tag = label ?? "?";
     this.ensureRunActive(runId);
 
@@ -3135,12 +4193,18 @@ export class AutomationRuntimeService {
     await waitForVisibleNumberKeyboard(page, 2500);
 
     if (!(await hasVisibleNumberKeyboard(page))) {
-      throw new Error("teclado numerico virtual nao apareceu apos clicar no campo de senha");
+      throw new Error(
+        "teclado numerico virtual nao apareceu apos clicar no campo de senha",
+      );
     }
 
     let dots = await this.countPasswordGridDots(locator);
     diag(`${tag} initialDots=${dots} password=${value}`);
-    for (let clearAttempt = 0; clearAttempt < 3 && dots > 0; clearAttempt += 1) {
+    for (
+      let clearAttempt = 0;
+      clearAttempt < 3 && dots > 0;
+      clearAttempt += 1
+    ) {
       diag(`${tag} clearing ${dots} dots attempt=${clearAttempt}`);
       for (let i = 0; i < dots; i += 1) {
         const beforeDelete = await this.countPasswordGridDots(locator);
@@ -3169,7 +4233,12 @@ export class AutomationRuntimeService {
         // Mantem o dispatch SINTETICO como primario nas 2 primeiras tentativas; so cai no
         // tap real por coordenada na ultima (attempt 2), como ultimo recurso -- o tap e o
         // que falhava em PC fraco, entao adiamos ao maximo.
-        const clicked = await this.clickNumberKeyboardDigit(runId, page, digit, attempt >= 2);
+        const clicked = await this.clickNumberKeyboardDigit(
+          runId,
+          page,
+          digit,
+          attempt >= 2,
+        );
         if (!clicked) {
           // tecla nao encontrada -> espera CONDICIONAL o teclado (re)aparecer, sem wait fixo
           await waitForVisibleNumberKeyboard(page, 400);
@@ -3181,7 +4250,9 @@ export class AutomationRuntimeService {
         while (Date.now() - startedAt < 700) {
           const afterDots = await this.countPasswordGridDots(locator);
           if (afterDots >= expectedDots) {
-            diag(`${tag} digit=${digit} accepted afterDots=${afterDots} ms=${Date.now() - startedAt}`);
+            diag(
+              `${tag} digit=${digit} accepted afterDots=${afterDots} ms=${Date.now() - startedAt}`,
+            );
             accepted = true;
             break;
           }
@@ -3193,18 +4264,24 @@ export class AutomationRuntimeService {
         }
         if (!accepted) {
           const finalDots = await this.countPasswordGridDots(locator);
-          diag(`${tag} digit=${digit} TIMEOUT attempt=${attempt} beforeDots=${beforeDots} afterDots=${finalDots}`);
+          diag(
+            `${tag} digit=${digit} TIMEOUT attempt=${attempt} beforeDots=${beforeDots} afterDots=${finalDots}`,
+          );
         }
       }
 
       if (!accepted) {
-        throw new Error(`tecla numerica ${digit} nao foi aceita pelo teclado virtual`);
+        throw new Error(
+          `tecla numerica ${digit} nao foi aceita pelo teclado virtual`,
+        );
       }
       await this.humanPause(runId, page, 25, 70);
     }
 
     const filledCount = await this.countPasswordGridDots(locator);
-    diag(`${tag} finalDots=${filledCount} expected=${Math.min(value.length, 6)}`);
+    diag(
+      `${tag} finalDots=${filledCount} expected=${Math.min(value.length, 6)}`,
+    );
     if (filledCount < Math.min(value.length, 6)) {
       throw new Error("teclado numerico nao preencheu a senha de saque");
     }
@@ -3219,195 +4296,246 @@ export class AutomationRuntimeService {
   // ids de todas as stores + (para as candidatas a senha/saque) chaves de estado, valores
   // truncados e nomes de actions. NAO altera nada. Rodar 1 cadastro real que alcance a senha
   // de saque e colar o log [PIN-PROBE] (so abre o teclado, efeito ja existente no fluxo).
-  private async dumpWithdrawalPinLever(runId: string, page: Page, fieldLocator: Locator): Promise<void> {
+  private async dumpWithdrawalPinLever(
+    runId: string,
+    page: Page,
+    fieldLocator: Locator,
+  ): Promise<void> {
     // Abre o teclado primeiro para que a tecla exista no DOM no momento da inspecao.
-    await this.openPasswordGridKeyboard(runId, page, fieldLocator).catch(() => null);
+    await this.openPasswordGridKeyboard(runId, page, fieldLocator).catch(
+      () => null,
+    );
     await page.waitForTimeout(200).catch(() => null);
 
     const frame = resolveContentFrame(page);
     const dump = await frame
-      .evaluate(() => {
-        /* eslint-disable @typescript-eslint/no-explicit-any */
-        const w = globalThis as any;
-        const doc = w.document;
-        const isObj = (v: unknown): v is Record<PropertyKey, unknown> =>
-          Boolean(v) && (typeof v === "object" || typeof v === "function");
-        const read = (t: unknown, k: PropertyKey): unknown => {
-          if (!isObj(t)) return undefined;
-          try {
-            return (t as any)[k];
-          } catch {
-            return undefined;
-          }
-        };
-        const trunc = (value: unknown, max = 80): string => {
-          try {
-            const s = typeof value === "string" ? value : JSON.stringify(value);
-            if (s == null) return String(value);
-            return s.length > max ? `${s.slice(0, max)}…` : s;
-          } catch {
-            return Object.prototype.toString.call(value);
-          }
-        };
-
-        const result: Record<string, unknown> = {};
-        const pin = doc.querySelector(".ui-password-input,[class*='password-input' i],[class*='pin-input' i]");
-        result.hasPin = !!pin;
-
-        // Input oculto vizinho? (ja confirmado vazio, mas mantemos o sinal)
-        const scope = (pin && pin.closest("[class*='dialog' i],[class*='popup' i],.ui-overlay")) || doc;
-        result.nearbyInputs = Array.from(scope.querySelectorAll("input")).map((input: any) => ({
-          type: input.type,
-          name: input.name,
-          cls: trunc(input.className, 40),
-          value: trunc(input.value, 20)
-        }));
-
-        // === Pinia (MESMA descoberta de programmaticDeposit) — roda no MAIN world ===
-        const els = Array.from(doc.querySelectorAll("body, body *")) as any[];
-        const piniaCandidates: unknown[] = [];
-        const seen = new Set<unknown>();
-        const addPinia = (value: unknown) => {
-          if (!isObj(value) || seen.has(value)) return;
-          seen.add(value);
-          piniaCandidates.push(value);
-        };
-        const addProvidesPinia = (provides: unknown) => {
-          if (!isObj(provides)) return;
-          for (const key of Reflect.ownKeys(provides)) {
-            if (String(key).toLowerCase().includes("pinia")) addPinia(read(provides, key));
-          }
-        };
-        const addAppPinia = (appLike: unknown) => {
-          if (!isObj(appLike)) return;
-          addPinia(read(read(read(appLike, "config"), "globalProperties"), "$pinia"));
-          const ctx = read(appLike, "_context");
-          addPinia(read(read(read(ctx, "config"), "globalProperties"), "$pinia"));
-          addProvidesPinia(read(ctx, "provides"));
-          addProvidesPinia(read(appLike, "provides"));
-        };
-        for (const el of els) {
-          addAppPinia(el.__vue_app__);
-          const component = el.__vueParentComponent;
-          if (isObj(component)) addAppPinia(read(component, "appContext"));
-        }
-        let stores: Map<string, any> | undefined;
-        for (const candidate of piniaCandidates) {
-          const s = read(candidate, "_s") as Map<string, any> | undefined;
-          if (s && typeof s.forEach === "function" && (!stores || s.size > stores.size)) stores = s;
-        }
-        result.piniaFound = Boolean(stores);
-
-        if (stores) {
-          // Resumo de UMA store: chaves de estado (+valores truncados) e nomes de
-          // actions/funcoes expostas (candidatas a "setar senha" / "submit").
-          const dumpStore = (store: any) => {
-            const state = (read(store, "$state") as Record<string, unknown>) || {};
-            const stateOut: Record<string, string> = {};
-            for (const k of Object.keys(state)) {
-              try {
-                stateOut[k] = trunc((state as any)[k]);
-              } catch {
-                stateOut[k] = "(err)";
-              }
-            }
-            const fns: string[] = [];
+      .evaluate(
+        () => {
+          /* eslint-disable @typescript-eslint/no-explicit-any */
+          const w = globalThis as any;
+          const doc = w.document;
+          const isObj = (v: unknown): v is Record<PropertyKey, unknown> =>
+            Boolean(v) && (typeof v === "object" || typeof v === "function");
+          const read = (t: unknown, k: PropertyKey): unknown => {
+            if (!isObj(t)) return undefined;
             try {
-              for (const k of Object.keys(store)) {
-                if (k.startsWith("$") || k.startsWith("_")) continue;
-                try {
-                  if (typeof store[k] === "function") fns.push(k);
-                } catch {
-                  /* getter pode lancar */
-                }
-              }
+              return (t as any)[k];
             } catch {
-              /* store nao iteravel */
+              return undefined;
             }
-            return { stateKeys: Object.keys(state), state: stateOut, actions: fns.slice(0, 50) };
+          };
+          const trunc = (value: unknown, max = 80): string => {
+            try {
+              const s =
+                typeof value === "string" ? value : JSON.stringify(value);
+              if (s == null) return String(value);
+              return s.length > max ? `${s.slice(0, max)}…` : s;
+            } catch {
+              return Object.prototype.toString.call(value);
+            }
           };
 
-          const allIds: string[] = [];
-          const passwordLike: Record<string, unknown> = {};
-          // Inclusao por ID (narrow): so stores cujo NOME denota senha/saque/seguranca.
-          // (Heuristica por action 'set/submit' pegava quase toda store -> ruido.) Para
-          // as candidatas, despejamos detalhe completo; das demais, so o nome em storeIds.
-          const idRx = /pass|pwd|pin|withdraw|saque|secur|draw|cash|safe/i;
-          stores.forEach((store, id) => {
-            allIds.push(id);
-            if (!idRx.test(id)) return;
-            try {
-              passwordLike[id] = dumpStore(store);
-            } catch {
-              passwordLike[id] = { stateKeys: ["(err)"], state: {}, actions: [] };
-            }
-          });
-          result.storeIds = allIds;
-          result.passwordLikeStores = passwordLike;
-        }
+          const result: Record<string, unknown> = {};
+          const pin = doc.querySelector(
+            ".ui-password-input,[class*='password-input' i],[class*='pin-input' i]",
+          );
+          result.hasPin = !!pin;
 
-        // === Instance Vue do COMPONENTE do PIN e de uma TECLA (main world) ===
-        // O submit valida o modelo LOCAL do componente, nao a store -> precisamos achar a
-        // ref/metodo que o teclado alimenta. __vueParentComponent fica no host element.
-        const describeVals = (obj: any): Record<string, string> => {
-          const o: Record<string, string> = {};
-          if (!isObj(obj)) return o;
-          for (const k of Object.keys(obj)) {
-            try {
-              const r = (obj as any)[k];
-              const u = isObj(r) && "value" in r && Object.keys(r).length <= 4 ? (r as any).value : r;
-              o[k] = typeof u === "function" ? "fn()" : trunc(u, 60);
-            } catch {
-              o[k] = "(err)";
-            }
-          }
-          return o;
-        };
-        const dumpInst = (startEl: any, maxHops: number): unknown[] => {
-          const chain: unknown[] = [];
-          const seenInst = new Set<unknown>();
-          let node: any = startEl;
-          let hops = 0;
-          while (node && hops < maxHops) {
-            const inst: any = node.__vueParentComponent;
-            if (isObj(inst) && !seenInst.has(inst)) {
-              seenInst.add(inst);
-              const ss = read(inst, "setupState");
-              const ctx = read(inst, "ctx");
-              const vnode = read(inst, "vnode");
-              chain.push({
-                name: read(read(inst, "type"), "__name") || read(read(inst, "type"), "name") || "(anon)",
-                setupKeys: isObj(ss) ? Object.keys(ss as object) : [],
-                setup: describeVals(ss),
-                props: describeVals(read(inst, "props")),
-                methods: isObj(ctx)
-                  ? Object.keys(ctx as object)
-                      .filter((k) => {
-                        try {
-                          return typeof (ctx as any)[k] === "function";
-                        } catch {
-                          return false;
-                        }
-                      })
-                      .slice(0, 40)
-                  : [],
-                vnodeProps: isObj(read(vnode, "props")) ? Object.keys(read(vnode, "props") as object) : []
-              });
-            }
-            node = node.parentElement;
-            hops += 1;
-          }
-          return chain.slice(0, 5);
-        };
-        const pinEl: any = doc.querySelector(".ui-password-input");
-        result.pinHasVueParentComponent = !!(pinEl && pinEl.__vueParentComponent);
-        result.pinComponent = pinEl ? dumpInst(pinEl, 8) : null;
-        const keyEl2: any = doc.querySelector(".ui-number-keyboard-key,.van-key,[class*='keyboard-key' i]");
-        result.keyboardComponent = keyEl2 ? dumpInst(keyEl2, 6) : null;
+          // Input oculto vizinho? (ja confirmado vazio, mas mantemos o sinal)
+          const scope =
+            (pin &&
+              pin.closest(
+                "[class*='dialog' i],[class*='popup' i],.ui-overlay",
+              )) ||
+            doc;
+          result.nearbyInputs = Array.from(scope.querySelectorAll("input")).map(
+            (input: any) => ({
+              type: input.type,
+              name: input.name,
+              cls: trunc(input.className, 40),
+              value: trunc(input.value, 20),
+            }),
+          );
 
-        return result;
-        /* eslint-enable @typescript-eslint/no-explicit-any */
-      }, undefined, PATCHRIGHT_MAIN_WORLD)
+          // === Pinia (MESMA descoberta de programmaticDeposit) — roda no MAIN world ===
+          const els = Array.from(doc.querySelectorAll("body, body *")) as any[];
+          const piniaCandidates: unknown[] = [];
+          const seen = new Set<unknown>();
+          const addPinia = (value: unknown) => {
+            if (!isObj(value) || seen.has(value)) return;
+            seen.add(value);
+            piniaCandidates.push(value);
+          };
+          const addProvidesPinia = (provides: unknown) => {
+            if (!isObj(provides)) return;
+            for (const key of Reflect.ownKeys(provides)) {
+              if (String(key).toLowerCase().includes("pinia"))
+                addPinia(read(provides, key));
+            }
+          };
+          const addAppPinia = (appLike: unknown) => {
+            if (!isObj(appLike)) return;
+            addPinia(
+              read(read(read(appLike, "config"), "globalProperties"), "$pinia"),
+            );
+            const ctx = read(appLike, "_context");
+            addPinia(
+              read(read(read(ctx, "config"), "globalProperties"), "$pinia"),
+            );
+            addProvidesPinia(read(ctx, "provides"));
+            addProvidesPinia(read(appLike, "provides"));
+          };
+          for (const el of els) {
+            addAppPinia(el.__vue_app__);
+            const component = el.__vueParentComponent;
+            if (isObj(component)) addAppPinia(read(component, "appContext"));
+          }
+          let stores: Map<string, any> | undefined;
+          for (const candidate of piniaCandidates) {
+            const s = read(candidate, "_s") as Map<string, any> | undefined;
+            if (
+              s &&
+              typeof s.forEach === "function" &&
+              (!stores || s.size > stores.size)
+            )
+              stores = s;
+          }
+          result.piniaFound = Boolean(stores);
+
+          if (stores) {
+            // Resumo de UMA store: chaves de estado (+valores truncados) e nomes de
+            // actions/funcoes expostas (candidatas a "setar senha" / "submit").
+            const dumpStore = (store: any) => {
+              const state =
+                (read(store, "$state") as Record<string, unknown>) || {};
+              const stateOut: Record<string, string> = {};
+              for (const k of Object.keys(state)) {
+                try {
+                  stateOut[k] = trunc((state as any)[k]);
+                } catch {
+                  stateOut[k] = "(err)";
+                }
+              }
+              const fns: string[] = [];
+              try {
+                for (const k of Object.keys(store)) {
+                  if (k.startsWith("$") || k.startsWith("_")) continue;
+                  try {
+                    if (typeof store[k] === "function") fns.push(k);
+                  } catch {
+                    /* getter pode lancar */
+                  }
+                }
+              } catch {
+                /* store nao iteravel */
+              }
+              return {
+                stateKeys: Object.keys(state),
+                state: stateOut,
+                actions: fns.slice(0, 50),
+              };
+            };
+
+            const allIds: string[] = [];
+            const passwordLike: Record<string, unknown> = {};
+            // Inclusao por ID (narrow): so stores cujo NOME denota senha/saque/seguranca.
+            // (Heuristica por action 'set/submit' pegava quase toda store -> ruido.) Para
+            // as candidatas, despejamos detalhe completo; das demais, so o nome em storeIds.
+            const idRx = /pass|pwd|pin|withdraw|saque|secur|draw|cash|safe/i;
+            stores.forEach((store, id) => {
+              allIds.push(id);
+              if (!idRx.test(id)) return;
+              try {
+                passwordLike[id] = dumpStore(store);
+              } catch {
+                passwordLike[id] = {
+                  stateKeys: ["(err)"],
+                  state: {},
+                  actions: [],
+                };
+              }
+            });
+            result.storeIds = allIds;
+            result.passwordLikeStores = passwordLike;
+          }
+
+          // === Instance Vue do COMPONENTE do PIN e de uma TECLA (main world) ===
+          // O submit valida o modelo LOCAL do componente, nao a store -> precisamos achar a
+          // ref/metodo que o teclado alimenta. __vueParentComponent fica no host element.
+          const describeVals = (obj: any): Record<string, string> => {
+            const o: Record<string, string> = {};
+            if (!isObj(obj)) return o;
+            for (const k of Object.keys(obj)) {
+              try {
+                const r = (obj as any)[k];
+                const u =
+                  isObj(r) && "value" in r && Object.keys(r).length <= 4
+                    ? (r as any).value
+                    : r;
+                o[k] = typeof u === "function" ? "fn()" : trunc(u, 60);
+              } catch {
+                o[k] = "(err)";
+              }
+            }
+            return o;
+          };
+          const dumpInst = (startEl: any, maxHops: number): unknown[] => {
+            const chain: unknown[] = [];
+            const seenInst = new Set<unknown>();
+            let node: any = startEl;
+            let hops = 0;
+            while (node && hops < maxHops) {
+              const inst: any = node.__vueParentComponent;
+              if (isObj(inst) && !seenInst.has(inst)) {
+                seenInst.add(inst);
+                const ss = read(inst, "setupState");
+                const ctx = read(inst, "ctx");
+                const vnode = read(inst, "vnode");
+                chain.push({
+                  name:
+                    read(read(inst, "type"), "__name") ||
+                    read(read(inst, "type"), "name") ||
+                    "(anon)",
+                  setupKeys: isObj(ss) ? Object.keys(ss as object) : [],
+                  setup: describeVals(ss),
+                  props: describeVals(read(inst, "props")),
+                  methods: isObj(ctx)
+                    ? Object.keys(ctx as object)
+                        .filter((k) => {
+                          try {
+                            return typeof (ctx as any)[k] === "function";
+                          } catch {
+                            return false;
+                          }
+                        })
+                        .slice(0, 40)
+                    : [],
+                  vnodeProps: isObj(read(vnode, "props"))
+                    ? Object.keys(read(vnode, "props") as object)
+                    : [],
+                });
+              }
+              node = node.parentElement;
+              hops += 1;
+            }
+            return chain.slice(0, 5);
+          };
+          const pinEl: any = doc.querySelector(".ui-password-input");
+          result.pinHasVueParentComponent = !!(
+            pinEl && pinEl.__vueParentComponent
+          );
+          result.pinComponent = pinEl ? dumpInst(pinEl, 8) : null;
+          const keyEl2: any = doc.querySelector(
+            ".ui-number-keyboard-key,.van-key,[class*='keyboard-key' i]",
+          );
+          result.keyboardComponent = keyEl2 ? dumpInst(keyEl2, 6) : null;
+
+          return result;
+          /* eslint-enable @typescript-eslint/no-explicit-any */
+        },
+        undefined,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch((error: unknown) => ({ error: String(error) }));
 
     // Grava o dump COMPLETO em disco e imprime so um resumo de 1 linha no log (o dump
@@ -3419,21 +4547,34 @@ export class AutomationRuntimeService {
       const d = dump as Record<string, unknown>;
       summary.piniaFound = d.piniaFound ?? false;
       summary.storeCount = Array.isArray(d.storeIds) ? d.storeIds.length : 0;
-      summary.matched = d.passwordLikeStores ? Object.keys(d.passwordLikeStores as object) : [];
+      summary.matched = d.passwordLikeStores
+        ? Object.keys(d.passwordLikeStores as object)
+        : [];
       summary.pinVPC = d.pinHasVueParentComponent ?? false;
-      summary.pinCompCount = Array.isArray(d.pinComponent) ? d.pinComponent.length : 0;
+      summary.pinCompCount = Array.isArray(d.pinComponent)
+        ? d.pinComponent.length
+        : 0;
       if (d.error) summary.error = d.error;
     }
     try {
       writeFileSync(filePath, JSON.stringify(dump, null, 2), "utf-8");
       console.log(`[PIN-PROBE] file=${filePath} ${JSON.stringify(summary)}`);
     } catch (error) {
-      console.log(`[PIN-PROBE] falha ao gravar arquivo: ${String(error)} resumo=${JSON.stringify(summary)}`);
+      console.log(
+        `[PIN-PROBE] falha ao gravar arquivo: ${String(error)} resumo=${JSON.stringify(summary)}`,
+      );
     }
   }
 
-  private async fillWithdrawalPasswordSetup(runId: string, page: Page, withdrawalPassword: string): Promise<void> {
-    const diag = (...args: unknown[]) => { const msg = `[PASS-DIAG] ${args.join(" ")}`; console.log(msg); };
+  private async fillWithdrawalPasswordSetup(
+    runId: string,
+    page: Page,
+    withdrawalPassword: string,
+  ): Promise<void> {
+    const diag = (...args: unknown[]) => {
+      const msg = `[PASS-DIAG] ${args.join(" ")}`;
+      console.log(msg);
+    };
     const frame = resolveContentFrame(page);
 
     const vanFields = frame.locator(".van-field__control");
@@ -3441,14 +4582,24 @@ export class AutomationRuntimeService {
     diag(`SETUP vanFields=${vanCount}`);
 
     if (vanCount >= 2) {
-      diag(`SETUP vant variant, filling textboxes with password=${withdrawalPassword}`);
+      diag(
+        `SETUP vant variant, filling textboxes with password=${withdrawalPassword}`,
+      );
       await frame.evaluate((pw) => {
         const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const inputs = Array.from(runtimeWindow.document.querySelectorAll(".van-field__control"));
-        const nativeSetter = (Object.getOwnPropertyDescriptor(
-          (runtimeWindow as unknown as { HTMLInputElement?: { prototype: object } }).HTMLInputElement?.prototype ?? {},
-          "value"
-        )?.set as ((this: BrowserRuntimeInputElement, value: string) => void) | undefined);
+        const inputs = Array.from(
+          runtimeWindow.document.querySelectorAll(".van-field__control"),
+        );
+        const nativeSetter = Object.getOwnPropertyDescriptor(
+          (
+            runtimeWindow as unknown as {
+              HTMLInputElement?: { prototype: object };
+            }
+          ).HTMLInputElement?.prototype ?? {},
+          "value",
+        )?.set as
+          | ((this: BrowserRuntimeInputElement, value: string) => void)
+          | undefined;
         for (let i = 0; i < Math.min(inputs.length, 2); i += 1) {
           const el = inputs[i];
           if (!el) continue;
@@ -3460,27 +4611,40 @@ export class AutomationRuntimeService {
           const RuntimeEvent = runtimeWindow.Event;
           if (RuntimeEvent) {
             input.dispatchEvent?.(new RuntimeEvent("input", { bubbles: true }));
-            input.dispatchEvent?.(new RuntimeEvent("change", { bubbles: true }));
+            input.dispatchEvent?.(
+              new RuntimeEvent("change", { bubbles: true }),
+            );
           }
         }
       }, withdrawalPassword);
       await page.waitForTimeout(300).catch(() => null);
 
-      const confirmBox = await frame.evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (v: string | null | undefined) => v?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
-        const elements = Array.from(runtimeWindow.document.querySelectorAll("div, span, button, [role='button']"));
-        for (const el of elements) {
-          if (!el) continue;
-          if (normalize(el.textContent) !== "confirmar") continue;
-          const style = runtimeWindow.getComputedStyle(el);
-          if (style.display === "none" || style.visibility === "hidden") continue;
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 40 || rect.height < 20) continue;
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-        }
-        return undefined;
-      }).catch(() => undefined);
+      const confirmBox = await frame
+        .evaluate(() => {
+          const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+          const normalize = (v: string | null | undefined) =>
+            v?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+          const elements = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "div, span, button, [role='button']",
+            ),
+          );
+          for (const el of elements) {
+            if (!el) continue;
+            if (normalize(el.textContent) !== "confirmar") continue;
+            const style = runtimeWindow.getComputedStyle(el);
+            if (style.display === "none" || style.visibility === "hidden")
+              continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 40 || rect.height < 20) continue;
+            return {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+            };
+          }
+          return undefined;
+        })
+        .catch(() => undefined);
 
       diag(`SETUP confirmBox: ${JSON.stringify(confirmBox)}`);
 
@@ -3488,19 +4652,28 @@ export class AutomationRuntimeService {
         let cx = confirmBox.x;
         let cy = confirmBox.y;
         if (frame !== page) {
-          const iframeOffset = await page.evaluate(() => {
-            const w = globalThis as unknown as BrowserRuntimeWindow;
-            const iframes = Array.from(w.document.querySelectorAll("iframe"));
-            if (!iframes[0]) return undefined;
-            const r = iframes[0].getBoundingClientRect();
-            return { x: r.left, y: r.top };
-          }).catch(() => undefined);
-          if (iframeOffset) { cx += iframeOffset.x; cy += iframeOffset.y; }
+          const iframeOffset = await page
+            .evaluate(() => {
+              const w = globalThis as unknown as BrowserRuntimeWindow;
+              const iframes = Array.from(w.document.querySelectorAll("iframe"));
+              if (!iframes[0]) return undefined;
+              const r = iframes[0].getBoundingClientRect();
+              return { x: r.left, y: r.top };
+            })
+            .catch(() => undefined);
+          if (iframeOffset) {
+            cx += iframeOffset.x;
+            cy += iframeOffset.y;
+          }
         }
-        await page.touchscreen.tap(cx, cy).catch(() => page.mouse.click(cx, cy).catch(() => undefined));
+        await page.touchscreen
+          .tap(cx, cy)
+          .catch(() => page.mouse.click(cx, cy).catch(() => undefined));
         diag("SETUP confirmar tapped");
       } else {
-        throw new Error("botao Confirmar da senha de saque nao encontrado (vant)");
+        throw new Error(
+          "botao Confirmar da senha de saque nao encontrado (vant)",
+        );
       }
       return;
     }
@@ -3520,11 +4693,19 @@ export class AutomationRuntimeService {
 
     // PROBE opcional de diagnostico (SPIDER_PIN_PROBE=1): despeja a estrutura por tras do PIN.
     if (process.env.SPIDER_PIN_PROBE === "1") {
-      await this.dumpWithdrawalPinLever(runId, page, fields.nth(0)).catch(() => null);
+      await this.dumpWithdrawalPinLever(runId, page, fields.nth(0)).catch(
+        () => null,
+      );
     }
 
     diag("SETUP filling field[0]");
-    await this.fillPasswordGrid(runId, page, fields.nth(0), withdrawalPassword, "F0");
+    await this.fillPasswordGrid(
+      runId,
+      page,
+      fields.nth(0),
+      withdrawalPassword,
+      "F0",
+    );
     await page.waitForTimeout(200).catch(() => null);
 
     const dots0Before = await this.countPasswordGridDots(fields.nth(0));
@@ -3532,7 +4713,13 @@ export class AutomationRuntimeService {
     diag(`SETUP after F0: field0=${dots0Before} field1=${dots1Before}`);
 
     diag("SETUP filling field[1]");
-    await this.fillPasswordGrid(runId, page, fields.nth(1), withdrawalPassword, "F1");
+    await this.fillPasswordGrid(
+      runId,
+      page,
+      fields.nth(1),
+      withdrawalPassword,
+      "F1",
+    );
     await page.waitForTimeout(200).catch(() => null);
 
     const dots0 = await this.countPasswordGridDots(fields.nth(0));
@@ -3540,13 +4727,27 @@ export class AutomationRuntimeService {
     diag(`SETUP after F1: field0=${dots0} field1=${dots1}`);
 
     if (dots0 !== dots1 || dots0 < withdrawalPassword.length) {
-      diag(`SETUP MISMATCH field0=${dots0} field1=${dots1} expected=${withdrawalPassword.length} RETRYING`);
+      diag(
+        `SETUP MISMATCH field0=${dots0} field1=${dots1} expected=${withdrawalPassword.length} RETRYING`,
+      );
       for (let retry = 0; retry < 2; retry += 1) {
         diag(`SETUP retry=${retry} filling field[0]`);
-        await this.fillPasswordGrid(runId, page, fields.nth(0), withdrawalPassword, `R${retry}F0`);
+        await this.fillPasswordGrid(
+          runId,
+          page,
+          fields.nth(0),
+          withdrawalPassword,
+          `R${retry}F0`,
+        );
         await page.waitForTimeout(200).catch(() => null);
         diag(`SETUP retry=${retry} filling field[1]`);
-        await this.fillPasswordGrid(runId, page, fields.nth(1), withdrawalPassword, `R${retry}F1`);
+        await this.fillPasswordGrid(
+          runId,
+          page,
+          fields.nth(1),
+          withdrawalPassword,
+          `R${retry}F1`,
+        );
         await page.waitForTimeout(200).catch(() => null);
         const rd0 = await this.countPasswordGridDots(fields.nth(0));
         const rd1 = await this.countPasswordGridDots(fields.nth(1));
@@ -3560,20 +4761,36 @@ export class AutomationRuntimeService {
 
     const finalDots0 = await this.countPasswordGridDots(fields.nth(0));
     const finalDots1 = await this.countPasswordGridDots(fields.nth(1));
-    diag(`SETUP final: field0=${finalDots0} field1=${finalDots1} password=${withdrawalPassword}`);
+    diag(
+      `SETUP final: field0=${finalDots0} field1=${finalDots1} password=${withdrawalPassword}`,
+    );
 
-    const clicked = await this.tapVisibleTextControl(runId, page, /^confirmar$/, /cancelar|saque$/);
+    const clicked = await this.tapVisibleTextControl(
+      runId,
+      page,
+      /^confirmar$/,
+      /cancelar|saque$/,
+    );
     diag(`SETUP confirmar tapped=${clicked ?? "none"}`);
     if (!clicked) {
       throw new Error("botao Confirmar da senha de saque nao encontrado");
     }
   }
 
-  private async clickNumberKeyboardDigit(runId: string, page: Page, digit: string, useTap = false): Promise<boolean> {
+  private async clickNumberKeyboardDigit(
+    runId: string,
+    page: Page,
+    digit: string,
+    useTap = false,
+  ): Promise<boolean> {
     return this.clickNumberKeyboardKey(runId, page, { digit }, useTap);
   }
 
-  private async clickNumberKeyboardDelete(runId: string, page: Page, useTap = false): Promise<boolean> {
+  private async clickNumberKeyboardDelete(
+    runId: string,
+    page: Page,
+    useTap = false,
+  ): Promise<boolean> {
     return this.clickNumberKeyboardKey(runId, page, { delete: true }, useTap);
   }
 
@@ -3581,7 +4798,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     targetKey: { delete?: boolean; digit?: string },
-    useTap = false
+    useTap = false,
   ): Promise<boolean> {
     this.ensureRunActive(runId);
     const frame = resolveContentFrame(page);
@@ -3593,14 +4810,160 @@ export class AutomationRuntimeService {
     // Se a tecla nao for encontrada in-page, cai no tap real (fallback) abaixo.
     if (!useTap) {
       const dispatched = await frame
-        .evaluate(({ targetDigit, wantsDelete }) => {
+        .evaluate(
+          ({ targetDigit, wantsDelete }) => {
+            const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+            const ctor = runtimeWindow as unknown as {
+              PointerEvent?: new (
+                type: string,
+                init?: Record<string, unknown>,
+              ) => Event;
+              MouseEvent?: new (
+                type: string,
+                init?: Record<string, unknown>,
+              ) => Event;
+              Touch?: new (init: Record<string, unknown>) => unknown;
+              TouchEvent?: new (
+                type: string,
+                init?: Record<string, unknown>,
+              ) => Event;
+            };
+            const normalize = (value: string | null | undefined) =>
+              (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const isVisible = (element: BrowserRuntimeElement) => {
+              const rect = element.getBoundingClientRect();
+              const style = runtimeWindow.getComputedStyle(element);
+              return (
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                Number(style.opacity || "1") > 0.01 &&
+                rect.width >= 12 &&
+                rect.height >= 12 &&
+                rect.right > 0 &&
+                rect.bottom > 0 &&
+                rect.left < runtimeWindow.innerWidth &&
+                rect.top < runtimeWindow.innerHeight
+              );
+            };
+            const keyboardRoots = Array.from(
+              runtimeWindow.document.querySelectorAll(
+                ".ui-number-keyboard,.van-number-keyboard,[class*='number-keyboard' i],[class*='numberKeyboard' i]",
+              ),
+            ).filter(isVisible);
+            const rootKeys = keyboardRoots.flatMap((root) =>
+              Array.from(
+                root.querySelectorAll?.(
+                  "button,[role='button'],div,span,li,.ui-number-keyboard-key,.van-key",
+                ) ?? [],
+              ),
+            );
+            const directKeys = Array.from(
+              runtimeWindow.document.querySelectorAll(
+                ".ui-number-keyboard-key,.van-key,[class*='number-keyboard-key' i],[class*='keyboard-key' i],[class*='keyboard_key' i]",
+              ),
+            );
+            const keys = Array.from(new Set([...directKeys, ...rootKeys]));
+            let target: BrowserRuntimeElement | null = null;
+            for (let i = 0; i < keys.length; i += 1) {
+              const el = keys[i];
+              if (!el || !isVisible(el)) continue;
+              const cls = String(el.className || "").toLowerCase();
+              const text = normalize(el.textContent);
+              const isDelete =
+                cls.includes("delete") ||
+                cls.includes("backspace") ||
+                /delete|backspace|apagar|⌫|←/.test(text);
+              if (wantsDelete) {
+                if (!isDelete) continue;
+              } else {
+                if (isDelete || cls.includes("extra")) continue;
+                if (text !== targetDigit) continue;
+              }
+              target = el;
+              break;
+            }
+            if (!target) return false;
+            const node = target as unknown as {
+              dispatchEvent: (event: Event) => boolean;
+              click?: () => void;
+            };
+            const opts: Record<string, unknown> = {
+              bubbles: true,
+              cancelable: true,
+              view: runtimeWindow,
+            };
+            const fire = (
+              type: string,
+              Ctor?: new (
+                type: string,
+                init?: Record<string, unknown>,
+              ) => Event,
+            ) => {
+              try {
+                if (Ctor) node.dispatchEvent(new Ctor(type, opts));
+              } catch {
+                /* construtor ausente; ignora */
+              }
+            };
+            fire("pointerdown", ctor.PointerEvent);
+            fire("mousedown", ctor.MouseEvent);
+            try {
+              if (ctor.Touch && ctor.TouchEvent) {
+                const touch = new ctor.Touch({
+                  identifier: 1,
+                  target,
+                  clientX: 1,
+                  clientY: 1,
+                });
+                node.dispatchEvent(
+                  new ctor.TouchEvent("touchstart", {
+                    bubbles: true,
+                    cancelable: true,
+                    touches: [touch],
+                    targetTouches: [touch],
+                    changedTouches: [touch],
+                  }),
+                );
+                node.dispatchEvent(
+                  new ctor.TouchEvent("touchend", {
+                    bubbles: true,
+                    cancelable: true,
+                    touches: [],
+                    targetTouches: [],
+                    changedTouches: [touch],
+                  }),
+                );
+              }
+            } catch {
+              /* touch indisponivel; os eventos de mouse/click cobrem */
+            }
+            fire("pointerup", ctor.PointerEvent);
+            fire("mouseup", ctor.MouseEvent);
+            fire("click", ctor.MouseEvent);
+            try {
+              node.click?.();
+            } catch {
+              /* ignore */
+            }
+            return true;
+          },
+          {
+            targetDigit: targetKey.digit ?? "",
+            wantsDelete: Boolean(targetKey.delete),
+          },
+          PATCHRIGHT_MAIN_WORLD,
+        )
+        .catch(() => false);
+      if (dispatched) return true;
+      // tecla nao encontrada in-page -> tenta o tap real abaixo
+    }
+
+    const token = `kb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+    const found = await frame
+      .evaluate(
+        ({ targetDigit, token, wantsDelete }) => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-          const ctor = runtimeWindow as unknown as {
-            PointerEvent?: new (type: string, init?: Record<string, unknown>) => Event;
-            MouseEvent?: new (type: string, init?: Record<string, unknown>) => Event;
-            Touch?: new (init: Record<string, unknown>) => unknown;
-            TouchEvent?: new (type: string, init?: Record<string, unknown>) => Event;
-          };
           const normalize = (value: string | null | undefined) =>
             (value || "").replace(/\s+/g, " ").trim().toLowerCase();
           const isVisible = (element: BrowserRuntimeElement) => {
@@ -3620,144 +4983,49 @@ export class AutomationRuntimeService {
           };
           const keyboardRoots = Array.from(
             runtimeWindow.document.querySelectorAll(
-              ".ui-number-keyboard,.van-number-keyboard,[class*='number-keyboard' i],[class*='numberKeyboard' i]"
-            )
+              ".ui-number-keyboard,.van-number-keyboard,[class*='number-keyboard' i],[class*='numberKeyboard' i]",
+            ),
           ).filter(isVisible);
           const rootKeys = keyboardRoots.flatMap((root) =>
-            Array.from(root.querySelectorAll?.("button,[role='button'],div,span,li,.ui-number-keyboard-key,.van-key") ?? [])
+            Array.from(
+              root.querySelectorAll?.(
+                "button,[role='button'],div,span,li,.ui-number-keyboard-key,.van-key",
+              ) ?? [],
+            ),
           );
           const directKeys = Array.from(
             runtimeWindow.document.querySelectorAll(
-              ".ui-number-keyboard-key,.van-key,[class*='number-keyboard-key' i],[class*='keyboard-key' i],[class*='keyboard_key' i]"
-            )
+              ".ui-number-keyboard-key,.van-key,[class*='number-keyboard-key' i],[class*='keyboard-key' i],[class*='keyboard_key' i]",
+            ),
           );
           const keys = Array.from(new Set([...directKeys, ...rootKeys]));
-          let target: BrowserRuntimeElement | null = null;
           for (let i = 0; i < keys.length; i += 1) {
             const el = keys[i];
-            if (!el || !isVisible(el)) continue;
+            if (!el) continue;
+            if (!isVisible(el)) continue;
             const cls = String(el.className || "").toLowerCase();
             const text = normalize(el.textContent);
             const isDelete =
-              cls.includes("delete") || cls.includes("backspace") || /delete|backspace|apagar|⌫|←/.test(text);
+              cls.includes("delete") ||
+              cls.includes("backspace") ||
+              /delete|backspace|apagar|⌫|←/.test(text);
             if (wantsDelete) {
               if (!isDelete) continue;
             } else {
               if (isDelete || cls.includes("extra")) continue;
               if (text !== targetDigit) continue;
             }
-            target = el;
-            break;
+            el.setAttribute?.("data-predator-kb-tap", token);
+            return true;
           }
-          if (!target) return false;
-          const node = target as unknown as { dispatchEvent: (event: Event) => boolean; click?: () => void };
-          const opts: Record<string, unknown> = { bubbles: true, cancelable: true, view: runtimeWindow };
-          const fire = (type: string, Ctor?: new (type: string, init?: Record<string, unknown>) => Event) => {
-            try {
-              if (Ctor) node.dispatchEvent(new Ctor(type, opts));
-            } catch {
-              /* construtor ausente; ignora */
-            }
-          };
-          fire("pointerdown", ctor.PointerEvent);
-          fire("mousedown", ctor.MouseEvent);
-          try {
-            if (ctor.Touch && ctor.TouchEvent) {
-              const touch = new ctor.Touch({ identifier: 1, target, clientX: 1, clientY: 1 });
-              node.dispatchEvent(
-                new ctor.TouchEvent("touchstart", {
-                  bubbles: true,
-                  cancelable: true,
-                  touches: [touch],
-                  targetTouches: [touch],
-                  changedTouches: [touch]
-                })
-              );
-              node.dispatchEvent(
-                new ctor.TouchEvent("touchend", {
-                  bubbles: true,
-                  cancelable: true,
-                  touches: [],
-                  targetTouches: [],
-                  changedTouches: [touch]
-                })
-              );
-            }
-          } catch {
-            /* touch indisponivel; os eventos de mouse/click cobrem */
-          }
-          fire("pointerup", ctor.PointerEvent);
-          fire("mouseup", ctor.MouseEvent);
-          fire("click", ctor.MouseEvent);
-          try {
-            node.click?.();
-          } catch {
-            /* ignore */
-          }
-          return true;
-        }, { targetDigit: targetKey.digit ?? "", wantsDelete: Boolean(targetKey.delete) }, PATCHRIGHT_MAIN_WORLD)
-        .catch(() => false);
-      if (dispatched) return true;
-      // tecla nao encontrada in-page -> tenta o tap real abaixo
-    }
-
-    const token = `kb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-
-    const found = await frame
-      .evaluate(({ targetDigit, token, wantsDelete }) => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (value: string | null | undefined) =>
-          (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-        const isVisible = (element: BrowserRuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width >= 12 &&
-            rect.height >= 12 &&
-            rect.right > 0 &&
-            rect.bottom > 0 &&
-            rect.left < runtimeWindow.innerWidth &&
-            rect.top < runtimeWindow.innerHeight
-          );
-        };
-        const keyboardRoots = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            ".ui-number-keyboard,.van-number-keyboard,[class*='number-keyboard' i],[class*='numberKeyboard' i]"
-          )
-        ).filter(isVisible);
-        const rootKeys = keyboardRoots.flatMap((root) =>
-          Array.from(root.querySelectorAll?.("button,[role='button'],div,span,li,.ui-number-keyboard-key,.van-key") ?? [])
-        );
-        const directKeys = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            ".ui-number-keyboard-key,.van-key,[class*='number-keyboard-key' i],[class*='keyboard-key' i],[class*='keyboard_key' i]"
-          )
-        );
-        const keys = Array.from(new Set([...directKeys, ...rootKeys]));
-        for (let i = 0; i < keys.length; i += 1) {
-          const el = keys[i];
-          if (!el) continue;
-          if (!isVisible(el)) continue;
-          const cls = String(el.className || "").toLowerCase();
-          const text = normalize(el.textContent);
-          const isDelete =
-            cls.includes("delete") ||
-            cls.includes("backspace") ||
-            /delete|backspace|apagar|⌫|←/.test(text);
-          if (wantsDelete) {
-            if (!isDelete) continue;
-          } else {
-            if (isDelete || cls.includes("extra")) continue;
-            if (text !== targetDigit) continue;
-          }
-          el.setAttribute?.("data-predator-kb-tap", token);
-          return true;
-        }
-        return false;
-      }, { targetDigit: targetKey.digit ?? "", token, wantsDelete: Boolean(targetKey.delete) })
+          return false;
+        },
+        {
+          targetDigit: targetKey.digit ?? "",
+          token,
+          wantsDelete: Boolean(targetKey.delete),
+        },
+      )
       .catch(() => false);
 
     if (!found) return false;
@@ -3766,19 +5034,29 @@ export class AutomationRuntimeService {
       const target = frame.locator(`[data-predator-kb-tap="${token}"]`).first();
       await target
         .evaluate((element) => {
-          (element as unknown as {
-            scrollIntoView?: (options?: { block?: string; inline?: string }) => void;
-          }).scrollIntoView?.({
+          (
+            element as unknown as {
+              scrollIntoView?: (options?: {
+                block?: string;
+                inline?: string;
+              }) => void;
+            }
+          ).scrollIntoView?.({
             block: "center",
-            inline: "center"
+            inline: "center",
           });
         })
         .catch(() => null);
       const box = await target.boundingBox().catch(() => null);
       if (box) {
-        await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+        await page.touchscreen.tap(
+          box.x + box.width / 2,
+          box.y + box.height / 2,
+        );
       } else {
-        await target.tap({ timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS });
+        await target.tap({
+          timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS,
+        });
       }
       return true;
     } catch {
@@ -3788,7 +5066,9 @@ export class AutomationRuntimeService {
         .evaluate((tok) => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
           const el = Array.from(
-            runtimeWindow.document.querySelectorAll(`[data-predator-kb-tap="${tok}"]`)
+            runtimeWindow.document.querySelectorAll(
+              `[data-predator-kb-tap="${tok}"]`,
+            ),
           )[0];
           el?.removeAttribute?.("data-predator-kb-tap");
         }, token)
@@ -3803,7 +5083,7 @@ export class AutomationRuntimeService {
     page: Page,
     locator: Locator,
     predicate: (dots: number) => boolean,
-    timeoutMs: number
+    timeoutMs: number,
   ): Promise<number> {
     const startedAt = Date.now();
     let dots = await this.countPasswordGridDots(locator);
@@ -3818,12 +5098,15 @@ export class AutomationRuntimeService {
     return locator
       .evaluate((element) => {
         type RuntimeElement = {
-          querySelectorAll?: (selector: string) => Iterable<BrowserRuntimeElement>;
+          querySelectorAll?: (
+            selector: string,
+          ) => Iterable<BrowserRuntimeElement>;
         };
         const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
         const root = element as unknown as RuntimeElement;
         return Array.from(root.querySelectorAll?.("i") ?? []).filter(
-          (entry) => runtimeWindow.getComputedStyle(entry).visibility !== "hidden"
+          (entry) =>
+            runtimeWindow.getComputedStyle(entry).visibility !== "hidden",
         ).length;
       })
       .catch(() => 0);
@@ -3833,7 +5116,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     include: RegExp,
-    exclude?: RegExp
+    exclude?: RegExp,
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     return this.withPopupPageGuard(page, () =>
@@ -3841,7 +5124,9 @@ export class AutomationRuntimeService {
         ({ includeSource, includeFlags, excludeSource, excludeFlags }) => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
           const includePattern = new RegExp(includeSource, includeFlags);
-          const excludePattern = excludeSource ? new RegExp(excludeSource, excludeFlags) : undefined;
+          const excludePattern = excludeSource
+            ? new RegExp(excludeSource, excludeFlags)
+            : undefined;
           const normalize = (value: string | null | undefined) =>
             (value || "")
               .normalize("NFD")
@@ -3856,8 +5141,8 @@ export class AutomationRuntimeService {
                 element.getAttribute?.("class"),
                 element.getAttribute?.("aria-label"),
                 element.getAttribute?.("title"),
-                element.getAttribute?.("placeholder")
-              ].join(" ")
+                element.getAttribute?.("placeholder"),
+              ].join(" "),
             );
           const isVisible = (element: BrowserRuntimeElement) => {
             const rect = element.getBoundingClientRect();
@@ -3875,7 +5160,9 @@ export class AutomationRuntimeService {
             );
           };
           const candidates = Array.from(
-            runtimeWindow.document.querySelectorAll("button,[role='button'],a,[role='tab'],.ui-tab,div,span,li")
+            runtimeWindow.document.querySelectorAll(
+              "button,[role='button'],a,[role='tab'],.ui-tab,div,span,li",
+            ),
           )
             .filter(isVisible)
             .map((element) => {
@@ -3892,7 +5179,7 @@ export class AutomationRuntimeService {
                   (/button|tab|ui-button|ui-cell/.test(attrs) ? 18 : 0) +
                   (rect.left >= 0 ? 8 : 0) -
                   (excludePattern && excludePattern.test(combined) ? 200 : 0),
-                area: rect.width * rect.height
+                area: rect.width * rect.height,
               };
             })
             .filter((candidate) => candidate.score > 0)
@@ -3906,9 +5193,9 @@ export class AutomationRuntimeService {
           excludeFlags: exclude?.flags ?? "",
           excludeSource: exclude?.source ?? "",
           includeFlags: include.flags,
-          includeSource: include.source
-        }
-      )
+          includeSource: include.source,
+        },
+      ),
     );
   }
 
@@ -3916,7 +5203,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     include: RegExp,
-    exclude?: RegExp
+    exclude?: RegExp,
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const frame = resolveContentFrame(page);
@@ -3925,7 +5212,9 @@ export class AutomationRuntimeService {
         ({ includeSource, includeFlags, excludeSource, excludeFlags }) => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
           const includePattern = new RegExp(includeSource, includeFlags);
-          const excludePattern = excludeSource ? new RegExp(excludeSource, excludeFlags) : undefined;
+          const excludePattern = excludeSource
+            ? new RegExp(excludeSource, excludeFlags)
+            : undefined;
           const normalize = (value: string | null | undefined) =>
             (value || "")
               .normalize("NFD")
@@ -3940,8 +5229,8 @@ export class AutomationRuntimeService {
                 element.getAttribute?.("class"),
                 element.getAttribute?.("aria-label"),
                 element.getAttribute?.("title"),
-                element.getAttribute?.("placeholder")
-              ].join(" ")
+                element.getAttribute?.("placeholder"),
+              ].join(" "),
             );
           const isVisible = (element: BrowserRuntimeElement) => {
             const rect = element.getBoundingClientRect();
@@ -3959,7 +5248,9 @@ export class AutomationRuntimeService {
             );
           };
           const candidates = Array.from(
-            runtimeWindow.document.querySelectorAll("button,[role='button'],a,[role='tab'],.ui-button,.ui-cell,div,span,li")
+            runtimeWindow.document.querySelectorAll(
+              "button,[role='button'],a,[role='tab'],.ui-button,.ui-cell,div,span,li",
+            ),
           )
             .filter(isVisible)
             .map((element) => {
@@ -3977,21 +5268,26 @@ export class AutomationRuntimeService {
                   (excludePattern && excludePattern.test(combined) ? 200 : 0),
                 area: rect.width * rect.height,
                 x: rect.left + rect.width / 2,
-                y: rect.top + rect.height / 2
+                y: rect.top + rect.height / 2,
               };
             })
             .filter((candidate) => candidate.score > 0)
-            .sort((left, right) => right.score - left.score || left.area - right.area);
+            .sort(
+              (left, right) =>
+                right.score - left.score || left.area - right.area,
+            );
 
           const hit = candidates[0];
-          return hit ? { label: hit.label.slice(0, 80), x: hit.x, y: hit.y } : undefined;
+          return hit
+            ? { label: hit.label.slice(0, 80), x: hit.x, y: hit.y }
+            : undefined;
         },
         {
           excludeFlags: exclude?.flags ?? "",
           excludeSource: exclude?.source ?? "",
           includeFlags: include.flags,
-          includeSource: include.source
-        }
+          includeSource: include.source,
+        },
       )
       .catch(() => undefined);
 
@@ -4005,7 +5301,9 @@ export class AutomationRuntimeService {
       const iframeOffset = await page
         .evaluate(() => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-          const iframe = Array.from(runtimeWindow.document.querySelectorAll("iframe"))[0];
+          const iframe = Array.from(
+            runtimeWindow.document.querySelectorAll("iframe"),
+          )[0];
           if (!iframe) {
             return undefined;
           }
@@ -4019,162 +5317,263 @@ export class AutomationRuntimeService {
       }
     }
 
-    await page.touchscreen.tap(clickX, clickY).catch(() => page.mouse.click(clickX, clickY).catch(() => undefined));
+    await page.touchscreen
+      .tap(clickX, clickY)
+      .catch(() => page.mouse.click(clickX, clickY).catch(() => undefined));
     return target.label;
   }
 
   private async selectPhonePixType(runId: string, page: Page): Promise<void> {
-    const diag = (...args: unknown[]) => { console.log(`[PIX-DIAG] ${args.join(" ")}`); };
+    const diag = (...args: unknown[]) => {
+      console.log(`[PIX-DIAG] ${args.join(" ")}`);
+    };
     this.ensureRunActive(runId);
-    const result = await programmaticPixUiAction(resolveContentFrame(page), "selectPhone");
-    diag(`selectPhone-state: ok=${result.ok} ${result.diag ?? result.reason ?? ""}`);
+    const result = await programmaticPixUiAction(
+      resolveContentFrame(page),
+      "selectPhone",
+    );
+    diag(
+      `selectPhone-state: ok=${result.ok} ${result.diag ?? result.reason ?? ""}`,
+    );
     if (!result.ok) {
-      throw new Error(`tipo PHONE nao foi aplicado no estado Vue (${result.reason ?? "motivo desconhecido"})`);
+      throw new Error(
+        `tipo PHONE nao foi aplicado no estado Vue (${result.reason ?? "motivo desconhecido"})`,
+      );
     }
   }
 
-  private async fillPixPhoneAccountForm(runId: string, page: Page, phoneNumber: string, cpf: string, realName: string): Promise<void> {
+  private async fillPixPhoneAccountForm(
+    runId: string,
+    page: Page,
+    phoneNumber: string,
+    cpf: string,
+    realName: string,
+  ): Promise<void> {
     this.ensureRunActive(runId);
-    const diag = (...args: unknown[]) => { console.log(`[PIX-DIAG] ${args.join(" ")}`); };
+    const diag = (...args: unknown[]) => {
+      console.log(`[PIX-DIAG] ${args.join(" ")}`);
+    };
 
     const pixModalOpen = () =>
       resolveContentFrame(page)
         .evaluate(() => {
-          const text = ((globalThis as unknown as { document?: { body?: { innerText?: string } } }).document?.body?.innerText || "");
+          const text =
+            (
+              globalThis as unknown as {
+                document?: { body?: { innerText?: string } };
+              }
+            ).document?.body?.innerText || "";
           return /adicionar\s+pix/i.test(text);
         })
         .catch(() => false);
 
     diag(`fillForm-modal open: ${await pixModalOpen()}`);
 
-    const tryFill = () => resolveContentFrame(page)
-      .evaluate(({ pixPhone, cpfValue, realNameValue }) => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: BrowserRuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return style.display !== "none" && style.visibility !== "hidden" && rect.width > 8 && rect.height > 8;
-        };
-        const isInputElement = (element: BrowserRuntimeElement): element is BrowserRuntimeInputElement =>
-          typeof element.value === "string";
-        const setValue = (input: BrowserRuntimeInputElement, value: string) => {
-          const setter = runtimeWindow.HTMLInputElement?.prototype
-            ? (Object.getOwnPropertyDescriptor(runtimeWindow.HTMLInputElement.prototype, "value")?.set as
-                | ((this: BrowserRuntimeInputElement, value: string) => void)
-                | undefined)
-            : undefined;
-          setter?.call(input, value);
-          if (input.value !== value) {
-            input.value = value;
-          }
-          const RuntimeEvent = runtimeWindow.Event;
-          if (RuntimeEvent) {
-            input.dispatchEvent?.(new RuntimeEvent("input", { bubbles: true }));
-            input.dispatchEvent?.(new RuntimeEvent("change", { bubbles: true }));
-          }
-        };
-        const roots = Array.from(runtimeWindow.document.querySelectorAll(".ui-popup,.ui-dialog,.van-popup,.van-dialog,.modal,.popup,form"))
-          .filter((element) => isVisible(element) && /adicionar\s+pix/i.test(normalize(element.textContent)))
-          .sort((a, b) => {
-            const aHasInput = a.querySelector?.("input") ? 1 : 0;
-            const bHasInput = b.querySelector?.("input") ? 1 : 0;
-            if (aHasInput !== bHasInput) return bHasInput - aHasInput;
-            const aRect = a.getBoundingClientRect();
-            const bRect = b.getBoundingClientRect();
-            return (aRect.width * aRect.height) - (bRect.width * bRect.height);
-          });
-        const root = roots[0] ?? runtimeWindow.document.body!;
+    const tryFill = () =>
+      resolveContentFrame(page)
+        .evaluate(
+          ({ pixPhone, cpfValue, realNameValue }) => {
+            const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+            const normalize = (value: string | null | undefined) =>
+              (value || "")
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLowerCase();
+            const isVisible = (element: BrowserRuntimeElement) => {
+              const rect = element.getBoundingClientRect();
+              const style = runtimeWindow.getComputedStyle(element);
+              return (
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                rect.width > 8 &&
+                rect.height > 8
+              );
+            };
+            const isInputElement = (
+              element: BrowserRuntimeElement,
+            ): element is BrowserRuntimeInputElement =>
+              typeof element.value === "string";
+            const setValue = (
+              input: BrowserRuntimeInputElement,
+              value: string,
+            ) => {
+              const setter = runtimeWindow.HTMLInputElement?.prototype
+                ? (Object.getOwnPropertyDescriptor(
+                    runtimeWindow.HTMLInputElement.prototype,
+                    "value",
+                  )?.set as
+                    | ((
+                        this: BrowserRuntimeInputElement,
+                        value: string,
+                      ) => void)
+                    | undefined)
+                : undefined;
+              setter?.call(input, value);
+              if (input.value !== value) {
+                input.value = value;
+              }
+              const RuntimeEvent = runtimeWindow.Event;
+              if (RuntimeEvent) {
+                input.dispatchEvent?.(
+                  new RuntimeEvent("input", { bubbles: true }),
+                );
+                input.dispatchEvent?.(
+                  new RuntimeEvent("change", { bubbles: true }),
+                );
+              }
+            };
+            const roots = Array.from(
+              runtimeWindow.document.querySelectorAll(
+                ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.modal,.popup,form",
+              ),
+            )
+              .filter(
+                (element) =>
+                  isVisible(element) &&
+                  /adicionar\s+pix/i.test(normalize(element.textContent)),
+              )
+              .sort((a, b) => {
+                const aHasInput = a.querySelector?.("input") ? 1 : 0;
+                const bHasInput = b.querySelector?.("input") ? 1 : 0;
+                if (aHasInput !== bHasInput) return bHasInput - aHasInput;
+                const aRect = a.getBoundingClientRect();
+                const bRect = b.getBoundingClientRect();
+                return aRect.width * aRect.height - bRect.width * bRect.height;
+              });
+            const root = roots[0] ?? runtimeWindow.document.body!;
 
-        const allInputs = Array.from(root.querySelectorAll?.("input") ?? []);
-        const allInputInfo = allInputs.map(inp => ({
-          placeholder: (inp.placeholder || "").slice(0, 40),
-          disabled: !!(inp as BrowserRuntimeInputElement).disabled,
-          visible: isVisible(inp),
-          value: (inp as BrowserRuntimeInputElement).value?.slice(0, 20) || ""
-        }));
+            const allInputs = Array.from(
+              root.querySelectorAll?.("input") ?? [],
+            );
+            const allInputInfo = allInputs.map((inp) => ({
+              placeholder: (inp.placeholder || "").slice(0, 40),
+              disabled: !!(inp as BrowserRuntimeInputElement).disabled,
+              visible: isVisible(inp),
+              value:
+                (inp as BrowserRuntimeInputElement).value?.slice(0, 20) || "",
+            }));
 
-        const rootInfo = {
-          class: String(root.className || "").slice(0, 50),
-          height: root.getBoundingClientRect().height,
-          rootCount: roots.length,
-          inputCount: allInputInfo.length
-        };
-        
-        const inModal = (el: BrowserRuntimeElement) => {
-          const popup = el.closest?.(".van-popup, .van-dialog, .ui-popup, .ui-dialog, .modal, .popup");
-          return Boolean(popup && isVisible(popup));
-        };
+            const rootInfo = {
+              class: String(root.className || "").slice(0, 50),
+              height: root.getBoundingClientRect().height,
+              rootCount: roots.length,
+              inputCount: allInputInfo.length,
+            };
 
-        const inputs = allInputs.filter(
-          (input): input is BrowserRuntimeInputElement => isInputElement(input) && isVisible(input) && inModal(input)
-        );
-        const writableInputs = inputs.filter(
-          (input) => !input.disabled && !input.readOnly && input.type !== "hidden"
-        );
-        const selector = root.querySelector?.(".ui-popover__wrapper");
-        const precedes = (left: BrowserRuntimeElement, right: BrowserRuntimeElement) =>
-          Boolean(left.compareDocumentPosition?.(right) && (left.compareDocumentPosition(right) & 4));
-        const beforeSelector = selector
-          ? inputs.filter((input) => precedes(input, selector))
-          : [];
-        const afterSelector = selector
-          ? inputs.filter((input) => precedes(selector, input))
-          : [];
+            const inModal = (el: BrowserRuntimeElement) => {
+              const popup = el.closest?.(
+                ".van-popup, .van-dialog, .ui-popup, .ui-dialog, .modal, .popup",
+              );
+              return Boolean(popup && isVisible(popup));
+            };
 
-        // Estrutura comum das skins Pinia: nome antes do seletor; chave PIX e
-        // CPF, nessa ordem, depois dele. Placeholders variam por traducao e skin,
-        // portanto entram apenas como fallback.
-        const nameInput = (beforeSelector.at(-1) as BrowserRuntimeInputElement | undefined) ??
-          writableInputs.find((input) => /nome|name|titular|beneficiario/.test(
-            normalize(`${input.placeholder} ${input.name} ${input.id}`)
-          ));
-        const structuralWritable = afterSelector.filter(
-          (input) => !input.disabled && !input.readOnly && input.type !== "hidden"
-        );
-        const pixInput = structuralWritable[0] ?? writableInputs.find((input) =>
-          /chave do pix|pix/.test(normalize(`${input.placeholder} ${input.name} ${input.id} ${input.className}`))
-        );
-        const cpfInput = structuralWritable[1] ?? writableInputs.find((input) =>
-          input !== pixInput &&
-          /cpf|11 digitos/.test(normalize(`${input.placeholder} ${input.name} ${input.id} ${input.className}`))
-        );
+            const inputs = allInputs.filter(
+              (input): input is BrowserRuntimeInputElement =>
+                isInputElement(input) && isVisible(input) && inModal(input),
+            );
+            const writableInputs = inputs.filter(
+              (input) =>
+                !input.disabled && !input.readOnly && input.type !== "hidden",
+            );
+            const selector = root.querySelector?.(".ui-popover__wrapper");
+            const precedes = (
+              left: BrowserRuntimeElement,
+              right: BrowserRuntimeElement,
+            ) =>
+              Boolean(
+                left.compareDocumentPosition?.(right) &&
+                left.compareDocumentPosition(right) & 4,
+              );
+            const beforeSelector = selector
+              ? inputs.filter((input) => precedes(input, selector))
+              : [];
+            const afterSelector = selector
+              ? inputs.filter((input) => precedes(selector, input))
+              : [];
 
-        if (!pixInput || !cpfInput) {
-          return {
-            cpf: Boolean(cpfInput),
-            pix: Boolean(pixInput),
-            name: Boolean(nameInput),
-            debug: {
-              rootFound: true,
-              rootInfo,
-              inputs: allInputInfo,
-              writableCount: writableInputs.length,
-              pixPlaceholder: pixInput?.placeholder || 'none',
-              cpfPlaceholder: cpfInput?.placeholder || 'none',
-              namePlaceholder: nameInput?.placeholder || 'none',
+            // Estrutura comum das skins Pinia: nome antes do seletor; chave PIX e
+            // CPF, nessa ordem, depois dele. Placeholders variam por traducao e skin,
+            // portanto entram apenas como fallback.
+            const nameInput =
+              (beforeSelector.at(-1) as
+                | BrowserRuntimeInputElement
+                | undefined) ??
+              writableInputs.find((input) =>
+                /nome|name|titular|beneficiario/.test(
+                  normalize(`${input.placeholder} ${input.name} ${input.id}`),
+                ),
+              );
+            const structuralWritable = afterSelector.filter(
+              (input) =>
+                !input.disabled && !input.readOnly && input.type !== "hidden",
+            );
+            const pixInput =
+              structuralWritable[0] ??
+              writableInputs.find((input) =>
+                /chave do pix|pix/.test(
+                  normalize(
+                    `${input.placeholder} ${input.name} ${input.id} ${input.className}`,
+                  ),
+                ),
+              );
+            const cpfInput =
+              structuralWritable[1] ??
+              writableInputs.find(
+                (input) =>
+                  input !== pixInput &&
+                  /cpf|11 digitos/.test(
+                    normalize(
+                      `${input.placeholder} ${input.name} ${input.id} ${input.className}`,
+                    ),
+                  ),
+              );
+
+            if (!pixInput || !cpfInput) {
+              return {
+                cpf: Boolean(cpfInput),
+                pix: Boolean(pixInput),
+                name: Boolean(nameInput),
+                debug: {
+                  rootFound: true,
+                  rootInfo,
+                  inputs: allInputInfo,
+                  writableCount: writableInputs.length,
+                  pixPlaceholder: pixInput?.placeholder || "none",
+                  cpfPlaceholder: cpfInput?.placeholder || "none",
+                  namePlaceholder: nameInput?.placeholder || "none",
+                },
+              };
             }
-          };
-        }
 
-        if (nameInput && !nameInput.disabled && !nameInput.readOnly && !nameInput.value) {
-          setValue(nameInput, realNameValue);
-        }
-        setValue(pixInput, pixPhone);
-        setValue(cpfInput, cpfValue);
-        return {
-          cpf: true,
-          pix: true,
-          debug: { rootFound: true, inputs: allInputInfo, nameFilled: !!nameInput }
-        };
-      }, { cpfValue: cpf, pixPhone: phoneNumber, realNameValue: realName })
-      .catch(() => ({ cpf: false, pix: false, debug: { error: "evaluate failed" } }));
+            if (
+              nameInput &&
+              !nameInput.disabled &&
+              !nameInput.readOnly &&
+              !nameInput.value
+            ) {
+              setValue(nameInput, realNameValue);
+            }
+            setValue(pixInput, pixPhone);
+            setValue(cpfInput, cpfValue);
+            return {
+              cpf: true,
+              pix: true,
+              debug: {
+                rootFound: true,
+                inputs: allInputInfo,
+                nameFilled: !!nameInput,
+              },
+            };
+          },
+          { cpfValue: cpf, pixPhone: phoneNumber, realNameValue: realName },
+        )
+        .catch(() => ({
+          cpf: false,
+          pix: false,
+          debug: { error: "evaluate failed" },
+        }));
 
     let filled = await tryFill();
     const fillDeadline = Date.now() + 4000;
@@ -4184,11 +5583,15 @@ export class AutomationRuntimeService {
       filled = await tryFill();
     }
 
-    diag(`fillForm-result: pix=${filled.pix} cpf=${filled.cpf} debug=${JSON.stringify((filled as Record<string, unknown>).debug)}`);
+    diag(
+      `fillForm-result: pix=${filled.pix} cpf=${filled.cpf} debug=${JSON.stringify((filled as Record<string, unknown>).debug)}`,
+    );
     diag(`fillForm-modal after fill: ${await pixModalOpen()}`);
 
     if (!filled.pix || !filled.cpf) {
-      throw new Error("campos de telefone PIX e CPF nao foram encontrados no formulario");
+      throw new Error(
+        "campos de telefone PIX e CPF nao foram encontrados no formulario",
+      );
     }
   }
 
@@ -4201,7 +5604,11 @@ export class AutomationRuntimeService {
    * URL efetiva como homeUrl do perfil (preservando path/query da original) e
    * registramos a nova origem para nao reabrir cadastro.
    */
-  private persistRedirectedPlatformUrl(runId: string, profile: ProfileSummary, liveUrl: string): string {
+  private persistRedirectedPlatformUrl(
+    runId: string,
+    profile: ProfileSummary,
+    liveUrl: string,
+  ): string {
     const homeUrl = profile.homeUrl.trim();
     if (!liveUrl) {
       return homeUrl;
@@ -4237,7 +5644,7 @@ export class AutomationRuntimeService {
     this.log(
       runId,
       "info",
-      `[${profile.name}] Plataforma redirecionou para ${new URL(nextUrl).host}; link do perfil atualizado para evitar novo redirecionamento.`
+      `[${profile.name}] Plataforma redirecionou para ${new URL(nextUrl).host}; link do perfil atualizado para evitar novo redirecionamento.`,
     );
     return nextUrl;
   }
@@ -4246,7 +5653,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     profile: ProfileSummary,
-    startUrl: string
+    startUrl: string,
   ): Promise<Page> {
     const isUsable = async (candidate: Page) => {
       if (candidate.isClosed()) {
@@ -4254,7 +5661,12 @@ export class AutomationRuntimeService {
       }
 
       const state = await this.readAutomationPageState(candidate);
-      return Boolean(state && !state.auxiliary && state.viewportWidth > 0 && state.viewportHeight > 0);
+      return Boolean(
+        state &&
+        !state.auxiliary &&
+        state.viewportWidth > 0 &&
+        state.viewportHeight > 0,
+      );
     };
 
     if (await isUsable(page)) {
@@ -4262,13 +5674,17 @@ export class AutomationRuntimeService {
       return page;
     }
 
-    const currentState = await this.readAutomationPageState(page).catch(() => undefined);
+    const currentState = await this.readAutomationPageState(page).catch(
+      () => undefined,
+    );
     this.log(
       runId,
       "warning",
       `[${profile.name}] Pagina atual virou documento auxiliar (${currentState?.url || "sem url"}; viewport ${
-        currentState ? `${currentState.viewportWidth}x${currentState.viewportHeight}` : "desconhecido"
-      }); recuperando pagina da plataforma.`
+        currentState
+          ? `${currentState.viewportWidth}x${currentState.viewportHeight}`
+          : "desconhecido"
+      }); recuperando pagina da plataforma.`,
     );
 
     const context = page.context();
@@ -4280,10 +5696,19 @@ export class AutomationRuntimeService {
       }
     })();
 
-    const candidates = context.pages().filter((candidate) => candidate !== page && !candidate.isClosed());
+    const candidates = context
+      .pages()
+      .filter((candidate) => candidate !== page && !candidate.isClosed());
     for (const candidate of candidates) {
-      const state = await this.readAutomationPageState(candidate).catch(() => undefined);
-      if (!state || state.auxiliary || state.viewportWidth <= 0 || state.viewportHeight <= 0) {
+      const state = await this.readAutomationPageState(candidate).catch(
+        () => undefined,
+      );
+      if (
+        !state ||
+        state.auxiliary ||
+        state.viewportWidth <= 0 ||
+        state.viewportHeight <= 0
+      ) {
         continue;
       }
 
@@ -4292,38 +5717,68 @@ export class AutomationRuntimeService {
       // startOrigin). Por isso aceitamos sameOrigin OU heuristica de conteudo OU
       // simplesmente uma pagina http carregada.
       const sameOrigin = startOrigin && state.url.startsWith(startOrigin);
-      const looksLikePlatform = /perfil|profile|deposito|deposit|registro|login|comecar|ofertas/.test(state.body);
+      const looksLikePlatform =
+        /perfil|profile|deposito|deposit|registro|login|comecar|ofertas/.test(
+          state.body,
+        );
       const isHttp = /^https?:\/\//i.test(state.url);
       if (sameOrigin || looksLikePlatform || isHttp) {
-        await this.browserRuntime.setPageAutoClosePopups(candidate, true).catch(() => undefined);
-        this.persistRedirectedPlatformUrl(runId, profile, state.url || candidate.url());
+        await this.browserRuntime
+          .setPageAutoClosePopups(candidate, true)
+          .catch(() => undefined);
+        this.persistRedirectedPlatformUrl(
+          runId,
+          profile,
+          state.url || candidate.url(),
+        );
         return candidate;
       }
     }
 
     const recoveryPage = page.isClosed() ? await context.newPage() : page;
-    await recoveryPage.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
-    await this.browserRuntime.setPageAutoClosePopups(recoveryPage, true).catch(() => undefined);
-    await this.waitForPlatformLoadingToClear(runId, recoveryPage, { retryWithReload: true });
-    await recoveryPage.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => null);
-    await this.normalizeRegistrationEntryPage(runId, recoveryPage, profile.name).catch(() => undefined);
+    await recoveryPage
+      .goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 })
+      .catch(() => null);
+    await this.browserRuntime
+      .setPageAutoClosePopups(recoveryPage, true)
+      .catch(() => undefined);
+    await this.waitForPlatformLoadingToClear(runId, recoveryPage, {
+      retryWithReload: true,
+    });
+    await recoveryPage
+      .waitForLoadState("networkidle", { timeout: 3000 })
+      .catch(() => null);
+    await this.normalizeRegistrationEntryPage(
+      runId,
+      recoveryPage,
+      profile.name,
+    ).catch(() => undefined);
     await recoveryPage.waitForTimeout(900).catch(() => undefined);
     this.persistRedirectedPlatformUrl(runId, profile, recoveryPage.url());
     return recoveryPage;
   }
 
-  private async readAutomationPageState(page: Page): Promise<{
-    auxiliary: boolean;
-    body: string;
-    url: string;
-    viewportHeight: number;
-    viewportWidth: number;
-  } | undefined> {
+  private async readAutomationPageState(page: Page): Promise<
+    | {
+        auxiliary: boolean;
+        body: string;
+        url: string;
+        viewportHeight: number;
+        viewportWidth: number;
+      }
+    | undefined
+  > {
     if (page.isClosed()) {
       return undefined;
     }
 
-    const url = (() => { try { return page.url(); } catch { return ""; } })();
+    const url = (() => {
+      try {
+        return page.url();
+      } catch {
+        return "";
+      }
+    })();
     const snapshot = await page
       .evaluate(() => {
         const normalize = (value: string | null | undefined) =>
@@ -4334,18 +5789,25 @@ export class AutomationRuntimeService {
             .trim()
             .toLowerCase();
         const runtimeWindow = globalThis as unknown as {
-          document: { body?: { innerText?: string; textContent?: string | null }; title?: string };
+          document: {
+            body?: { innerText?: string; textContent?: string | null };
+            title?: string;
+          };
           innerHeight: number;
           innerWidth: number;
           location?: { href?: string };
         };
-        const body = normalize(runtimeWindow.document.body?.innerText || runtimeWindow.document.body?.textContent || "");
+        const body = normalize(
+          runtimeWindow.document.body?.innerText ||
+            runtimeWindow.document.body?.textContent ||
+            "",
+        );
         return {
           body: body.slice(0, 300),
           href: runtimeWindow.location?.href || "",
           title: normalize(runtimeWindow.document.title || ""),
           viewportHeight: runtimeWindow.innerHeight,
-          viewportWidth: runtimeWindow.innerWidth
+          viewportWidth: runtimeWindow.innerWidth,
         };
       })
       .catch(() => undefined);
@@ -4355,7 +5817,9 @@ export class AutomationRuntimeService {
     }
 
     const pageUrl = snapshot.href || url;
-    const badgeOnlyBody = snapshot.body.length <= 80 && /tela\s*\d*.*ip\s*(direto|direct|[\d.:a-f]+)/.test(snapshot.body);
+    const badgeOnlyBody =
+      snapshot.body.length <= 80 &&
+      /tela\s*\d*.*ip\s*(direto|direct|[\d.:a-f]+)/.test(snapshot.body);
     const auxiliary =
       /^about:(blank|srcdoc)$/i.test(pageUrl) ||
       snapshot.viewportWidth <= 0 ||
@@ -4366,7 +5830,7 @@ export class AutomationRuntimeService {
       body: snapshot.body,
       url: pageUrl,
       viewportHeight: snapshot.viewportHeight,
-      viewportWidth: snapshot.viewportWidth
+      viewportWidth: snapshot.viewportWidth,
     };
   }
 
@@ -4387,19 +5851,38 @@ export class AutomationRuntimeService {
     return String(this.randomInt(safeMin, safeMax));
   }
 
-  private isPostRegistrationDepositEnabled(automation: AutomationRecord, settings: AppSettings): boolean {
-    if (!Object.prototype.hasOwnProperty.call(automation.params, "postRegistrationDepositEnabled")) {
+  private isPostRegistrationDepositEnabled(
+    automation: AutomationRecord,
+    settings: AppSettings,
+  ): boolean {
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        automation.params,
+        "postRegistrationDepositEnabled",
+      )
+    ) {
       return settings.postRegistrationDepositEnabled ?? true;
     }
-    const rawValue = automation.params.postRegistrationDepositEnabled?.trim().toLowerCase();
-    return rawValue === "true" || rawValue === "1" || rawValue === "on" || rawValue === "yes";
+    const rawValue = automation.params.postRegistrationDepositEnabled
+      ?.trim()
+      .toLowerCase();
+    return (
+      rawValue === "true" ||
+      rawValue === "1" ||
+      rawValue === "on" ||
+      rawValue === "yes"
+    );
   }
 
   private normalizeManualDepositAmounts(values: string[]): string[] {
     return values
       .map((value) => this.parseDepositNumber(value))
       .filter((value): value is number => value !== undefined)
-      .map((value) => (Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")));
+      .map((value) =>
+        Number.isInteger(value)
+          ? String(value)
+          : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""),
+      );
   }
 
   private parseDepositNumber(value: string | undefined): number | undefined {
@@ -4430,24 +5913,39 @@ export class AutomationRuntimeService {
     page: Page,
     profileName: string,
     stage: string,
-    options?: ManualCaptchaOptions
+    options?: ManualCaptchaOptions,
   ): Promise<boolean> {
     const appearanceTimeoutMs = options?.appearanceTimeoutMs ?? 800;
     const solvedTimeoutMs = options?.solvedTimeoutMs ?? 10 * 60 * 1000;
-    const challenge = await this.waitForCaptchaChallenge(runId, page, appearanceTimeoutMs);
+    const challenge = await this.waitForCaptchaChallenge(
+      runId,
+      page,
+      appearanceTimeoutMs,
+    );
 
     if (!challenge.active) {
       return false;
     }
 
-    if (challenge.label === "Geetest" && this.isAutoCaptchaSolverEnabled(runId)) {
+    if (
+      challenge.label === "Geetest" &&
+      this.isAutoCaptchaSolverEnabled(runId)
+    ) {
       await this.applyGeetestAutoSolveMask(page).catch(() => undefined);
-      const autoSolved = await this.tryAutoSolveGeetestCaptcha(runId, page, profileName).catch(() => false);
+      const autoSolved = await this.tryAutoSolveGeetestCaptcha(
+        runId,
+        page,
+        profileName,
+      ).catch(() => false);
       if (autoSolved) {
         await this.waitForRunDelay(runId, page, 1200);
         await this.restoreGeetestAutoSolveMask(page).catch(() => undefined);
         if (!(await this.detectCaptchaChallenge(page)).active) {
-          this.log(runId, "success", `[${profileName}] Captcha Geetest resolvido automaticamente em ${stage}.`);
+          this.log(
+            runId,
+            "success",
+            `[${profileName}] Captcha Geetest resolvido automaticamente em ${stage}.`,
+          );
           return true;
         }
         return true;
@@ -4461,7 +5959,7 @@ export class AutomationRuntimeService {
     this.log(
       runId,
       "warning",
-      `[${profileName}] Captcha detectado em ${stage} (${challenge.label}). Resolva manualmente na janela do navegador; a automacao vai continuar sozinha.`
+      `[${profileName}] Captcha detectado em ${stage} (${challenge.label}). Resolva manualmente na janela do navegador; a automacao vai continuar sozinha.`,
     );
     const startedAt = Date.now();
     let lastReminderAt = Date.now();
@@ -4471,22 +5969,36 @@ export class AutomationRuntimeService {
       const current = await this.detectCaptchaChallenge(page);
       if (!current.active) {
         await this.waitForRunDelay(runId, page, 500);
-        this.log(runId, "success", `[${profileName}] Captcha resolvido; retomando ${stage}.`);
+        this.log(
+          runId,
+          "success",
+          `[${profileName}] Captcha resolvido; retomando ${stage}.`,
+        );
         return true;
       }
 
       if (Date.now() - lastReminderAt > 30000) {
         lastReminderAt = Date.now();
-        this.log(runId, "info", `[${profileName}] Aguardando solucao manual do captcha em ${stage}.`);
+        this.log(
+          runId,
+          "info",
+          `[${profileName}] Aguardando solucao manual do captcha em ${stage}.`,
+        );
       }
 
       await this.waitForRunDelay(runId, page, 550);
     }
 
-    throw new Error(`captcha em ${stage} nao foi resolvido dentro do tempo limite`);
+    throw new Error(
+      `captcha em ${stage} nao foi resolvido dentro do tempo limite`,
+    );
   }
 
-  private async waitForCaptchaChallenge(runId: string, page: Page, timeoutMs: number): Promise<CaptchaChallengeInfo> {
+  private async waitForCaptchaChallenge(
+    runId: string,
+    page: Page,
+    timeoutMs: number,
+  ): Promise<CaptchaChallengeInfo> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const challenge = await this.detectCaptchaChallenge(page);
@@ -4499,7 +6011,9 @@ export class AutomationRuntimeService {
     return this.detectCaptchaChallenge(page);
   }
 
-  private async detectCaptchaChallenge(page: Page): Promise<CaptchaChallengeInfo> {
+  private async detectCaptchaChallenge(
+    page: Page,
+  ): Promise<CaptchaChallengeInfo> {
     return page
       .evaluate(() => {
         type RuntimeElement = {
@@ -4561,9 +6075,12 @@ export class AutomationRuntimeService {
           "[class*='hcaptcha' i]",
           "[id*='hcaptcha' i]",
           "[class*='recaptcha' i]",
-          "[id*='recaptcha' i]"
+          "[id*='recaptcha' i]",
         ].join(",");
-        const viewportArea = Math.max(1, runtimeWindow.innerWidth * runtimeWindow.innerHeight);
+        const viewportArea = Math.max(
+          1,
+          runtimeWindow.innerWidth * runtimeWindow.innerHeight,
+        );
         const isVisible = (element: RuntimeElement) => {
           const style = runtimeWindow.getComputedStyle(element);
           const rect = element.getBoundingClientRect();
@@ -4587,14 +6104,17 @@ export class AutomationRuntimeService {
               element.getAttribute?.("class"),
               element.getAttribute?.("src"),
               element.getAttribute?.("title"),
-              element.getAttribute?.("aria-label")
-            ].join(" ")
+              element.getAttribute?.("aria-label"),
+            ].join(" "),
           );
         const scoreElement = (element: RuntimeElement) => {
           if (element.getAttribute?.("id") === "__predatorAutoSolveMask") {
             return undefined;
           }
-          if (!isVisible(element) || /^(script|style|noscript|html|body)$/i.test(element.localName || "")) {
+          if (
+            !isVisible(element) ||
+            /^(script|style|noscript|html|body)$/i.test(element.localName || "")
+          ) {
             return undefined;
           }
 
@@ -4605,11 +6125,17 @@ export class AutomationRuntimeService {
             /confirmar|confirm|verificar|verify/.test(haystack) &&
             Boolean(
               element.querySelector?.(
-                "canvas,img,svg,[class*='point' i],[class*='click' i],[class*='mark' i],[class*='verify' i],[class*='validate' i]"
-              )
+                "canvas,img,svg,[class*='point' i],[class*='click' i],[class*='mark' i],[class*='verify' i],[class*='validate' i]",
+              ),
             ) &&
-            !/deposito|depositar|recarga|pix|registro|login|senha|password/.test(haystack);
-          if (!captchaTextPattern.test(haystack) && !element.querySelector?.(captchaSelector) && !hasPointClickChallenge) {
+            !/deposito|depositar|recarga|pix|registro|login|senha|password/.test(
+              haystack,
+            );
+          if (
+            !captchaTextPattern.test(haystack) &&
+            !element.querySelector?.(captchaSelector) &&
+            !hasPointClickChallenge
+          ) {
             return undefined;
           }
 
@@ -4641,192 +6167,234 @@ export class AutomationRuntimeService {
                     ? "reCAPTCHA"
                     : "captcha",
             score,
-            zIndex: Number.parseInt(runtimeWindow.getComputedStyle(element).zIndex || "0", 10) || 0
+            zIndex:
+              Number.parseInt(
+                runtimeWindow.getComputedStyle(element).zIndex || "0",
+                10,
+              ) || 0,
           };
         };
 
         const candidates = [
-          ...Array.from(runtimeWindow.document.querySelectorAll(captchaSelector)),
-          ...Array.from(runtimeWindow.document.querySelectorAll(".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog"))
+          ...Array.from(
+            runtimeWindow.document.querySelectorAll(captchaSelector),
+          ),
+          ...Array.from(
+            runtimeWindow.document.querySelectorAll(
+              ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog",
+            ),
+          ),
         ]
           .map((element) => ({ element, result: scoreElement(element) }))
-          .filter((entry): entry is { element: RuntimeElement; result: { label: string; score: number; zIndex: number } } =>
-            Boolean(entry.result && entry.result.score >= 45)
+          .filter(
+            (
+              entry,
+            ): entry is {
+              element: RuntimeElement;
+              result: { label: string; score: number; zIndex: number };
+            } => Boolean(entry.result && entry.result.score >= 45),
           )
-          .sort((left, right) => right.result.score - left.result.score || right.result.zIndex - left.result.zIndex);
+          .sort(
+            (left, right) =>
+              right.result.score - left.result.score ||
+              right.result.zIndex - left.result.zIndex,
+          );
 
         const best = candidates[0];
         return best
           ? {
               active: true,
-              label: best.result.label
+              label: best.result.label,
             }
           : {
               active: false,
-              label: ""
+              label: "",
             };
       })
       .catch(() => ({ active: false, label: "" }));
   }
 
-  private async applyGeetestAutoSolveMask(page: Page): Promise<string | undefined> {
+  private async applyGeetestAutoSolveMask(
+    page: Page,
+  ): Promise<string | undefined> {
     return page
-      .evaluate(() => {
-        type RuntimeRect = {
-          bottom: number;
-          height: number;
-          left: number;
-          right: number;
-          top: number;
-          width: number;
-        };
-        type RuntimeElement = {
-          closest?: (selector: string) => RuntimeElement | null;
-          getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => RuntimeRect;
-          id?: string;
-          remove?: () => void;
-          setAttribute?: (name: string, value: string) => void;
-          style: {
-            cssText: string;
+      .evaluate(
+        () => {
+          type RuntimeRect = {
+            bottom: number;
+            height: number;
+            left: number;
+            right: number;
+            top: number;
+            width: number;
           };
-          textContent?: string | null;
-        };
-        const maskId = "__predatorAutoSolveMask";
-        const runtimeWindow = globalThis as unknown as {
-          __predatorGeetestBridge?: {
-            autoMaskSuppressed?: boolean;
-          };
-          document: {
-            body: {
-              append: (element: RuntimeElement) => void;
+          type RuntimeElement = {
+            closest?: (selector: string) => RuntimeElement | null;
+            getAttribute?: (name: string) => string | null;
+            getBoundingClientRect: () => RuntimeRect;
+            id?: string;
+            remove?: () => void;
+            setAttribute?: (name: string, value: string) => void;
+            style: {
+              cssText: string;
             };
-            createElement: (tagName: string) => RuntimeElement;
-            getElementById: (id: string) => RuntimeElement | null;
-            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            textContent?: string | null;
           };
-          getComputedStyle: (element: RuntimeElement) => {
-            display: string;
-            opacity: string;
-            visibility: string;
+          const maskId = "__predatorAutoSolveMask";
+          const runtimeWindow = globalThis as unknown as {
+            __predatorGeetestBridge?: {
+              autoMaskSuppressed?: boolean;
+            };
+            document: {
+              body: {
+                append: (element: RuntimeElement) => void;
+              };
+              createElement: (tagName: string) => RuntimeElement;
+              getElementById: (id: string) => RuntimeElement | null;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+            };
+            innerHeight: number;
+            innerWidth: number;
           };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        if (runtimeWindow.__predatorGeetestBridge) {
-          runtimeWindow.__predatorGeetestBridge.autoMaskSuppressed = false;
-        }
-        const existing = runtimeWindow.document.getElementById(maskId);
-        if (existing) {
-          return existing.getAttribute?.("data-predator-mask-label") || "ativo";
-        }
-
-        const selector = [
-          ".geetest_panel",
-          ".geetest_box",
-          ".geetest_popup",
-          ".geetest_widget",
-          ".geetest_window",
-          ".geetest_float",
-          ".geetest_bind",
-          "[class*='geetest_panel']",
-          "[class*='geetest_box']",
-          "[class*='geetest_popup']",
-          "[class*='geetest_widget']",
-          "[class*='geetest_window']",
-          "[class*='geetest_float']",
-          "[class*='geetest_bind']",
-          "[id*='geetest']",
-          "iframe[src*='geetest']",
-          "iframe[src*='gcaptcha']"
-        ].join(",");
-        const isVisible = (element: RuntimeElement) => {
-          const style = runtimeWindow.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 20 &&
-            rect.height > 20 &&
-            rect.right > 0 &&
-            rect.bottom > 0 &&
-            rect.left < runtimeWindow.innerWidth &&
-            rect.top < runtimeWindow.innerHeight
-          );
-        };
-        const elements = Array.from(runtimeWindow.document.querySelectorAll(selector)).filter(isVisible);
-        const candidates = elements
-          .map((element) => {
-            const modal = element.closest?.(
-              "[role='dialog'], [aria-modal='true'], .modal, .popup, .dialog, .ui-popup, .ui-dialog, .van-popup, .van-dialog, .geetest_panel, .geetest_box, .geetest_popup"
+          if (runtimeWindow.__predatorGeetestBridge) {
+            runtimeWindow.__predatorGeetestBridge.autoMaskSuppressed = false;
+          }
+          const existing = runtimeWindow.document.getElementById(maskId);
+          if (existing) {
+            return (
+              existing.getAttribute?.("data-predator-mask-label") || "ativo"
             );
-            const target = modal && isVisible(modal) ? modal : element;
-            const rect = target.getBoundingClientRect();
-            return {
-              rect,
-              area: rect.width * rect.height
-            };
-          })
-          .filter((entry) => entry.area > 0)
-          .sort((a, b) => b.area - a.area);
+          }
 
-        const viewportWidth = Math.max(1, runtimeWindow.innerWidth);
-        const viewportHeight = Math.max(1, runtimeWindow.innerHeight);
-        const targetRect = candidates[0]?.rect;
-        const pad = targetRect ? 10 : 0;
-        const left = targetRect ? Math.max(0, targetRect.left - pad) : 0;
-        const top = targetRect ? Math.max(0, targetRect.top - pad) : 0;
-        const right = targetRect ? Math.min(viewportWidth, targetRect.right + pad) : viewportWidth;
-        const bottom = targetRect ? Math.min(viewportHeight, targetRect.bottom + pad) : viewportHeight;
+          const selector = [
+            ".geetest_panel",
+            ".geetest_box",
+            ".geetest_popup",
+            ".geetest_widget",
+            ".geetest_window",
+            ".geetest_float",
+            ".geetest_bind",
+            "[class*='geetest_panel']",
+            "[class*='geetest_box']",
+            "[class*='geetest_popup']",
+            "[class*='geetest_widget']",
+            "[class*='geetest_window']",
+            "[class*='geetest_float']",
+            "[class*='geetest_bind']",
+            "[id*='geetest']",
+            "iframe[src*='geetest']",
+            "iframe[src*='gcaptcha']",
+          ].join(",");
+          const isVisible = (element: RuntimeElement) => {
+            const style = runtimeWindow.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 20 &&
+              rect.height > 20 &&
+              rect.right > 0 &&
+              rect.bottom > 0 &&
+              rect.left < runtimeWindow.innerWidth &&
+              rect.top < runtimeWindow.innerHeight
+            );
+          };
+          const elements = Array.from(
+            runtimeWindow.document.querySelectorAll(selector),
+          ).filter(isVisible);
+          const candidates = elements
+            .map((element) => {
+              const modal = element.closest?.(
+                "[role='dialog'], [aria-modal='true'], .modal, .popup, .dialog, .ui-popup, .ui-dialog, .van-popup, .van-dialog, .geetest_panel, .geetest_box, .geetest_popup",
+              );
+              const target = modal && isVisible(modal) ? modal : element;
+              const rect = target.getBoundingClientRect();
+              return {
+                rect,
+                area: rect.width * rect.height,
+              };
+            })
+            .filter((entry) => entry.area > 0)
+            .sort((a, b) => b.area - a.area);
 
-        const mask = runtimeWindow.document.createElement("div");
-        mask.id = maskId;
-        mask.setAttribute?.("data-predator-mask-label", targetRect ? "widget" : "pagina");
-        mask.setAttribute?.("aria-live", "polite");
-        mask.textContent = "Resolvendo captcha automaticamente...";
-        mask.style.cssText = [
-          "position:fixed",
-          `left:${Math.round(left)}px`,
-          `top:${Math.round(top)}px`,
-          `width:${Math.max(1, Math.round(right - left))}px`,
-          `height:${Math.max(1, Math.round(bottom - top))}px`,
-          "z-index:2147483647",
-          "display:flex",
-          "align-items:center",
-          "justify-content:center",
-          "box-sizing:border-box",
-          "padding:18px",
-          "background:rgba(255,255,255,0.97)",
-          "color:#0f172a",
-          "font:600 14px/1.4 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
-          "text-align:center",
-          "pointer-events:auto",
-          "border-radius:10px",
-          "box-shadow:0 10px 30px rgba(15,23,42,0.18)"
-        ].join(";");
-        runtimeWindow.document.body.append(mask);
-        return mask.getAttribute?.("data-predator-mask-label") || undefined;
-      }, undefined, PATCHRIGHT_MAIN_WORLD)
+          const viewportWidth = Math.max(1, runtimeWindow.innerWidth);
+          const viewportHeight = Math.max(1, runtimeWindow.innerHeight);
+          const targetRect = candidates[0]?.rect;
+          const pad = targetRect ? 10 : 0;
+          const left = targetRect ? Math.max(0, targetRect.left - pad) : 0;
+          const top = targetRect ? Math.max(0, targetRect.top - pad) : 0;
+          const right = targetRect
+            ? Math.min(viewportWidth, targetRect.right + pad)
+            : viewportWidth;
+          const bottom = targetRect
+            ? Math.min(viewportHeight, targetRect.bottom + pad)
+            : viewportHeight;
+
+          const mask = runtimeWindow.document.createElement("div");
+          mask.id = maskId;
+          mask.setAttribute?.(
+            "data-predator-mask-label",
+            targetRect ? "widget" : "pagina",
+          );
+          mask.setAttribute?.("aria-live", "polite");
+          mask.textContent = "Resolvendo captcha automaticamente...";
+          mask.style.cssText = [
+            "position:fixed",
+            `left:${Math.round(left)}px`,
+            `top:${Math.round(top)}px`,
+            `width:${Math.max(1, Math.round(right - left))}px`,
+            `height:${Math.max(1, Math.round(bottom - top))}px`,
+            "z-index:2147483647",
+            "display:flex",
+            "align-items:center",
+            "justify-content:center",
+            "box-sizing:border-box",
+            "padding:18px",
+            "background:rgba(255,255,255,0.97)",
+            "color:#0f172a",
+            "font:600 14px/1.4 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+            "text-align:center",
+            "pointer-events:auto",
+            "border-radius:10px",
+            "box-shadow:0 10px 30px rgba(15,23,42,0.18)",
+          ].join(";");
+          runtimeWindow.document.body.append(mask);
+          return mask.getAttribute?.("data-predator-mask-label") || undefined;
+        },
+        undefined,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch(() => undefined);
   }
 
   private async restoreGeetestAutoSolveMask(page: Page): Promise<void> {
     await page
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as {
-          __predatorGeetestBridge?: {
-            autoMaskSuppressed?: boolean;
+      .evaluate(
+        () => {
+          const runtimeWindow = globalThis as unknown as {
+            __predatorGeetestBridge?: {
+              autoMaskSuppressed?: boolean;
+            };
+            document: {
+              getElementById: (id: string) => { remove?: () => void } | null;
+            };
           };
-          document: {
-            getElementById: (id: string) => { remove?: () => void } | null;
-          };
-        };
-        if (runtimeWindow.__predatorGeetestBridge) {
-          runtimeWindow.__predatorGeetestBridge.autoMaskSuppressed = true;
-        }
-        runtimeWindow.document.getElementById("__predatorAutoSolveMask")?.remove?.();
-      }, undefined, PATCHRIGHT_MAIN_WORLD)
+          if (runtimeWindow.__predatorGeetestBridge) {
+            runtimeWindow.__predatorGeetestBridge.autoMaskSuppressed = true;
+          }
+          runtimeWindow.document
+            .getElementById("__predatorAutoSolveMask")
+            ?.remove?.();
+        },
+        undefined,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch(() => undefined);
   }
 
@@ -5271,7 +6839,7 @@ export class AutomationRuntimeService {
   wrapInit("initGeetest4");
   wrapInit("initBotion");
 })();
-`
+`,
     });
   }
 
@@ -5284,7 +6852,10 @@ export class AutomationRuntimeService {
       // 1o sinal de rede geetest neste run = ha captcha real chegando. Pre-aquece o worker
       // AGORA (em paralelo com o widget montando) para esconder o cold-start do CLIP, sem
       // nunca aquecer quando a plataforma nao tem captcha. So enquanto o run esta ativo.
-      if (this.autoCaptchaSolverRuns.has(runId) && !this.warmedSolverRuns.has(runId)) {
+      if (
+        this.autoCaptchaSolverRuns.has(runId) &&
+        !this.warmedSolverRuns.has(runId)
+      ) {
         this.warmedSolverRuns.add(runId);
         this.getGeetestSolver().beginWarmSession();
       }
@@ -5318,7 +6889,7 @@ export class AutomationRuntimeService {
       return {
         captchaId,
         baseUrl: `${parsed.protocol}//${parsed.host}`,
-        riskType: parsed.searchParams.get("risk_type") || undefined
+        riskType: parsed.searchParams.get("risk_type") || undefined,
       };
     } catch {
       return null;
@@ -5328,24 +6899,29 @@ export class AutomationRuntimeService {
   private async tryAutoSolveGeetestCaptcha(
     runId: string,
     page: Page,
-    profileName: string
+    profileName: string,
   ): Promise<boolean> {
     const captured = this.geetestCapturedData.get(runId);
-    const captchaId = captured?.captchaId || await this.extractGeetestCaptchaIdFromPage(page);
+    const captchaId =
+      captured?.captchaId || (await this.extractGeetestCaptchaIdFromPage(page));
     if (!captchaId) {
       return false;
     }
 
     const solver = this.getGeetestSolver();
 
-    for (let attempt = 1; attempt <= GEETEST_AUTO_SOLVE_ATTEMPTS; attempt += 1) {
+    for (
+      let attempt = 1;
+      attempt <= GEETEST_AUTO_SOLVE_ATTEMPTS;
+      attempt += 1
+    ) {
       this.ensureRunActive(runId);
       const solution = await solver.solve(
         captchaId,
         captured?.riskType || null,
         captured?.baseUrl,
         undefined,
-        1
+        1,
       );
 
       if (!solution || !solution.lot_number || !solution.pass_token) {
@@ -5354,11 +6930,18 @@ export class AutomationRuntimeService {
           continue;
         }
 
-        this.log(runId, "warning", `[${profileName}] Resolucao automatica do Geetest falhou apos ${GEETEST_AUTO_SOLVE_ATTEMPTS} tentativa(s); aguardando solucao manual.`);
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] Resolucao automatica do Geetest falhou apos ${GEETEST_AUTO_SOLVE_ATTEMPTS} tentativa(s); aguardando solucao manual.`,
+        );
         return false;
       }
 
-      const bridgeResult = await this.resolveGeetestWithPageBridge(page, solution);
+      const bridgeResult = await this.resolveGeetestWithPageBridge(
+        page,
+        solution,
+      );
       if (bridgeResult.resolved) {
         return true;
       }
@@ -5371,7 +6954,7 @@ export class AutomationRuntimeService {
       this.log(
         runId,
         "warning",
-        `[${profileName}] Nao consegui acionar o callback do Geetest; mantendo o captcha aberto para evitar travar o cadastro.`
+        `[${profileName}] Nao consegui acionar o callback do Geetest; mantendo o captcha aberto para evitar travar o cadastro.`,
       );
       await this.injectGeetestSolution(page, solution);
       return false;
@@ -5380,13 +6963,16 @@ export class AutomationRuntimeService {
     return false;
   }
 
-  private async resolveGeetestWithPageBridge(page: Page, solution: GeetestSolution): Promise<GeetestBridgeResult> {
+  private async resolveGeetestWithPageBridge(
+    page: Page,
+    solution: GeetestSolution,
+  ): Promise<GeetestBridgeResult> {
     const tokensJson = JSON.stringify({
       captcha_id: solution.captcha_id || "",
       lot_number: solution.lot_number || "",
       pass_token: solution.pass_token || "",
       gen_time: solution.gen_time || String(Math.floor(Date.now() / 1000)),
-      captcha_output: solution.captcha_output || ""
+      captcha_output: solution.captcha_output || "",
     });
     const fallback: GeetestBridgeResult = {
       resolved: false,
@@ -5394,49 +6980,56 @@ export class AutomationRuntimeService {
       fired: 0,
       instances: 0,
       hasInstance: false,
-      reason: "bridge-unavailable"
+      reason: "bridge-unavailable",
     };
 
-    const initial = await page.evaluate((json) => {
-      type BridgeStatus = {
-        callbacks?: number;
-        fired?: number;
-        hasInstance?: boolean;
-        instances?: number;
-      };
-      type Bridge = {
-        resolve?: (solution: Record<string, string>) => BridgeStatus;
-        status?: () => BridgeStatus & { hasSolution?: boolean };
-      };
-      const runtimeWindow = globalThis as typeof globalThis & {
-        __predatorGeetestBridge?: Bridge;
-      };
-      const bridge = runtimeWindow.__predatorGeetestBridge;
-      if (!bridge?.resolve) {
-        return {
-          resolved: false,
-          callbacks: 0,
-          fired: 0,
-          instances: 0,
-          hasInstance: false,
-          reason: "bridge-missing"
-        };
-      }
+    const initial = await page
+      .evaluate(
+        (json) => {
+          type BridgeStatus = {
+            callbacks?: number;
+            fired?: number;
+            hasInstance?: boolean;
+            instances?: number;
+          };
+          type Bridge = {
+            resolve?: (solution: Record<string, string>) => BridgeStatus;
+            status?: () => BridgeStatus & { hasSolution?: boolean };
+          };
+          const runtimeWindow = globalThis as typeof globalThis & {
+            __predatorGeetestBridge?: Bridge;
+          };
+          const bridge = runtimeWindow.__predatorGeetestBridge;
+          if (!bridge?.resolve) {
+            return {
+              resolved: false,
+              callbacks: 0,
+              fired: 0,
+              instances: 0,
+              hasInstance: false,
+              reason: "bridge-missing",
+            };
+          }
 
-      const result = bridge.resolve(JSON.parse(json) as Record<string, string>) || {};
-      const callbacks = Number(result.callbacks || 0);
-      const fired = Number(result.fired || 0);
-      const instances = Number(result.instances || 0);
-      const hasInstance = Boolean(result.hasInstance);
-      return {
-        resolved: callbacks > 0 || fired > 0,
-        callbacks,
-        fired,
-        instances,
-        hasInstance,
-        reason: callbacks > 0 || fired > 0 ? undefined : "no-callback-yet"
-      };
-    }, tokensJson, PATCHRIGHT_MAIN_WORLD).catch(() => fallback);
+          const result =
+            bridge.resolve(JSON.parse(json) as Record<string, string>) || {};
+          const callbacks = Number(result.callbacks || 0);
+          const fired = Number(result.fired || 0);
+          const instances = Number(result.instances || 0);
+          const hasInstance = Boolean(result.hasInstance);
+          return {
+            resolved: callbacks > 0 || fired > 0,
+            callbacks,
+            fired,
+            instances,
+            hasInstance,
+            reason: callbacks > 0 || fired > 0 ? undefined : "no-callback-yet",
+          };
+        },
+        tokensJson,
+        PATCHRIGHT_MAIN_WORLD,
+      )
+      .catch(() => fallback);
 
     if (initial.resolved) {
       return initial;
@@ -5446,44 +7039,51 @@ export class AutomationRuntimeService {
     let latest = initial;
     while (Date.now() - startedAt < 2500) {
       await page.waitForTimeout(150);
-      latest = await page.evaluate(() => {
-        type BridgeStatus = {
-          callbacks?: number;
-          fired?: number;
-          hasInstance?: boolean;
-          instances?: number;
-          hasSolution?: boolean;
-        };
-        type Bridge = {
-          status?: () => BridgeStatus;
-        };
-        const runtimeWindow = globalThis as typeof globalThis & {
-          __predatorGeetestBridge?: Bridge;
-        };
-        const status = runtimeWindow.__predatorGeetestBridge?.status?.();
-        if (!status) {
-          return {
-            resolved: false,
-            callbacks: 0,
-            fired: 0,
-            instances: 0,
-            hasInstance: false,
-            reason: "bridge-missing"
-          };
-        }
-        const callbacks = Number(status.callbacks || 0);
-        const fired = Number(status.fired || 0);
-        const instances = Number(status.instances || 0);
-        const hasInstance = Boolean(status.hasInstance);
-        return {
-          resolved: Boolean(status.hasSolution) && (callbacks > 0 || fired > 0),
-          callbacks,
-          fired,
-          instances,
-          hasInstance,
-          reason: callbacks > 0 || fired > 0 ? undefined : "no-callback"
-        };
-      }, undefined, PATCHRIGHT_MAIN_WORLD).catch(() => latest);
+      latest = await page
+        .evaluate(
+          () => {
+            type BridgeStatus = {
+              callbacks?: number;
+              fired?: number;
+              hasInstance?: boolean;
+              instances?: number;
+              hasSolution?: boolean;
+            };
+            type Bridge = {
+              status?: () => BridgeStatus;
+            };
+            const runtimeWindow = globalThis as typeof globalThis & {
+              __predatorGeetestBridge?: Bridge;
+            };
+            const status = runtimeWindow.__predatorGeetestBridge?.status?.();
+            if (!status) {
+              return {
+                resolved: false,
+                callbacks: 0,
+                fired: 0,
+                instances: 0,
+                hasInstance: false,
+                reason: "bridge-missing",
+              };
+            }
+            const callbacks = Number(status.callbacks || 0);
+            const fired = Number(status.fired || 0);
+            const instances = Number(status.instances || 0);
+            const hasInstance = Boolean(status.hasInstance);
+            return {
+              resolved:
+                Boolean(status.hasSolution) && (callbacks > 0 || fired > 0),
+              callbacks,
+              fired,
+              instances,
+              hasInstance,
+              reason: callbacks > 0 || fired > 0 ? undefined : "no-callback",
+            };
+          },
+          undefined,
+          PATCHRIGHT_MAIN_WORLD,
+        )
+        .catch(() => latest);
 
       if (latest.resolved) {
         return latest;
@@ -5493,25 +7093,36 @@ export class AutomationRuntimeService {
     return latest;
   }
 
-  private async interactWithGeetestWidget(page: Page, solution: GeetestSolution): Promise<boolean> {
+  private async interactWithGeetestWidget(
+    page: Page,
+    solution: GeetestSolution,
+  ): Promise<boolean> {
     try {
-      const frame = page.frameLocator('iframe[src*="geetest" i], iframe[src*="gcaptcha" i]').first();
+      const frame = page
+        .frameLocator('iframe[src*="geetest" i], iframe[src*="gcaptcha" i]')
+        .first();
 
-      const slider = frame.locator(
-        ".geetest_slider_button, [class*='geetest_slider_button'], [class*='slider_button']"
-      ).first();
+      const slider = frame
+        .locator(
+          ".geetest_slider_button, [class*='geetest_slider_button'], [class*='slider_button']",
+        )
+        .first();
       const sliderVisible = await slider.isVisible().catch(() => false);
       if (sliderVisible) {
         const box = await slider.boundingBox().catch(() => null);
         if (!box) return false;
 
-        const track = frame.locator(
-          ".geetest_slider_track, [class*='geetest_slide_track'], [class*='slider_track']"
-        ).first();
+        const track = frame
+          .locator(
+            ".geetest_slider_track, [class*='geetest_slide_track'], [class*='slider_track']",
+          )
+          .first();
         const trackBox = await track.boundingBox().catch(() => null);
         const maxSlide = trackBox ? trackBox.width - box.width : 300;
 
-        const userresponse = Number(solution.setLeft ?? solution.userresponse ?? 0);
+        const userresponse = Number(
+          solution.setLeft ?? solution.userresponse ?? 0,
+        );
         const distance = Math.min(maxSlide, Math.max(0, userresponse));
         const startX = box.x + box.width / 2;
         const startY = box.y + box.height / 2;
@@ -5523,7 +7134,10 @@ export class AutomationRuntimeService {
         await page.waitForTimeout(20 + Math.floor(Math.random() * 40));
         for (let step = 1; step <= 6; step++) {
           const progress = step / 6;
-          const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+          const ease =
+            progress < 0.5
+              ? 2 * progress * progress
+              : 1 - Math.pow(-2 * progress + 2, 2) / 2;
           const currentX = startX + (endX - startX) * ease;
           const currentY = startY + (Math.random() - 0.5) * 2;
           await page.mouse.move(currentX, currentY, { steps: 1 });
@@ -5543,243 +7157,375 @@ export class AutomationRuntimeService {
     }
   }
 
-  private async extractGeetestCaptchaIdFromPage(page: Page): Promise<string | null> {
-    return page.evaluate(() => {
-      type RuntimeElement = {
-        getAttribute?: (name: string) => string | null;
-        textContent?: string | null;
-      };
-      const runtimeWindow = globalThis as unknown as {
-        document: {
-          querySelector: (selector: string) => RuntimeElement | null;
-          querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+  private async extractGeetestCaptchaIdFromPage(
+    page: Page,
+  ): Promise<string | null> {
+    return page
+      .evaluate(() => {
+        type RuntimeElement = {
+          getAttribute?: (name: string) => string | null;
+          textContent?: string | null;
         };
-      };
-      const scripts = runtimeWindow.document.querySelectorAll("script");
-      for (const script of scripts) {
-        const match = (script.textContent || "").match(/captcha_id["\s:=]+["']([a-f0-9]+)["']/i);
-        if (match?.[1]) return match[1];
-      }
-      const iframe = runtimeWindow.document.querySelector('iframe[src*="geetest" i], iframe[src*="gcaptcha" i]');
-      if (iframe) {
-        const src = iframe.getAttribute?.("src") || "";
-        const match = src.match(/captcha_id=([a-f0-9]+)/i);
-        if (match?.[1]) return match[1];
-      }
-      const container = runtimeWindow.document.querySelector('[id*="geetest" i], [class*="geetest" i]');
-      if (container) {
-        const id = container.getAttribute?.("data-captcha-id") || container.getAttribute?.("captchaid");
-        if (id) return id;
-      }
-      return null;
-    }).catch(() => null);
+        const runtimeWindow = globalThis as unknown as {
+          document: {
+            querySelector: (selector: string) => RuntimeElement | null;
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
+        };
+        const scripts = runtimeWindow.document.querySelectorAll("script");
+        for (const script of scripts) {
+          const match = (script.textContent || "").match(
+            /captcha_id["\s:=]+["']([a-f0-9]+)["']/i,
+          );
+          if (match?.[1]) return match[1];
+        }
+        const iframe = runtimeWindow.document.querySelector(
+          'iframe[src*="geetest" i], iframe[src*="gcaptcha" i]',
+        );
+        if (iframe) {
+          const src = iframe.getAttribute?.("src") || "";
+          const match = src.match(/captcha_id=([a-f0-9]+)/i);
+          if (match?.[1]) return match[1];
+        }
+        const container = runtimeWindow.document.querySelector(
+          '[id*="geetest" i], [class*="geetest" i]',
+        );
+        if (container) {
+          const id =
+            container.getAttribute?.("data-captcha-id") ||
+            container.getAttribute?.("captchaid");
+          if (id) return id;
+        }
+        return null;
+      })
+      .catch(() => null);
   }
 
-  private async injectGeetestSolution(page: Page, solution: GeetestSolution): Promise<void> {
+  private async injectGeetestSolution(
+    page: Page,
+    solution: GeetestSolution,
+  ): Promise<void> {
     const tokensJson = JSON.stringify({
       captcha_id: solution.captcha_id || "",
       lot_number: solution.lot_number || "",
       pass_token: solution.pass_token || "",
       gen_time: solution.gen_time || String(Math.floor(Date.now() / 1000)),
-      captcha_output: solution.captcha_output || ""
+      captcha_output: solution.captcha_output || "",
     });
 
-    await page.evaluate((json) => {
-      const data = JSON.parse(json) as Record<string, string>;
-      const d: Record<string, string> = data;
-      const win = globalThis as unknown as {
-        document: {
-          querySelectorAll: (s: string) => Iterable<{
-            closest?: (s: string) => ({ style: { setProperty: (n: string, v: string, p?: string) => void }; parentNode?: { removeChild: (c: unknown) => void } | null }) | null;
-            dispatchEvent?: (e: { bubbles?: boolean }) => boolean;
-            parentNode?: { removeChild: (c: unknown) => void } | null;
-            style?: { setProperty: (n: string, v: string, p?: string) => void };
-            value?: string;
-          }> | null;
+    await page
+      .evaluate((json) => {
+        const data = JSON.parse(json) as Record<string, string>;
+        const d: Record<string, string> = data;
+        const win = globalThis as unknown as {
+          document: {
+            querySelectorAll: (s: string) => Iterable<{
+              closest?: (
+                s: string,
+              ) => {
+                style: {
+                  setProperty: (n: string, v: string, p?: string) => void;
+                };
+                parentNode?: { removeChild: (c: unknown) => void } | null;
+              } | null;
+              dispatchEvent?: (e: { bubbles?: boolean }) => boolean;
+              parentNode?: { removeChild: (c: unknown) => void } | null;
+              style?: {
+                setProperty: (n: string, v: string, p?: string) => void;
+              };
+              value?: string;
+            }> | null;
+          };
+          Event: new (
+            type: string,
+            init?: { bubbles?: boolean },
+          ) => { bubbles?: boolean };
         };
-        Event: new (type: string, init?: { bubbles?: boolean }) => { bubbles?: boolean };
-      };
 
-      const names = ["lot_number", "pass_token", "captcha_output", "gen_time", "captcha_id"];
-      for (let ni = 0; ni < names.length; ni++) {
-        const name = names[ni]!;
-        const value = d[name] || "";
-        if (!value) continue;
-        const inputs = win.document.querySelectorAll(
-          'input[name="' + name + '"], input[id="' + name + '"], input[name*="' + name + '" i], input[id*="' + name + '" i]'
-        ) || [];
-        for (const input of inputs) {
-          try {
-            const proto = Object.getPrototypeOf(input);
-            const desc = Object.getOwnPropertyDescriptor(proto, "value") as PropertyDescriptor | undefined;
-            if (desc?.set) desc.set.call(input, value);
-            else if (input.value !== undefined) input.value = value;
-          } catch { if (input.value !== undefined) input.value = value; }
-          try { input.dispatchEvent?.(new win.Event("input", { bubbles: true })); } catch { /* ignore */ }
-          try { input.dispatchEvent?.(new win.Event("change", { bubbles: true })); } catch { /* ignore */ }
+        const names = [
+          "lot_number",
+          "pass_token",
+          "captcha_output",
+          "gen_time",
+          "captcha_id",
+        ];
+        for (let ni = 0; ni < names.length; ni++) {
+          const name = names[ni]!;
+          const value = d[name] || "";
+          if (!value) continue;
+          const inputs =
+            win.document.querySelectorAll(
+              'input[name="' +
+                name +
+                '"], input[id="' +
+                name +
+                '"], input[name*="' +
+                name +
+                '" i], input[id*="' +
+                name +
+                '" i]',
+            ) || [];
+          for (const input of inputs) {
+            try {
+              const proto = Object.getPrototypeOf(input);
+              const desc = Object.getOwnPropertyDescriptor(proto, "value") as
+                | PropertyDescriptor
+                | undefined;
+              if (desc?.set) desc.set.call(input, value);
+              else if (input.value !== undefined) input.value = value;
+            } catch {
+              if (input.value !== undefined) input.value = value;
+            }
+            try {
+              input.dispatchEvent?.(new win.Event("input", { bubbles: true }));
+            } catch {
+              /* ignore */
+            }
+            try {
+              input.dispatchEvent?.(new win.Event("change", { bubbles: true }));
+            } catch {
+              /* ignore */
+            }
+          }
         }
-      }
-    }, tokensJson).catch(() => undefined);
+      }, tokensJson)
+      .catch(() => undefined);
   }
 
-  private async describeDepositSpaCapabilities(page: Page): Promise<string | undefined> {
+  private async describeDepositSpaCapabilities(
+    page: Page,
+  ): Promise<string | undefined> {
     const snapshot = await resolveContentFrame(page)
-      .evaluate(() => {
-        type RuntimeRecord = Record<PropertyKey, unknown>;
-        type RuntimeElement = {
-          __vue__?: unknown;
-          __vueParentComponent?: RuntimeRecord | null;
-          __vue_app__?: RuntimeRecord | null;
-          getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => { bottom: number; height: number; left: number; right: number; top: number; width: number };
-          textContent?: string | null;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: { body?: RuntimeElement & { innerText?: string }; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex?: string };
-          innerHeight: number;
-          innerWidth: number;
-          location: { hash: string; pathname: string; search: string };
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isObject = (value: unknown): value is RuntimeRecord =>
-          Boolean(value) && (typeof value === "object" || typeof value === "function");
-        const readProp = (target: RuntimeRecord, key: PropertyKey): unknown => {
-          try {
-            return target[key];
-          } catch {
-            return undefined;
-          }
-        };
-        const isVisible = (element: RuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 8 &&
-            rect.height > 8 &&
-            rect.right > 0 &&
-            rect.bottom > 0 &&
-            rect.left < runtimeWindow.innerWidth &&
-            rect.top < runtimeWindow.innerHeight
-          );
-        };
-        const findRouter = (): RuntimeRecord | null => {
-          const direct = (globalThis as RuntimeRecord)["$router"];
-          if (isObject(direct) && typeof readProp(direct, "push") === "function") return direct;
-          for (const raw of runtimeWindow.document.querySelectorAll("body,body *")) {
-            const element = raw as RuntimeElement;
-            const vue = element.__vue__;
-            if (isObject(vue) && isObject(readProp(vue, "$router"))) return readProp(vue, "$router") as RuntimeRecord;
-            const appConfig = element.__vue_app__?.config;
-            const globalProperties = isObject(appConfig) ? readProp(appConfig, "globalProperties") : undefined;
-            const router = isObject(globalProperties) ? readProp(globalProperties, "$router") : undefined;
-            if (isObject(router)) return router;
-          }
-          return null;
-        };
-        const flattenRoutes = (routes: unknown[], base = ""): Array<{ name: string; path: string }> => {
-          const entries: Array<{ name: string; path: string }> = [];
-          const joinPath = (left: string, right: string) => {
-            if (!right) return left || "/";
-            if (right.startsWith("/")) return right;
-            return `${left.replace(/\/$/, "")}/${right}`.replace(/\/{2,}/g, "/") || "/";
+      .evaluate(
+        () => {
+          type RuntimeRecord = Record<PropertyKey, unknown>;
+          type RuntimeElement = {
+            __vue__?: unknown;
+            __vueParentComponent?: RuntimeRecord | null;
+            __vue_app__?: RuntimeRecord | null;
+            getAttribute?: (name: string) => string | null;
+            getBoundingClientRect: () => {
+              bottom: number;
+              height: number;
+              left: number;
+              right: number;
+              top: number;
+              width: number;
+            };
+            textContent?: string | null;
           };
-          for (const route of routes) {
-            if (!isObject(route)) continue;
-            const path = joinPath(base, String(readProp(route, "path") ?? ""));
-            entries.push({ name: String(readProp(route, "name") ?? ""), path });
-            const children = readProp(route, "children");
-            if (Array.isArray(children)) entries.push(...flattenRoutes(children, path));
-          }
-          return entries;
-        };
-        const router = findRouter();
-        const rawRoutes = isObject(router) && isObject(readProp(router, "options"))
-          ? readProp(readProp(router, "options") as RuntimeRecord, "routes")
-          : undefined;
-        const routes = Array.isArray(rawRoutes)
-          ? flattenRoutes(rawRoutes)
-              .filter((route) => /recharge|deposit|cashier|wallet|pay|recarga|deposito/i.test(`${route.name} ${route.path}`))
-              .slice(0, 10)
-              .map((route) => `${route.name || "-"}:${route.path}`)
-          : [];
-        const elements = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            "#app,#app *,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i],.ui-popup,.van-popup,.modal,.popup,body"
-          )
-        ).slice(0, 1800);
-        const seen = new Set<RuntimeRecord>();
-        const stores: string[] = [];
-        const methods = new Set<string>();
-        const visit = (value: unknown, depth: number): void => {
-          if (!isObject(value) || seen.has(value) || seen.size > 1600) return;
-          seen.add(value);
-          const formModel = readProp(value, "formModel");
-          const state = readProp(value, "$state");
-          const stateFormModel = isObject(state) ? readProp(state, "formModel") : undefined;
-          const resolvedFormModel = isObject(formModel) ? formModel : isObject(stateFormModel) ? stateFormModel : undefined;
-          if (resolvedFormModel) {
-            stores.push(Object.keys(resolvedFormModel).slice(0, 8).join("|") || "formModel");
-          }
-          for (const key of Reflect.ownKeys(value).slice(0, 100)) {
-            const keyText = String(key);
-            const child = readProp(value, key);
-            if (typeof child === "function" && /recharge|deposit|cashier|wallet|pay|submit|order|confirm|open|recarga|deposito/i.test(keyText)) {
-              methods.add(keyText);
+          const runtimeWindow = globalThis as unknown as {
+            document: {
+              body?: RuntimeElement & { innerText?: string };
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+              zIndex?: string;
+            };
+            innerHeight: number;
+            innerWidth: number;
+            location: { hash: string; pathname: string; search: string };
+          };
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const isObject = (value: unknown): value is RuntimeRecord =>
+            Boolean(value) &&
+            (typeof value === "object" || typeof value === "function");
+          const readProp = (
+            target: RuntimeRecord,
+            key: PropertyKey,
+          ): unknown => {
+            try {
+              return target[key];
+            } catch {
+              return undefined;
             }
-            if (depth < 3 && isObject(child)) {
-              visit(child, depth + 1);
-            }
-          }
-        };
-        for (const element of elements) {
-          visit(element.__vue__, 0);
-          const component = element.__vueParentComponent;
-          if (component) {
-            visit(component, 0);
-            visit(readProp(component, "proxy"), 0);
-            visit(readProp(component, "ctx"), 0);
-            visit(readProp(component, "setupState"), 0);
-            visit(readProp(component, "exposed"), 0);
-          }
-          const app = element.__vue_app__;
-          if (app) {
-            visit(app, 0);
-            visit(readProp(app, "_context"), 0);
-          }
-        }
-        const buttons = Array.from(runtimeWindow.document.querySelectorAll("button,a,[role='button'],.ui-button,.van-button,div,span"))
-          .filter(isVisible)
-          .map((element) =>
-            normalize(
-              [
-                element.textContent,
-                element.getAttribute?.("class"),
-                element.getAttribute?.("id"),
-                element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title")
-              ].join(" ")
+          };
+          const isVisible = (element: RuntimeElement) => {
+            const rect = element.getBoundingClientRect();
+            const style = runtimeWindow.getComputedStyle(element);
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 8 &&
+              rect.height > 8 &&
+              rect.right > 0 &&
+              rect.bottom > 0 &&
+              rect.left < runtimeWindow.innerWidth &&
+              rect.top < runtimeWindow.innerHeight
+            );
+          };
+          const findRouter = (): RuntimeRecord | null => {
+            const direct = (globalThis as RuntimeRecord)["$router"];
+            if (
+              isObject(direct) &&
+              typeof readProp(direct, "push") === "function"
             )
+              return direct;
+            for (const raw of runtimeWindow.document.querySelectorAll(
+              "body,body *",
+            )) {
+              const element = raw as RuntimeElement;
+              const vue = element.__vue__;
+              if (isObject(vue) && isObject(readProp(vue, "$router")))
+                return readProp(vue, "$router") as RuntimeRecord;
+              const appConfig = element.__vue_app__?.config;
+              const globalProperties = isObject(appConfig)
+                ? readProp(appConfig, "globalProperties")
+                : undefined;
+              const router = isObject(globalProperties)
+                ? readProp(globalProperties, "$router")
+                : undefined;
+              if (isObject(router)) return router;
+            }
+            return null;
+          };
+          const flattenRoutes = (
+            routes: unknown[],
+            base = "",
+          ): Array<{ name: string; path: string }> => {
+            const entries: Array<{ name: string; path: string }> = [];
+            const joinPath = (left: string, right: string) => {
+              if (!right) return left || "/";
+              if (right.startsWith("/")) return right;
+              return (
+                `${left.replace(/\/$/, "")}/${right}`.replace(/\/{2,}/g, "/") ||
+                "/"
+              );
+            };
+            for (const route of routes) {
+              if (!isObject(route)) continue;
+              const path = joinPath(
+                base,
+                String(readProp(route, "path") ?? ""),
+              );
+              entries.push({
+                name: String(readProp(route, "name") ?? ""),
+                path,
+              });
+              const children = readProp(route, "children");
+              if (Array.isArray(children))
+                entries.push(...flattenRoutes(children, path));
+            }
+            return entries;
+          };
+          const router = findRouter();
+          const rawRoutes =
+            isObject(router) && isObject(readProp(router, "options"))
+              ? readProp(readProp(router, "options") as RuntimeRecord, "routes")
+              : undefined;
+          const routes = Array.isArray(rawRoutes)
+            ? flattenRoutes(rawRoutes)
+                .filter((route) =>
+                  /recharge|deposit|cashier|wallet|pay|recarga|deposito/i.test(
+                    `${route.name} ${route.path}`,
+                  ),
+                )
+                .slice(0, 10)
+                .map((route) => `${route.name || "-"}:${route.path}`)
+            : [];
+          const elements = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "#app,#app *,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i],.ui-popup,.van-popup,.modal,.popup,body",
+            ),
+          ).slice(0, 1800);
+          const seen = new Set<RuntimeRecord>();
+          const stores: string[] = [];
+          const methods = new Set<string>();
+          const visit = (value: unknown, depth: number): void => {
+            if (!isObject(value) || seen.has(value) || seen.size > 1600) return;
+            seen.add(value);
+            const formModel = readProp(value, "formModel");
+            const state = readProp(value, "$state");
+            const stateFormModel = isObject(state)
+              ? readProp(state, "formModel")
+              : undefined;
+            const resolvedFormModel = isObject(formModel)
+              ? formModel
+              : isObject(stateFormModel)
+                ? stateFormModel
+                : undefined;
+            if (resolvedFormModel) {
+              stores.push(
+                Object.keys(resolvedFormModel).slice(0, 8).join("|") ||
+                  "formModel",
+              );
+            }
+            for (const key of Reflect.ownKeys(value).slice(0, 100)) {
+              const keyText = String(key);
+              const child = readProp(value, key);
+              if (
+                typeof child === "function" &&
+                /recharge|deposit|cashier|wallet|pay|submit|order|confirm|open|recarga|deposito/i.test(
+                  keyText,
+                )
+              ) {
+                methods.add(keyText);
+              }
+              if (depth < 3 && isObject(child)) {
+                visit(child, depth + 1);
+              }
+            }
+          };
+          for (const element of elements) {
+            visit(element.__vue__, 0);
+            const component = element.__vueParentComponent;
+            if (component) {
+              visit(component, 0);
+              visit(readProp(component, "proxy"), 0);
+              visit(readProp(component, "ctx"), 0);
+              visit(readProp(component, "setupState"), 0);
+              visit(readProp(component, "exposed"), 0);
+            }
+            const app = element.__vue_app__;
+            if (app) {
+              visit(app, 0);
+              visit(readProp(app, "_context"), 0);
+            }
+          }
+          const buttons = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "button,a,[role='button'],.ui-button,.van-button,div,span",
+            ),
           )
-          .filter((text) => /deposit|deposito|recarga|recharge|pagar|pay|confirmar|gerar|pix|qr/.test(text))
-          .slice(0, 10);
-        return {
-          buttons,
-          methods: Array.from(methods).slice(0, 14),
-          route: `${runtimeWindow.location.pathname}${runtimeWindow.location.search}${runtimeWindow.location.hash}`,
-          routes,
-          stores: stores.slice(0, 8)
-        };
-      }, undefined, PATCHRIGHT_MAIN_WORLD)
+            .filter(isVisible)
+            .map((element) =>
+              normalize(
+                [
+                  element.textContent,
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("id"),
+                  element.getAttribute?.("aria-label"),
+                  element.getAttribute?.("title"),
+                ].join(" "),
+              ),
+            )
+            .filter((text) =>
+              /deposit|deposito|recarga|recharge|pagar|pay|confirmar|gerar|pix|qr/.test(
+                text,
+              ),
+            )
+            .slice(0, 10);
+          return {
+            buttons,
+            methods: Array.from(methods).slice(0, 14),
+            route: `${runtimeWindow.location.pathname}${runtimeWindow.location.search}${runtimeWindow.location.hash}`,
+            routes,
+            stores: stores.slice(0, 8),
+          };
+        },
+        undefined,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch(() => undefined);
 
     if (!snapshot) {
@@ -5792,199 +7538,289 @@ export class AutomationRuntimeService {
     );
   }
 
-  private async tryOpenDepositViaSpaCommand(runId: string, page: Page, _profileName: string): Promise<boolean> {
+  private async tryOpenDepositViaSpaCommand(
+    runId: string,
+    page: Page,
+    _profileName: string,
+  ): Promise<boolean> {
     this.ensureRunActive(runId);
     const result = await resolveContentFrame(page)
-      .evaluate(async () => {
-        type RuntimeRecord = Record<PropertyKey, unknown>;
-        type RuntimeElement = {
-          __vue__?: unknown;
-          __vueParentComponent?: RuntimeRecord | null;
-          __vue_app__?: RuntimeRecord | null;
-          click?: () => void;
-          getBoundingClientRect?: () => { bottom: number; height: number; right: number; top: number; width: number };
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        const isObject = (value: unknown): value is RuntimeRecord =>
-          Boolean(value) && (typeof value === "object" || typeof value === "function");
-        const readProp = (target: RuntimeRecord, key: PropertyKey): unknown => {
-          try {
-            return target[key];
-          } catch {
-            return undefined;
-          }
-        };
-        const call = async (owner: RuntimeRecord, key: PropertyKey, args: unknown[]) => {
-          const fn = readProp(owner, key);
-          if (typeof fn !== "function") return false;
-          try {
-            await Reflect.apply(fn, owner, args);
-            return true;
-          } catch {
-            return false;
-          }
-        };
-        const functionSource = (fn: unknown) => {
-          try {
-            return Function.prototype.toString.call(fn).slice(0, 1200).toLowerCase();
-          } catch {
-            return "";
-          }
-        };
-        const routesInsteadOfOpeningWallet = (source: string) =>
-          /(?:\$router|router)\.push|\$cc\.tourl|location\.(?:href|assign|replace)/i.test(source) &&
-          /m_recharge|rechargefund|home\/recharge|\/recharge|deposit|event|\/user|\/home\//i.test(source);
-
-        const elements = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            "#app,#app *,[class*='profile' i],[class*='mine' i],[class*='user' i],[class*='wallet' i],[class*='deposit' i],[class*='recharge' i],body"
-          )
-        ).slice(0, 1600);
-        const objects: RuntimeRecord[] = [];
-        const seen = new Set<RuntimeRecord>();
-        const addObject = (value: unknown) => {
-          if (!isObject(value) || seen.has(value)) return;
-          seen.add(value);
-          objects.push(value);
-        };
-        for (const element of elements) {
-          addObject(element.__vue__);
-          const component = element.__vueParentComponent;
-          if (component) {
-            addObject(component);
-            addObject(readProp(component, "proxy"));
-            addObject(readProp(component, "ctx"));
-            addObject(readProp(component, "setupState"));
-            addObject(readProp(component, "exposed"));
-          }
-        }
-        const piniaCandidates: unknown[] = [];
-        const seenPinia = new Set<unknown>();
-        const addPinia = (value: unknown) => {
-          if (!isObject(value) || seenPinia.has(value)) return;
-          seenPinia.add(value);
-          piniaCandidates.push(value);
-        };
-        const addProvidesPinia = (provides: unknown) => {
-          if (!isObject(provides)) return;
-          for (const key of Reflect.ownKeys(provides)) {
-            if (String(key).toLowerCase().includes("pinia")) {
-              addPinia(readProp(provides, key));
-            }
-          }
-        };
-        const addAppPinia = (appLike: unknown) => {
-          if (!isObject(appLike)) return;
-          addPinia(readProp(readProp(readProp(appLike, "config") as RuntimeRecord, "globalProperties") as RuntimeRecord, "$pinia"));
-          const context = readProp(appLike, "_context");
-          addPinia(readProp(readProp(readProp(context as RuntimeRecord, "config") as RuntimeRecord, "globalProperties") as RuntimeRecord, "$pinia"));
-          addProvidesPinia(readProp(context as RuntimeRecord, "provides"));
-          addProvidesPinia(readProp(appLike, "provides"));
-        };
-        for (const element of elements) {
-          addAppPinia(element.__vue_app__);
-          const component = element.__vueParentComponent;
-          if (component) {
-            addAppPinia(readProp(component, "appContext"));
-          }
-        }
-        const bestStores = piniaCandidates
-          .map((pinia) => {
-            const stores = readProp(pinia as RuntimeRecord, "_s") as Map<string, RuntimeRecord> | undefined;
-            if (!stores || typeof stores.get !== "function" || typeof stores.keys !== "function") return undefined;
-            const keys = Array.from(stores.keys());
-            const score =
-              keys.length +
-              (stores.has("dialog") ? 1000 : 0) +
-              (stores.has("recharge-with-form") ? 1000 : 0) +
-              (stores.has("recharge-qrcode") ? 1000 : 0);
-            return { stores, score };
-          })
-          .filter((candidate): candidate is { stores: Map<string, RuntimeRecord>; score: number } => Boolean(candidate))
-          .sort((left, right) => right.score - left.score)[0]?.stores;
-        const dialog = bestStores?.get("dialog");
-        const dialogOpen = dialog ? readProp(dialog, "open") : undefined;
-        if (dialog && typeof dialogOpen === "function") {
-          try {
-            await Reflect.apply(dialogOpen, dialog, ["recharge", { openType: "overlay" }]);
-            return { label: "pinia:dialog.open(recharge)" };
-          } catch {
-            // Try Vuex/component methods below.
-          }
-        }
-        const walletPayload = { isShow: true, active: 0, type: "" };
-        for (const owner of objects) {
-          const store = readProp(owner, "$store");
-          if (!isObject(store)) {
-            continue;
-          }
-          const state = readProp(store, "state");
-          const config = isObject(state) ? readProp(state, "config") : undefined;
-          if (isObject(config) && "walletShow" in config) {
+      .evaluate(
+        async () => {
+          type RuntimeRecord = Record<PropertyKey, unknown>;
+          type RuntimeElement = {
+            __vue__?: unknown;
+            __vueParentComponent?: RuntimeRecord | null;
+            __vue_app__?: RuntimeRecord | null;
+            click?: () => void;
+            getBoundingClientRect?: () => {
+              bottom: number;
+              height: number;
+              right: number;
+              top: number;
+              width: number;
+            };
+          };
+          const runtimeWindow = globalThis as unknown as {
+            document: {
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            innerHeight: number;
+            innerWidth: number;
+          };
+          const isObject = (value: unknown): value is RuntimeRecord =>
+            Boolean(value) &&
+            (typeof value === "object" || typeof value === "function");
+          const readProp = (
+            target: RuntimeRecord,
+            key: PropertyKey,
+          ): unknown => {
             try {
-              config.walletShow = walletPayload;
-              await call(store, "commit", ["walletShowEvent", walletPayload]);
-              await call(store, "dispatch", ["walletShowEvent", walletPayload]);
-              return { label: "vuex:walletShowEvent" };
+              return target[key];
             } catch {
-              // Try methods below.
+              return undefined;
             }
-          }
-        }
-        const methodPattern =
-          /^(open|show|go|to|handle|click|on).*(recharge|deposit|cashier|recarga|deposito)|(recharge|deposit|cashier|recarga|deposito).*(open|show|click|handle)$/i;
-        for (const owner of objects) {
-          for (const key of Reflect.ownKeys(owner).slice(0, 140)) {
-            const keyText = String(key);
-            if (!methodPattern.test(keyText) || /submit|confirm|order|withdraw|login|register/i.test(keyText)) {
-              continue;
-            }
+          };
+          const call = async (
+            owner: RuntimeRecord,
+            key: PropertyKey,
+            args: unknown[],
+          ) => {
             const fn = readProp(owner, key);
-            if (typeof fn !== "function" || routesInsteadOfOpeningWallet(functionSource(fn))) {
+            if (typeof fn !== "function") return false;
+            try {
+              await Reflect.apply(fn, owner, args);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const functionSource = (fn: unknown) => {
+            try {
+              return Function.prototype.toString
+                .call(fn)
+                .slice(0, 1200)
+                .toLowerCase();
+            } catch {
+              return "";
+            }
+          };
+          const routesInsteadOfOpeningWallet = (source: string) =>
+            /(?:\$router|router)\.push|\$cc\.tourl|location\.(?:href|assign|replace)/i.test(
+              source,
+            ) &&
+            /m_recharge|rechargefund|home\/recharge|\/recharge|deposit|event|\/user|\/home\//i.test(
+              source,
+            );
+
+          const elements = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "#app,#app *,[class*='profile' i],[class*='mine' i],[class*='user' i],[class*='wallet' i],[class*='deposit' i],[class*='recharge' i],body",
+            ),
+          ).slice(0, 1600);
+          const objects: RuntimeRecord[] = [];
+          const seen = new Set<RuntimeRecord>();
+          const addObject = (value: unknown) => {
+            if (!isObject(value) || seen.has(value)) return;
+            seen.add(value);
+            objects.push(value);
+          };
+          for (const element of elements) {
+            addObject(element.__vue__);
+            const component = element.__vueParentComponent;
+            if (component) {
+              addObject(component);
+              addObject(readProp(component, "proxy"));
+              addObject(readProp(component, "ctx"));
+              addObject(readProp(component, "setupState"));
+              addObject(readProp(component, "exposed"));
+            }
+          }
+          const piniaCandidates: unknown[] = [];
+          const seenPinia = new Set<unknown>();
+          const addPinia = (value: unknown) => {
+            if (!isObject(value) || seenPinia.has(value)) return;
+            seenPinia.add(value);
+            piniaCandidates.push(value);
+          };
+          const addProvidesPinia = (provides: unknown) => {
+            if (!isObject(provides)) return;
+            for (const key of Reflect.ownKeys(provides)) {
+              if (String(key).toLowerCase().includes("pinia")) {
+                addPinia(readProp(provides, key));
+              }
+            }
+          };
+          const addAppPinia = (appLike: unknown) => {
+            if (!isObject(appLike)) return;
+            addPinia(
+              readProp(
+                readProp(
+                  readProp(appLike, "config") as RuntimeRecord,
+                  "globalProperties",
+                ) as RuntimeRecord,
+                "$pinia",
+              ),
+            );
+            const context = readProp(appLike, "_context");
+            addPinia(
+              readProp(
+                readProp(
+                  readProp(context as RuntimeRecord, "config") as RuntimeRecord,
+                  "globalProperties",
+                ) as RuntimeRecord,
+                "$pinia",
+              ),
+            );
+            addProvidesPinia(readProp(context as RuntimeRecord, "provides"));
+            addProvidesPinia(readProp(appLike, "provides"));
+          };
+          for (const element of elements) {
+            addAppPinia(element.__vue_app__);
+            const component = element.__vueParentComponent;
+            if (component) {
+              addAppPinia(readProp(component, "appContext"));
+            }
+          }
+          const bestStores = piniaCandidates
+            .map((pinia) => {
+              const stores = readProp(pinia as RuntimeRecord, "_s") as
+                | Map<string, RuntimeRecord>
+                | undefined;
+              if (
+                !stores ||
+                typeof stores.get !== "function" ||
+                typeof stores.keys !== "function"
+              )
+                return undefined;
+              const keys = Array.from(stores.keys());
+              const score =
+                keys.length +
+                (stores.has("dialog") ? 1000 : 0) +
+                (stores.has("recharge-with-form") ? 1000 : 0) +
+                (stores.has("recharge-qrcode") ? 1000 : 0);
+              return { stores, score };
+            })
+            .filter(
+              (
+                candidate,
+              ): candidate is {
+                stores: Map<string, RuntimeRecord>;
+                score: number;
+              } => Boolean(candidate),
+            )
+            .sort((left, right) => right.score - left.score)[0]?.stores;
+          const dialog = bestStores?.get("dialog");
+          const dialogOpen = dialog ? readProp(dialog, "open") : undefined;
+          if (dialog && typeof dialogOpen === "function") {
+            try {
+              await Reflect.apply(dialogOpen, dialog, [
+                "recharge",
+                { openType: "overlay" },
+              ]);
+              return { label: "pinia:dialog.open(recharge)" };
+            } catch {
+              // Try Vuex/component methods below.
+            }
+          }
+          const walletPayload = { isShow: true, active: 0, type: "" };
+          for (const owner of objects) {
+            const store = readProp(owner, "$store");
+            if (!isObject(store)) {
               continue;
             }
-            try {
-              await Reflect.apply(fn, owner, []);
-              return { label: `method:${keyText}` };
-            } catch {
-              // Try the next candidate.
+            const state = readProp(store, "state");
+            const config = isObject(state)
+              ? readProp(state, "config")
+              : undefined;
+            if (isObject(config) && "walletShow" in config) {
+              try {
+                config.walletShow = walletPayload;
+                await call(store, "commit", ["walletShowEvent", walletPayload]);
+                await call(store, "dispatch", [
+                  "walletShowEvent",
+                  walletPayload,
+                ]);
+                return { label: "vuex:walletShowEvent" };
+              } catch {
+                // Try methods below.
+              }
             }
           }
-        }
-        const isVisibleControl = (element: RuntimeElement) => {
-          const rect = element.getBoundingClientRect?.();
-          if (!rect) return false;
-          return rect.width > 10 && rect.height > 10 && rect.bottom > 0 && rect.right > 0 && rect.top < runtimeWindow.innerHeight;
-        };
-        const domDepositControl =
-          elements.find((element) => String(readProp(element as RuntimeRecord, "id") ?? "") === "depositClick" && isVisibleControl(element)) ??
-          elements.find((element) => {
-            if (!isVisibleControl(element)) return false;
-            const text = [
-              readProp(element as RuntimeRecord, "id"),
-              readProp(element as RuntimeRecord, "className"),
-              readProp(element as RuntimeRecord, "textContent")
-            ]
-              .join(" ")
-              .normalize("NFD")
-              .replace(/[̀-ͯ]/g, "")
-              .toLowerCase();
-            return /depositclick|deposito|depositar|recarga|recharge/.test(text);
-          });
-        if (domDepositControl && typeof domDepositControl.click === "function") {
-          try {
-            domDepositControl.click();
-            return { label: "dom:depositClick" };
-          } catch {
-            // Nothing else to try here.
+          const methodPattern =
+            /^(open|show|go|to|handle|click|on).*(recharge|deposit|cashier|recarga|deposito)|(recharge|deposit|cashier|recarga|deposito).*(open|show|click|handle)$/i;
+          for (const owner of objects) {
+            for (const key of Reflect.ownKeys(owner).slice(0, 140)) {
+              const keyText = String(key);
+              if (
+                !methodPattern.test(keyText) ||
+                /submit|confirm|order|withdraw|login|register/i.test(keyText)
+              ) {
+                continue;
+              }
+              const fn = readProp(owner, key);
+              if (
+                typeof fn !== "function" ||
+                routesInsteadOfOpeningWallet(functionSource(fn))
+              ) {
+                continue;
+              }
+              try {
+                await Reflect.apply(fn, owner, []);
+                return { label: `method:${keyText}` };
+              } catch {
+                // Try the next candidate.
+              }
+            }
           }
-        }
-        return { label: "" };
-      }, undefined, PATCHRIGHT_MAIN_WORLD)
+          const isVisibleControl = (element: RuntimeElement) => {
+            const rect = element.getBoundingClientRect?.();
+            if (!rect) return false;
+            return (
+              rect.width > 10 &&
+              rect.height > 10 &&
+              rect.bottom > 0 &&
+              rect.right > 0 &&
+              rect.top < runtimeWindow.innerHeight
+            );
+          };
+          const domDepositControl =
+            elements.find(
+              (element) =>
+                String(readProp(element as RuntimeRecord, "id") ?? "") ===
+                  "depositClick" && isVisibleControl(element),
+            ) ??
+            elements.find((element) => {
+              if (!isVisibleControl(element)) return false;
+              const text = [
+                readProp(element as RuntimeRecord, "id"),
+                readProp(element as RuntimeRecord, "className"),
+                readProp(element as RuntimeRecord, "textContent"),
+              ]
+                .join(" ")
+                .normalize("NFD")
+                .replace(/[̀-ͯ]/g, "")
+                .toLowerCase();
+              return /depositclick|deposito|depositar|recarga|recharge/.test(
+                text,
+              );
+            });
+          if (
+            domDepositControl &&
+            typeof domDepositControl.click === "function"
+          ) {
+            try {
+              domDepositControl.click();
+              return { label: "dom:depositClick" };
+            } catch {
+              // Nothing else to try here.
+            }
+          }
+          return { label: "" };
+        },
+        undefined,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch(() => undefined);
 
     if (result?.label) {
@@ -5998,7 +7834,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     profileName: string,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<void> {
     this.ensureRunActive(runId);
     const spa = resolveContentFrame(page);
@@ -6012,44 +7848,66 @@ export class AutomationRuntimeService {
     // fabricado (no Vuex o roleid vem da plataforma).
     let result = await programmaticDeposit(spa, depositAmount, 20000);
     if (!result.ok && result.reason === "stores-recharge-ausentes") {
-      const opened = await this.tryOpenDepositViaSpaCommand(runId, page, profileName);
+      const opened = await this.tryOpenDepositViaSpaCommand(
+        runId,
+        page,
+        profileName,
+      );
       if (opened) {
         await this.waitForDepositSurface(page, 4500).catch(() => false);
         result = await programmaticDeposit(spa, depositAmount, 20000);
       }
     }
     if (!result.ok) {
-      const capabilities = await this.describeDepositSpaCapabilities(page).catch(() => undefined);
+      const capabilities = await this.describeDepositSpaCapabilities(
+        page,
+      ).catch(() => undefined);
       this.log(
         runId,
         "warning",
         `[${profileName}] Deposito programatico nao verificado (motivo=${result.reason ?? "desconhecido"})${
           result.diag ? ` diag=${result.diag}` : ""
-        }${capabilities ? ` | ${capabilities}` : ""}`
+        }${capabilities ? ` | ${capabilities}` : ""}`,
       );
-      throw new Error(`deposito nao verificado (${result.reason ?? "desconhecido"})`);
+      throw new Error(
+        `deposito nao verificado (${result.reason ?? "desconhecido"})`,
+      );
     }
 
     // Cinto e suspensorio: revalida no Node que o valor da ordem == pedido antes de exibir.
-    const requestedAmount = Number(String(depositAmount).replace(/\s/g, "").replace(",", "."));
-    const confirmedAmount = Number(String(result.amount ?? "").replace(/\s/g, "").replace(",", "."));
-    if (!Number.isFinite(confirmedAmount) || confirmedAmount !== requestedAmount) {
-      throw new Error(`valor da ordem (${result.amount ?? "?"}) diferente do pedido (${depositAmount})`);
+    const requestedAmount = Number(
+      String(depositAmount).replace(/\s/g, "").replace(",", "."),
+    );
+    const confirmedAmount = Number(
+      String(result.amount ?? "")
+        .replace(/\s/g, "")
+        .replace(",", "."),
+    );
+    if (
+      !Number.isFinite(confirmedAmount) ||
+      confirmedAmount !== requestedAmount
+    ) {
+      throw new Error(
+        `valor da ordem (${result.amount ?? "?"}) diferente do pedido (${depositAmount})`,
+      );
     }
 
     const copia = result.copiaECola ?? "";
-    const maskedCopia = copia.length > 16 ? `${copia.slice(0, 8)}...${copia.slice(-6)}` : copia;
+    const maskedCopia =
+      copia.length > 16 ? `${copia.slice(0, 8)}...${copia.slice(-6)}` : copia;
     this.log(
       runId,
       "success",
       `[${profileName}] Deposito ${depositAmount} verificado (${result.stack ?? "?"}) ordem=${
         result.orderNo ?? "?"
-      } copia-e-cola=${maskedCopia}`
+      } copia-e-cola=${maskedCopia}`,
     );
 
     // Restaura o viewport real e deixa o QR da propria plataforma visivel.
     // Aplica overlay para maximizar o QR na tela.
-    await this.browserRuntime.clearLayoutViewportOverride(page).catch(() => null);
+    await this.browserRuntime
+      .clearLayoutViewportOverride(page)
+      .catch(() => null);
     await this.waitForDepositQrCode(page, 2500).catch(() => false);
     await this.applyDepositQrOverlay(runId, page, profileName, depositAmount);
   }
@@ -6086,7 +7944,7 @@ export class AutomationRuntimeService {
           this.qrWatcherGeneration.set(target, current + 1); // invalida o watcher atual
         }
         await this.dismissQrOverlay(target).catch(() => undefined);
-      })
+      }),
     );
   }
 
@@ -6098,7 +7956,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     profileName: string,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<void> {
     this.ensureRunActive(runId);
     this.startQrOverlayWatcher(runId, page, profileName, depositAmount);
@@ -6107,18 +7965,34 @@ export class AutomationRuntimeService {
   // Fallback robusto p/ obter a imagem do QR: captura o proprio elemento como PNG.
   // Resolve casos que a extracao via DOM nao cobre (canvas cross-origin/tainted,
   // QR renderizado como <table>, <svg> sem xmlns). Retorna data URL ou null.
-  private async screenshotQrElement(runId: string, page: Page, profileName: string): Promise<string | null> {
+  private async screenshotQrElement(
+    runId: string,
+    page: Page,
+    profileName: string,
+  ): Promise<string | null> {
     try {
       const frame = resolveContentFrame(page);
       const handle = await frame.evaluateHandle(() => {
         const QR_SELECTORS = [
-          "#qrcode1 canvas", "#qrcode1 img", "#qrcode1 svg", "#qrcode1 table",
-          ".codeimg canvas", ".codeimg img", ".codeimg svg",
-          "[class*='qrcode' i]", "[id*='qrcode' i]",
-          "[class*='qr-code' i]", "[id*='qr-code' i]",
-          "canvas[class*='qr' i]", "img[class*='qr' i]", "img[src*='qr' i]", "svg[class*='qr' i]"
+          "#qrcode1 canvas",
+          "#qrcode1 img",
+          "#qrcode1 svg",
+          "#qrcode1 table",
+          ".codeimg canvas",
+          ".codeimg img",
+          ".codeimg svg",
+          "[class*='qrcode' i]",
+          "[id*='qrcode' i]",
+          "[class*='qr-code' i]",
+          "[id*='qr-code' i]",
+          "canvas[class*='qr' i]",
+          "img[class*='qr' i]",
+          "img[src*='qr' i]",
+          "svg[class*='qr' i]",
         ].join(",");
-        const rawCandidates = Array.from(document.querySelectorAll(QR_SELECTORS)) as Element[];
+        const rawCandidates = Array.from(
+          document.querySelectorAll(QR_SELECTORS),
+        ) as Element[];
         const leafCandidates = rawCandidates.flatMap((candidate) => {
           const tag = candidate.tagName.toLowerCase();
           if (["canvas", "img", "svg", "table"].includes(tag)) {
@@ -6127,12 +8001,18 @@ export class AutomationRuntimeService {
           return Array.from(candidate.querySelectorAll("canvas,img,svg,table"));
         });
         const visible = leafCandidates
-          .filter((candidate, index, candidates) => candidates.indexOf(candidate) === index)
+          .filter(
+            (candidate, index, candidates) =>
+              candidates.indexOf(candidate) === index,
+          )
           .filter((el) => {
             const r = el.getBoundingClientRect();
             const s = window.getComputedStyle(el);
             const aspect = r.width / Math.max(1, r.height);
-            const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+            const viewportArea = Math.max(
+              1,
+              window.innerWidth * window.innerHeight,
+            );
             return (
               s.display !== "none" &&
               s.visibility !== "hidden" &&
@@ -6141,8 +8021,10 @@ export class AutomationRuntimeService {
               r.height > 8 &&
               aspect >= 0.72 &&
               aspect <= 1.38 &&
-              r.width <= Math.min(1200, Math.max(80, window.innerWidth * 0.82)) &&
-              r.height <= Math.min(1200, Math.max(80, window.innerHeight * 0.82)) &&
+              r.width <=
+                Math.min(1200, Math.max(80, window.innerWidth * 0.82)) &&
+              r.height <=
+                Math.min(1200, Math.max(80, window.innerHeight * 0.82)) &&
               r.width * r.height <= viewportArea * 0.48
             );
           })
@@ -6182,7 +8064,7 @@ export class AutomationRuntimeService {
             el.getAttribute("alt"),
             el.getAttribute("src"),
             el.parentElement?.id,
-            el.parentElement?.getAttribute("class")
+            el.parentElement?.getAttribute("class"),
           ]
             .filter(Boolean)
             .join(" ")
@@ -6245,7 +8127,7 @@ export class AutomationRuntimeService {
           this.log(
             runId,
             "warning",
-            `[${profileName}] Captura descartada: elemento nao possui dimensoes de QR (${dimensions?.width ?? 0}x${dimensions?.height ?? 0}).`
+            `[${profileName}] Captura descartada: elemento nao possui dimensoes de QR (${dimensions?.width ?? 0}x${dimensions?.height ?? 0}).`,
           );
           return null;
         }
@@ -6265,7 +8147,7 @@ export class AutomationRuntimeService {
     page: Page,
     qrSrc: string,
     depositAmount: string,
-    _profileName: string
+    _profileName: string,
   ): Promise<boolean> {
     // Formata o valor em BRL (aceita "16", "16,00" ou ja "R$ 16,00").
     const amountText = this.formatDepositAmount(depositAmount);
@@ -6273,16 +8155,27 @@ export class AutomationRuntimeService {
     // Usa o frame de conteudo onde o QR code esta (importante para plataformas com iframe)
     const contentFrame = resolveContentFrame(page);
 
-    return contentFrame.evaluate(
+    return contentFrame
+      .evaluate(
         async (payload) => {
           const OVERLAY_ID = "predator-deposit-qr-overlay";
           const REOPEN_ID = "predator-deposit-qr-reopen";
           const doc = document;
           if (!doc.body) {
-            return { overlayCreated: false, bodyExists: false, imageLoaded: false };
+            return {
+              overlayCreated: false,
+              bodyExists: false,
+              imageLoaded: false,
+            };
           }
 
-          const { backdropStyle, qrImgStyle, barStyle, closeStyle, reopenStyle } = payload.theme;
+          const {
+            backdropStyle,
+            qrImgStyle,
+            barStyle,
+            closeStyle,
+            reopenStyle,
+          } = payload.theme;
 
           // Substitui qualquer overlay anterior (novo deposito = novo QR/valor). O
           // ciclo de vida (atualizar/remover) e gerido pelo watcher em Node.
@@ -6309,7 +8202,7 @@ export class AutomationRuntimeService {
             qrEl.addEventListener(
               "load",
               () => finish(qrEl.naturalWidth >= 40 && qrEl.naturalHeight >= 40),
-              { once: true }
+              { once: true },
             );
             qrEl.addEventListener("error", () => finish(false), { once: true });
             window.setTimeout(() => finish(false), 2000);
@@ -6328,7 +8221,11 @@ export class AutomationRuntimeService {
           const imageLoaded = await imageReady;
           if (!imageLoaded) {
             root.remove();
-            return { overlayCreated: false, bodyExists: true, imageLoaded: false };
+            return {
+              overlayCreated: false,
+              bodyExists: true,
+              imageLoaded: false,
+            };
           }
 
           let reopen = doc.getElementById(REOPEN_ID);
@@ -6354,13 +8251,15 @@ export class AutomationRuntimeService {
             bodyExists: true,
             imageLoaded: true,
             imageWidth: qrEl.naturalWidth,
-            imageHeight: qrEl.naturalHeight
+            imageHeight: qrEl.naturalHeight,
           };
-      },
-      { src: qrSrc, amountText, theme: qrOverlayTheme() }
-    ).then((result) => {
-      return result.overlayCreated === true && result.imageLoaded === true;
-    }).catch(() => false);
+        },
+        { src: qrSrc, amountText, theme: qrOverlayTheme() },
+      )
+      .then((result) => {
+        return result.overlayCreated === true && result.imageLoaded === true;
+      })
+      .catch(() => false);
   }
 
   // Observa o QR de um deposito MANUAL (feito pelo usuario na propria plataforma) e
@@ -6368,7 +8267,7 @@ export class AutomationRuntimeService {
   async armQrOverlayObserverForManualDeposit(
     runId: string,
     page: Page,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<void> {
     this.ensureRunActive(runId);
     this.startQrOverlayWatcher(runId, page, "ManualDeposit", depositAmount);
@@ -6376,14 +8275,22 @@ export class AutomationRuntimeService {
 
   private parseBrlToNumber(value: string | undefined): number | undefined {
     if (!value) return undefined;
-    const cleaned = value.replace(/[R$\s.]/g, "").replace(",", ".").trim();
+    const cleaned = value
+      .replace(/[R$\s.]/g, "")
+      .replace(",", ".")
+      .trim();
     const n = Number(cleaned);
     return Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
-  private isDepositAmountPlausible(pageAmount: string, expectedAmount: string): boolean {
+  private isDepositAmountPlausible(
+    pageAmount: string,
+    expectedAmount: string,
+  ): boolean {
     const page = this.parseBrlToNumber(pageAmount);
-    const expected = this.parseBrlToNumber(expectedAmount) ?? this.parseDepositNumber(expectedAmount);
+    const expected =
+      this.parseBrlToNumber(expectedAmount) ??
+      this.parseDepositNumber(expectedAmount);
     if (page === undefined || expected === undefined) return false;
     const ratio = page / expected;
     return ratio >= 0.95 && ratio <= 1.05;
@@ -6393,7 +8300,10 @@ export class AutomationRuntimeService {
   private formatDepositAmount(value: string): string {
     const parsed = this.parseDepositNumber(value);
     if (typeof parsed === "number") {
-      return parsed.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+      return parsed.toLocaleString("pt-BR", {
+        style: "currency",
+        currency: "BRL",
+      });
     }
     const trimmed = (value || "").trim();
     return trimmed.startsWith("R$") ? trimmed : `R$ ${trimmed}`;
@@ -6413,20 +8323,31 @@ export class AutomationRuntimeService {
     return resolveContentFrame(page)
       .evaluate((selector) => {
         const re = /R\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?/;
-        const qrRect = (Array.from(document.querySelectorAll(selector)) as Element[])
-          .map((el) => el.getBoundingClientRect())
-          .filter((r) => r.width > 8 && r.height > 8)
-          .sort((a, b) => b.width * b.height - a.width * a.height)[0] || null;
+        const qrRect =
+          (Array.from(document.querySelectorAll(selector)) as Element[])
+            .map((el) => el.getBoundingClientRect())
+            .filter((r) => r.width > 8 && r.height > 8)
+            .sort((a, b) => b.width * b.height - a.width * a.height)[0] || null;
         let best: { text: string; score: number } | null = null;
-        for (const el of Array.from(document.querySelectorAll("body *")) as HTMLElement[]) {
+        for (const el of Array.from(
+          document.querySelectorAll("body *"),
+        ) as HTMLElement[]) {
           if (el.children.length > 0) continue;
           if (el.closest("#predator-deposit-qr-overlay")) continue;
-          const m = (el.textContent || "").replace(/\s+/g, " ").trim().match(re);
+          const m = (el.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .match(re);
           if (!m) continue;
           const r = el.getBoundingClientRect();
           if (r.width < 1 || r.height < 1) continue;
           const s = window.getComputedStyle(el);
-          if (s.display === "none" || s.visibility === "hidden" || Number(s.opacity || "1") < 0.05) continue;
+          if (
+            s.display === "none" ||
+            s.visibility === "hidden" ||
+            Number(s.opacity || "1") < 0.05
+          )
+            continue;
           const font = parseFloat(s.fontSize || "0") || 0;
           let score = font;
           if (qrRect) {
@@ -6434,7 +8355,8 @@ export class AutomationRuntimeService {
             const dy = r.top + r.height / 2 - (qrRect.top + qrRect.height / 2);
             score = font * 1000 - Math.sqrt(dx * dx + dy * dy);
           }
-          if (!best || score > best.score) best = { text: m[0].replace(/\s+/g, " ").trim(), score };
+          if (!best || score > best.score)
+            best = { text: m[0].replace(/\s+/g, " ").trim(), score };
         }
         return best?.text ?? null;
       }, QR_DETECT_SELECTOR)
@@ -6444,7 +8366,10 @@ export class AutomationRuntimeService {
   // Espera o valor (R$) aparecer na propria pagina do deposito, ate timeoutMs.
   // Preferimos SEMPRE o valor lido da pagina (mais confiavel que o informado ao
   // bot, que pode divergir). Retorna null se a pagina nunca expor o valor a tempo.
-  private async waitForDepositAmountFromPage(page: Page, timeoutMs: number): Promise<string | null> {
+  private async waitForDepositAmountFromPage(
+    page: Page,
+    timeoutMs: number,
+  ): Promise<string | null> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const amount = await this.readDepositAmountFromPage(page);
@@ -6468,14 +8393,20 @@ export class AutomationRuntimeService {
   // quando um QR aparece/muda, esconde o overlay antigo, extrai a imagem real do QR
   // (com screenshot restrito ao elemento como fallback), le o valor e (re)renderiza; quando o QR
   // some, remove o overlay. Roda em background por ate 5min; best-effort.
-  private startQrOverlayWatcher(runId: string, page: Page, profileName: string, fallbackAmount: string): void {
+  private startQrOverlayWatcher(
+    runId: string,
+    page: Page,
+    profileName: string,
+    fallbackAmount: string,
+  ): void {
     // Inicia uma nova geracao para esta pagina; supera qualquer watcher anterior.
     const myGeneration = (this.qrWatcherGeneration.get(page) ?? 0) + 1;
     this.qrWatcherGeneration.set(page, myGeneration);
 
     const deadline = Date.now() + 300000; // 5 min
     // Encerra se a pagina fechar OU se outro watcher/stopQrOverlay assumiu (geracao mudou).
-    const isCurrent = () => !page.isClosed() && this.qrWatcherGeneration.get(page) === myGeneration;
+    const isCurrent = () =>
+      !page.isClosed() && this.qrWatcherGeneration.get(page) === myGeneration;
     const loop = async () => {
       let lastSig = "";
       // Ciclos consecutivos sem QR antes de remover o overlay. O QR PIX desta
@@ -6496,19 +8427,35 @@ export class AutomationRuntimeService {
               // Le o valor da pagina e valida contra o esperado. Se a pagina exibir
               // um valor absurdo (saldo, limite, promo) em vez do deposito real,
               // preferimos o fallbackAmount (valor solicitado ao bot).
-              const pageAmount = await this.waitForDepositAmountFromPage(page, 2500);
-              const amount = (pageAmount && this.isDepositAmountPlausible(pageAmount, fallbackAmount))
-                ? pageAmount
-                : fallbackAmount;
+              const pageAmount = await this.waitForDepositAmountFromPage(
+                page,
+                2500,
+              );
+              const amount =
+                pageAmount &&
+                this.isDepositAmountPlausible(pageAmount, fallbackAmount)
+                  ? pageAmount
+                  : fallbackAmount;
               if (!isCurrent()) break;
               // NAO removemos o overlay antes de ter o novo QR: renderQrOverlay
               // substitui o overlay anterior atomicamente, evitando o gap visivel.
               // extractQrCode le os pixels direto do DOM (canvas/img), entao nao e
               // afetado pelo overlay cobrir o QR.
-              const extracted = await extractQrCode(runId, page, Date.now() + 4000, profileName);
+              const extracted = await extractQrCode(
+                runId,
+                page,
+                Date.now() + 4000,
+                profileName,
+              );
               if (!isCurrent()) break;
               let rendered = extracted
-                ? await this.renderQrOverlay(runId, page, extracted, amount, profileName)
+                ? await this.renderQrOverlay(
+                    runId,
+                    page,
+                    extracted,
+                    amount,
+                    profileName,
+                  )
                 : false;
               // Fallback robusto: se a extracao falhou OU a imagem extraida nao
               // carregou no overlay (ex.: SVG/icone que nao renderiza como <img>),
@@ -6516,10 +8463,20 @@ export class AutomationRuntimeService {
               // precisa do QR desocluido, entao removemos o overlay antes.
               if (!rendered) {
                 await this.dismissQrOverlay(page);
-                const shot = await this.screenshotQrElement(runId, page, profileName);
+                const shot = await this.screenshotQrElement(
+                  runId,
+                  page,
+                  profileName,
+                );
                 if (!isCurrent()) break;
                 if (shot && shot !== extracted) {
-                  rendered = await this.renderQrOverlay(runId, page, shot, amount, profileName);
+                  rendered = await this.renderQrOverlay(
+                    runId,
+                    page,
+                    shot,
+                    amount,
+                    profileName,
+                  );
                 }
               }
               if (rendered) {
@@ -6537,7 +8494,9 @@ export class AutomationRuntimeService {
                 missCount = 0;
               }
             }
-          } catch { /* best-effort */ }
+          } catch {
+            /* best-effort */
+          }
           await this.sleepUnref(1200);
         }
       } finally {
@@ -6572,8 +8531,16 @@ export class AutomationRuntimeService {
           textContent?: string | null;
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex: string };
+          document: {
+            body: RuntimeElement;
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
+          getComputedStyle: (element: RuntimeElement) => {
+            display: string;
+            opacity: string;
+            visibility: string;
+            zIndex: string;
+          };
           innerHeight: number;
           innerWidth: number;
         };
@@ -6601,42 +8568,82 @@ export class AutomationRuntimeService {
         };
         const depositRootSelector =
           ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-        const roots = Array.from(runtimeWindow.document.querySelectorAll(depositRootSelector))
+        const roots = Array.from(
+          runtimeWindow.document.querySelectorAll(depositRootSelector),
+        )
           .filter((root) => {
-            const text = normalize([root.textContent, root.getAttribute?.("class"), root.getAttribute?.("id")].join(" "));
-            return isVisible(root) && /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(text);
+            const text = normalize(
+              [
+                root.textContent,
+                root.getAttribute?.("class"),
+                root.getAttribute?.("id"),
+              ].join(" "),
+            );
+            return (
+              isVisible(root) &&
+              /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(
+                text,
+              )
+            );
           })
           .sort((left, right) => {
             const leftRect = left.getBoundingClientRect();
             const rightRect = right.getBoundingClientRect();
-            const leftZ = Number.parseInt(runtimeWindow.getComputedStyle(left).zIndex || "0", 10) || 0;
-            const rightZ = Number.parseInt(runtimeWindow.getComputedStyle(right).zIndex || "0", 10) || 0;
-            return rightZ - leftZ || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+            const leftZ =
+              Number.parseInt(
+                runtimeWindow.getComputedStyle(left).zIndex || "0",
+                10,
+              ) || 0;
+            const rightZ =
+              Number.parseInt(
+                runtimeWindow.getComputedStyle(right).zIndex || "0",
+                10,
+              ) || 0;
+            return (
+              rightZ - leftZ ||
+              rightRect.width * rightRect.height -
+                leftRect.width * leftRect.height
+            );
           });
         const root = roots[0] ?? runtimeWindow.document.body;
         const candidates = Array.from(
           root.querySelectorAll?.(
-            "[class*='channel' i],[class*='pay' i],[class*='payment' i],[class*='pix' i],[class*='method' i],[role='button'],button"
-          ) ?? []
+            "[class*='channel' i],[class*='pay' i],[class*='payment' i],[class*='pix' i],[class*='method' i],[role='button'],button",
+          ) ?? [],
         )
           .filter(isVisible)
           .map((element) => {
             const rect = element.getBoundingClientRect();
-            const text = normalize([element.textContent, element.getAttribute?.("class"), element.getAttribute?.("id")].join(" "));
+            const text = normalize(
+              [
+                element.textContent,
+                element.getAttribute?.("class"),
+                element.getAttribute?.("id"),
+              ].join(" "),
+            );
             let score = 0;
             if (/pix/.test(text)) {
               score += 90;
             }
-            if (/canal|channel|pagamento|payment|metodo|method|pay/.test(text)) {
+            if (
+              /canal|channel|pagamento|payment|metodo|method|pay/.test(text)
+            ) {
               score += 45;
             }
             if (/active|selected|checked/.test(text)) {
               score += 20;
             }
-            if (/deposito|recarga|recharge|saque|withdraw|login|registro|close|fechar|cancel/.test(text)) {
+            if (
+              /deposito|recarga|recharge|saque|withdraw|login|registro|close|fechar|cancel/.test(
+                text,
+              )
+            ) {
               score -= 60;
             }
-            if (rect.width * rect.height > runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.3) {
+            if (
+              rect.width * rect.height >
+              runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.3
+            ) {
               score -= 40;
             }
             return { element, score, text };
@@ -6651,7 +8658,11 @@ export class AutomationRuntimeService {
       .catch(() => undefined);
   }
 
-  async waitForDepositAmountApplied(page: Page, amount: string, timeoutMs: number): Promise<boolean> {
+  async waitForDepositAmountApplied(
+    page: Page,
+    amount: string,
+    timeoutMs: number,
+  ): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const applied = await resolveContentFrame(page)
@@ -6672,8 +8683,16 @@ export class AutomationRuntimeService {
             value?: string;
           };
           const runtimeWindow = globalThis as unknown as {
-            document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-            getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex: string };
+            document: {
+              body: RuntimeElement;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+              zIndex: string;
+            };
             innerHeight: number;
             innerWidth: number;
           };
@@ -6692,7 +8711,9 @@ export class AutomationRuntimeService {
             const lastComma = cleaned.lastIndexOf(",");
             const lastDot = cleaned.lastIndexOf(".");
             const normalized =
-              lastComma > lastDot ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned.replace(/,/g, "");
+              lastComma > lastDot
+                ? cleaned.replace(/\./g, "").replace(",", ".")
+                : cleaned.replace(/,/g, "");
             return Number(normalized);
           };
           const extractNumbers = (value: string | null | undefined) =>
@@ -6703,7 +8724,8 @@ export class AutomationRuntimeService {
           if (!Number.isFinite(expectedNumber)) {
             return false;
           }
-          const isSameAmount = (value: number) => Math.abs(value - expectedNumber) < 0.001;
+          const isSameAmount = (value: number) =>
+            Math.abs(value - expectedNumber) < 0.001;
           const isVisible = (element: RuntimeElement) => {
             const style = runtimeWindow.getComputedStyle(element);
             const rect = element.getBoundingClientRect();
@@ -6721,29 +8743,59 @@ export class AutomationRuntimeService {
           };
           const depositRootSelector =
             ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-          const roots = Array.from(runtimeWindow.document.querySelectorAll(depositRootSelector))
+          const roots = Array.from(
+            runtimeWindow.document.querySelectorAll(depositRootSelector),
+          )
             .filter((root) => {
-              const text = normalize([root.textContent, root.getAttribute?.("class"), root.getAttribute?.("id")].join(" "));
+              const text = normalize(
+                [
+                  root.textContent,
+                  root.getAttribute?.("class"),
+                  root.getAttribute?.("id"),
+                ].join(" "),
+              );
               return (
                 isVisible(root) &&
-                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(text)
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(
+                  text,
+                )
               );
             })
             .sort((left, right) => {
               const leftRect = left.getBoundingClientRect();
               const rightRect = right.getBoundingClientRect();
-              const leftZ = Number.parseInt(runtimeWindow.getComputedStyle(left).zIndex || "0", 10) || 0;
-              const rightZ = Number.parseInt(runtimeWindow.getComputedStyle(right).zIndex || "0", 10) || 0;
-              return rightZ - leftZ || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+              const leftZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(left).zIndex || "0",
+                  10,
+                ) || 0;
+              const rightZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(right).zIndex || "0",
+                  10,
+                ) || 0;
+              return (
+                rightZ - leftZ ||
+                rightRect.width * rightRect.height -
+                  leftRect.width * leftRect.height
+              );
             });
-          const searchRoots = roots.length > 0 ? roots.slice(0, 4) : [runtimeWindow.document.body];
+          const searchRoots =
+            roots.length > 0
+              ? roots.slice(0, 4)
+              : [runtimeWindow.document.body];
 
           for (const root of searchRoots) {
             const fields = Array.from(
-              root.querySelectorAll?.("input,textarea,[contenteditable='true'],[role='textbox']") ?? []
+              root.querySelectorAll?.(
+                "input,textarea,[contenteditable='true'],[role='textbox']",
+              ) ?? [],
             ).filter(isVisible);
             for (const field of fields) {
-              const rawValue = typeof field.value === "string" ? field.value : field.textContent || "";
+              const rawValue =
+                typeof field.value === "string"
+                  ? field.value
+                  : field.textContent || "";
               if (isSameAmount(parseNumber(rawValue))) {
                 return true;
               }
@@ -6751,8 +8803,8 @@ export class AutomationRuntimeService {
 
             const selectedAmounts = Array.from(
               root.querySelectorAll?.(
-                "[class*='active' i],[class*='selected' i],[class*='checked' i],[aria-selected='true'],[aria-checked='true'],button,[role='button'],.ui-button,.van-button"
-              ) ?? []
+                "[class*='active' i],[class*='selected' i],[class*='checked' i],[aria-selected='true'],[aria-checked='true'],button,[role='button'],.ui-button,.van-button",
+              ) ?? [],
             ).filter(isVisible);
             for (const element of selectedAmounts) {
               const marker = normalize(
@@ -6760,14 +8812,21 @@ export class AutomationRuntimeService {
                   element.getAttribute?.("class"),
                   element.getAttribute?.("aria-selected"),
                   element.getAttribute?.("aria-checked"),
-                  element.closest?.("[class*='active' i],[class*='selected' i],[class*='checked' i]")?.getAttribute?.("class")
-                ].join(" ")
+                  element
+                    .closest?.(
+                      "[class*='active' i],[class*='selected' i],[class*='checked' i]",
+                    )
+                    ?.getAttribute?.("class"),
+                ].join(" "),
               );
               if (!/active|selected|checked|true/.test(marker)) {
                 continue;
               }
               const text = normalize(element.textContent);
-              if (text.length <= 64 && extractNumbers(text).some(isSameAmount)) {
+              if (
+                text.length <= 64 &&
+                extractNumbers(text).some(isSameAmount)
+              ) {
                 return true;
               }
             }
@@ -6786,193 +8845,278 @@ export class AutomationRuntimeService {
     return false;
   }
 
-  async clickDepositAmountPreset(runId: string, page: Page, amount: string): Promise<string | undefined> {
+  async clickDepositAmountPreset(
+    runId: string,
+    page: Page,
+    amount: string,
+  ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `deposit-preset-${Date.now()}-${this.randomInt(1000, 9999)}`;
     const label = await resolveContentFrame(page)
-      .evaluate(({ depositAmount, targetToken }) => {
-        type RuntimeElement = {
-          closest?: (selector: string) => RuntimeElement | null;
-          getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => {
-            bottom: number;
-            height: number;
-            left: number;
-            right: number;
-            top: number;
-            width: number;
-          };
-          querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-          setAttribute?: (name: string, value: string) => void;
-          textContent?: string | null;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex: string };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const parseNumber = (value: string | null | undefined) => {
-          const cleaned = (value || "").replace(/[^\d,.-]/g, "").trim();
-          if (!cleaned) {
-            return Number.NaN;
-          }
-          const lastComma = cleaned.lastIndexOf(",");
-          const lastDot = cleaned.lastIndexOf(".");
-          const normalized =
-            lastComma > lastDot ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned.replace(/,/g, "");
-          return Number(normalized);
-        };
-        const extractNumbers = (value: string | null | undefined) =>
-          ((value || "").match(/-?\d[\d.,]*/g) || [])
-            .map((entry) => parseNumber(entry))
-            .filter((entry) => Number.isFinite(entry));
-        const expectedNumber = parseNumber(depositAmount);
-        if (!Number.isFinite(expectedNumber)) {
-          return undefined;
-        }
-        const isSameAmount = (value: number) => Math.abs(value - expectedNumber) < 0.001;
-        const isVisible = (element: RuntimeElement) => {
-          const style = runtimeWindow.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 8 &&
-            rect.height > 8 &&
-            rect.right > 0 &&
-            rect.bottom > 0 &&
-            rect.left < runtimeWindow.innerWidth &&
-            rect.top < runtimeWindow.innerHeight
-          );
-        };
-        const depositRootSelector =
-          ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-        const roots = Array.from(runtimeWindow.document.querySelectorAll(depositRootSelector))
-          .filter((root) => {
-            const text = normalize([root.textContent, root.getAttribute?.("class"), root.getAttribute?.("id")].join(" "));
-            return (
-              isVisible(root) &&
-              /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(text)
-            );
-          })
-          .sort((left, right) => {
-            const leftRect = left.getBoundingClientRect();
-            const rightRect = right.getBoundingClientRect();
-            const leftZ = Number.parseInt(runtimeWindow.getComputedStyle(left).zIndex || "0", 10) || 0;
-            const rightZ = Number.parseInt(runtimeWindow.getComputedStyle(right).zIndex || "0", 10) || 0;
-            return rightZ - leftZ || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-          });
-        const searchRoots = roots.length > 0 ? roots.slice(0, 4) : [runtimeWindow.document.body];
-        // Nao deixar o fallback p/ document.body captar nossos overlays injetados.
-        const injectedOverlaySelector =
-          "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
-        const candidates = new Map<
-          RuntimeElement,
-          { element: RuntimeElement; label: string; score: number; area: number; top: number }
-        >();
-        const optionSelector =
-          "button,[role='button'],.ui-button,.van-button,[class*='amount' i],[class*='money' i],[class*='quick' i],[class*='price' i],[class*='valor' i],[class*='value' i],div,span";
-        const clickableSelector =
-          "button,[role='button'],.ui-button,.van-button,[class*='button' i],[class*='btn' i]";
-
-        for (const root of searchRoots) {
-          for (const element of root.querySelectorAll?.(optionSelector) ?? []) {
-            const clickable = element.closest?.(clickableSelector) ?? element;
-            if (!isVisible(clickable) || clickable.closest?.(injectedOverlaySelector)) {
-              continue;
-            }
-
-            const rect = clickable.getBoundingClientRect();
-            const labelText = normalize(element.textContent || clickable.textContent || "");
-            if (!labelText || labelText.length > 64) {
-              continue;
-            }
-
-            const attrs = normalize(
-              [
-                element.getAttribute?.("class"),
-                element.getAttribute?.("id"),
-                clickable.getAttribute?.("class"),
-                clickable.getAttribute?.("id"),
-                clickable.getAttribute?.("aria-label"),
-                clickable.getAttribute?.("title")
-              ].join(" ")
-            );
-            const haystack = `${labelText} ${attrs}`;
-            if (/cancelar|cancel|fechar|close|saque|withdraw|login|registro|suporte|service|depositar|confirmar|submit|pagar|pay/.test(haystack)) {
-              continue;
-            }
-
-            const matchingAmount = extractNumbers(labelText).some(isSameAmount);
-            if (!matchingAmount) {
-              continue;
-            }
-
-            let score = 100;
-            if (/amount|money|quick|price|valor|value|recharge|deposit|recarga|deposito/.test(attrs)) {
-              score += 35;
-            }
-            if (/active|selected|checked/.test(attrs)) {
-              score += 16;
-            }
-            if (/minimo|maximo|minimum|maximum|limite|limit/.test(haystack)) {
-              score -= 45;
-            }
-            if (rect.width * rect.height > runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.12) {
-              score -= 55;
-            }
-
-            if (score < 55) {
-              continue;
-            }
-
-            const existing = candidates.get(clickable);
-            const candidate = {
-              element: clickable,
-              label: labelText,
-              score,
-              area: rect.width * rect.height,
-              top: rect.top
+      .evaluate(
+        ({ depositAmount, targetToken }) => {
+          type RuntimeElement = {
+            closest?: (selector: string) => RuntimeElement | null;
+            getAttribute?: (name: string) => string | null;
+            getBoundingClientRect: () => {
+              bottom: number;
+              height: number;
+              left: number;
+              right: number;
+              top: number;
+              width: number;
             };
-            if (!existing || score > existing.score || (score === existing.score && candidate.area < existing.area)) {
-              candidates.set(clickable, candidate);
+            querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
+            setAttribute?: (name: string, value: string) => void;
+            textContent?: string | null;
+          };
+          const runtimeWindow = globalThis as unknown as {
+            document: {
+              body: RuntimeElement;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+              zIndex: string;
+            };
+            innerHeight: number;
+            innerWidth: number;
+          };
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const parseNumber = (value: string | null | undefined) => {
+            const cleaned = (value || "").replace(/[^\d,.-]/g, "").trim();
+            if (!cleaned) {
+              return Number.NaN;
+            }
+            const lastComma = cleaned.lastIndexOf(",");
+            const lastDot = cleaned.lastIndexOf(".");
+            const normalized =
+              lastComma > lastDot
+                ? cleaned.replace(/\./g, "").replace(",", ".")
+                : cleaned.replace(/,/g, "");
+            return Number(normalized);
+          };
+          const extractNumbers = (value: string | null | undefined) =>
+            ((value || "").match(/-?\d[\d.,]*/g) || [])
+              .map((entry) => parseNumber(entry))
+              .filter((entry) => Number.isFinite(entry));
+          const expectedNumber = parseNumber(depositAmount);
+          if (!Number.isFinite(expectedNumber)) {
+            return undefined;
+          }
+          const isSameAmount = (value: number) =>
+            Math.abs(value - expectedNumber) < 0.001;
+          const isVisible = (element: RuntimeElement) => {
+            const style = runtimeWindow.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 8 &&
+              rect.height > 8 &&
+              rect.right > 0 &&
+              rect.bottom > 0 &&
+              rect.left < runtimeWindow.innerWidth &&
+              rect.top < runtimeWindow.innerHeight
+            );
+          };
+          const depositRootSelector =
+            ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
+          const roots = Array.from(
+            runtimeWindow.document.querySelectorAll(depositRootSelector),
+          )
+            .filter((root) => {
+              const text = normalize(
+                [
+                  root.textContent,
+                  root.getAttribute?.("class"),
+                  root.getAttribute?.("id"),
+                ].join(" "),
+              );
+              return (
+                isVisible(root) &&
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(
+                  text,
+                )
+              );
+            })
+            .sort((left, right) => {
+              const leftRect = left.getBoundingClientRect();
+              const rightRect = right.getBoundingClientRect();
+              const leftZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(left).zIndex || "0",
+                  10,
+                ) || 0;
+              const rightZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(right).zIndex || "0",
+                  10,
+                ) || 0;
+              return (
+                rightZ - leftZ ||
+                rightRect.width * rightRect.height -
+                  leftRect.width * leftRect.height
+              );
+            });
+          const searchRoots =
+            roots.length > 0
+              ? roots.slice(0, 4)
+              : [runtimeWindow.document.body];
+          // Nao deixar o fallback p/ document.body captar nossos overlays injetados.
+          const injectedOverlaySelector =
+            "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
+          const candidates = new Map<
+            RuntimeElement,
+            {
+              element: RuntimeElement;
+              label: string;
+              score: number;
+              area: number;
+              top: number;
+            }
+          >();
+          const optionSelector =
+            "button,[role='button'],.ui-button,.van-button,[class*='amount' i],[class*='money' i],[class*='quick' i],[class*='price' i],[class*='valor' i],[class*='value' i],div,span";
+          const clickableSelector =
+            "button,[role='button'],.ui-button,.van-button,[class*='button' i],[class*='btn' i]";
+
+          for (const root of searchRoots) {
+            for (const element of root.querySelectorAll?.(optionSelector) ??
+              []) {
+              const clickable = element.closest?.(clickableSelector) ?? element;
+              if (
+                !isVisible(clickable) ||
+                clickable.closest?.(injectedOverlaySelector)
+              ) {
+                continue;
+              }
+
+              const rect = clickable.getBoundingClientRect();
+              const labelText = normalize(
+                element.textContent || clickable.textContent || "",
+              );
+              if (!labelText || labelText.length > 64) {
+                continue;
+              }
+
+              const attrs = normalize(
+                [
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("id"),
+                  clickable.getAttribute?.("class"),
+                  clickable.getAttribute?.("id"),
+                  clickable.getAttribute?.("aria-label"),
+                  clickable.getAttribute?.("title"),
+                ].join(" "),
+              );
+              const haystack = `${labelText} ${attrs}`;
+              if (
+                /cancelar|cancel|fechar|close|saque|withdraw|login|registro|suporte|service|depositar|confirmar|submit|pagar|pay/.test(
+                  haystack,
+                )
+              ) {
+                continue;
+              }
+
+              const matchingAmount =
+                extractNumbers(labelText).some(isSameAmount);
+              if (!matchingAmount) {
+                continue;
+              }
+
+              let score = 100;
+              if (
+                /amount|money|quick|price|valor|value|recharge|deposit|recarga|deposito/.test(
+                  attrs,
+                )
+              ) {
+                score += 35;
+              }
+              if (/active|selected|checked/.test(attrs)) {
+                score += 16;
+              }
+              if (/minimo|maximo|minimum|maximum|limite|limit/.test(haystack)) {
+                score -= 45;
+              }
+              if (
+                rect.width * rect.height >
+                runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.12
+              ) {
+                score -= 55;
+              }
+
+              if (score < 55) {
+                continue;
+              }
+
+              const existing = candidates.get(clickable);
+              const candidate = {
+                element: clickable,
+                label: labelText,
+                score,
+                area: rect.width * rect.height,
+                top: rect.top,
+              };
+              if (
+                !existing ||
+                score > existing.score ||
+                (score === existing.score && candidate.area < existing.area)
+              ) {
+                candidates.set(clickable, candidate);
+              }
             }
           }
-        }
 
-        const candidate = Array.from(candidates.values()).sort(
-          (left, right) => right.score - left.score || left.area - right.area || right.top - left.top
-        )[0];
-        candidate?.element.setAttribute?.("data-predator-deposit-preset-target", targetToken);
-        return candidate?.label;
-      }, { depositAmount: amount, targetToken })
+          const candidate = Array.from(candidates.values()).sort(
+            (left, right) =>
+              right.score - left.score ||
+              left.area - right.area ||
+              right.top - left.top,
+          )[0];
+          candidate?.element.setAttribute?.(
+            "data-predator-deposit-preset-target",
+            targetToken,
+          );
+          return candidate?.label;
+        },
+        { depositAmount: amount, targetToken },
+      )
       .catch(() => undefined);
 
     if (!label) {
       return undefined;
     }
 
-    const target = resolveContentFrame(page).locator(`[data-predator-deposit-preset-target="${targetToken}"]`).first();
+    const target = resolveContentFrame(page)
+      .locator(`[data-predator-deposit-preset-target="${targetToken}"]`)
+      .first();
     await this.withPopupPageGuard(page, async () => {
       await this.fastClickControl(runId, page, target).catch(async () => {
         await target.click({ timeout: 1200, force: true }).catch(async () => {
-          await target.evaluate((element) => {
-            (element as unknown as { click: () => void }).click();
-          }).catch(() => undefined);
+          await target
+            .evaluate((element) => {
+              (element as unknown as { click: () => void }).click();
+            })
+            .catch(() => undefined);
         });
       });
     }).catch(() => undefined);
 
-    await target.evaluate((element) => element.removeAttribute("data-predator-deposit-preset-target")).catch(() => undefined);
+    await target
+      .evaluate((element) =>
+        element.removeAttribute("data-predator-deposit-preset-target"),
+      )
+      .catch(() => undefined);
     await page.waitForTimeout(250);
     return `opcao ${label}`;
   }
@@ -6981,212 +9125,263 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     _profileName: string,
-    depositAmount: string
+    depositAmount: string,
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const result = await resolveContentFrame(page)
-      .evaluate((amountToApply) => {
-        type RuntimeRecord = Record<PropertyKey, unknown>;
-        type RuntimeElement = {
-          __vue__?: unknown;
-          __vueParentComponent?: RuntimeRecord | null;
-          __vue_app__?: RuntimeRecord | null;
-          getAttribute?: (name: string) => string | null;
-          querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: { body?: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-        };
-        const isObject = (value: unknown): value is RuntimeRecord =>
-          Boolean(value) && (typeof value === "object" || typeof value === "function");
-        const readProp = (target: RuntimeRecord, key: PropertyKey): unknown => {
-          try {
-            return target[key];
-          } catch {
-            return undefined;
+      .evaluate(
+        (amountToApply) => {
+          type RuntimeRecord = Record<PropertyKey, unknown>;
+          type RuntimeElement = {
+            __vue__?: unknown;
+            __vueParentComponent?: RuntimeRecord | null;
+            __vue_app__?: RuntimeRecord | null;
+            getAttribute?: (name: string) => string | null;
+            querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
+          };
+          const runtimeWindow = globalThis as unknown as {
+            document: {
+              body?: RuntimeElement;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+          };
+          const isObject = (value: unknown): value is RuntimeRecord =>
+            Boolean(value) &&
+            (typeof value === "object" || typeof value === "function");
+          const readProp = (
+            target: RuntimeRecord,
+            key: PropertyKey,
+          ): unknown => {
+            try {
+              return target[key];
+            } catch {
+              return undefined;
+            }
+          };
+          const parseNumber = (value: unknown) => {
+            const cleaned = String(value ?? "")
+              .replace(/[^\d,.-]/g, "")
+              .trim();
+            if (!cleaned) return Number.NaN;
+            const lastComma = cleaned.lastIndexOf(",");
+            const lastDot = cleaned.lastIndexOf(".");
+            const normalized =
+              lastComma > lastDot
+                ? cleaned.replace(/\./g, "").replace(",", ".")
+                : cleaned.replace(/,/g, "");
+            return Number(normalized);
+          };
+          const expectedNumber = parseNumber(amountToApply);
+          if (!Number.isFinite(expectedNumber)) {
+            return {
+              confirmed: false,
+              reason: "amount-invalid",
+              stores: 0,
+              touched: [] as string[],
+            };
           }
-        };
-        const parseNumber = (value: unknown) => {
-          const cleaned = String(value ?? "").replace(/[^\d,.-]/g, "").trim();
-          if (!cleaned) return Number.NaN;
-          const lastComma = cleaned.lastIndexOf(",");
-          const lastDot = cleaned.lastIndexOf(".");
-          const normalized = lastComma > lastDot ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned.replace(/,/g, "");
-          return Number(normalized);
-        };
-        const expectedNumber = parseNumber(amountToApply);
-        if (!Number.isFinite(expectedNumber)) {
-          return { confirmed: false, reason: "amount-invalid", stores: 0, touched: [] as string[] };
-        }
 
-        const seen = new Set<RuntimeRecord>();
-        const stores: RuntimeRecord[] = [];
-        const hasFormModel = (target: RuntimeRecord) => {
-          const formModel = readProp(target, "formModel");
-          const state = readProp(target, "$state");
-          return isObject(formModel) || (isObject(state) && isObject(readProp(state, "formModel")));
-        };
-        const visit = (value: unknown, depth: number): void => {
-          if (!isObject(value) || seen.has(value) || seen.size > 1800) {
-            return;
+          const seen = new Set<RuntimeRecord>();
+          const stores: RuntimeRecord[] = [];
+          const hasFormModel = (target: RuntimeRecord) => {
+            const formModel = readProp(target, "formModel");
+            const state = readProp(target, "$state");
+            return (
+              isObject(formModel) ||
+              (isObject(state) && isObject(readProp(state, "formModel")))
+            );
+          };
+          const visit = (value: unknown, depth: number): void => {
+            if (!isObject(value) || seen.has(value) || seen.size > 1800) {
+              return;
+            }
+            seen.add(value);
+            if (hasFormModel(value)) {
+              stores.push(value);
+            }
+            if (depth >= 5) {
+              return;
+            }
+            for (const key of Reflect.ownKeys(value).slice(0, 80)) {
+              const child = readProp(value, key);
+              if (!isObject(child)) {
+                continue;
+              }
+              if (
+                child === runtimeWindow.document ||
+                child === runtimeWindow.document.body
+              ) {
+                continue;
+              }
+              visit(child, depth + 1);
+            }
+          };
+
+          const elements = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "#app,#app *,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],.ui-popup,.van-popup,.modal,.popup,body",
+            ),
+          ).slice(0, 2200);
+          for (const element of elements) {
+            visit(element.__vue__, 0);
+            const vue3 = element.__vueParentComponent;
+            if (vue3) {
+              visit(vue3, 0);
+              visit(readProp(vue3, "proxy"), 0);
+              visit(readProp(vue3, "ctx"), 0);
+              visit(readProp(vue3, "setupState"), 0);
+              visit(readProp(vue3, "exposed"), 0);
+              visit(readProp(vue3, "appContext"), 0);
+            }
+            const app = element.__vue_app__;
+            if (app) {
+              visit(app, 0);
+              visit(readProp(app, "_context"), 0);
+              visit(readProp(app, "config"), 0);
+            }
           }
-          seen.add(value);
-          if (hasFormModel(value)) {
-            stores.push(value);
-          }
-          if (depth >= 5) {
-            return;
-          }
-          for (const key of Reflect.ownKeys(value).slice(0, 80)) {
-            const child = readProp(value, key);
-            if (!isObject(child)) {
+
+          const touched: string[] = [];
+          const confirmed: string[] = [];
+          const callSafely = (
+            fn: unknown,
+            thisArg: unknown,
+            args: unknown[],
+          ) => {
+            if (typeof fn !== "function") {
+              return;
+            }
+            try {
+              Reflect.apply(fn, thisArg, args);
+            } catch {
+              // Best effort: reactive assignment is the important part.
+            }
+          };
+          const candidateKeysFor = (
+            store: RuntimeRecord,
+            formModel: RuntimeRecord,
+          ) => {
+            const rawKeys = [
+              readProp(store, "activeCategoryTypeText"),
+              readProp(store, "activeTabIndex"),
+              readProp(store, "activeCategoryType"),
+              "online",
+              "crypto",
+              "transfer",
+              "artificial",
+              "merchant",
+              ...Object.keys(formModel),
+            ];
+            return rawKeys
+              .map((entry) => String(entry ?? "").trim())
+              .filter(Boolean)
+              .filter((entry, index, list) => list.indexOf(entry) === index);
+          };
+
+          for (const store of stores) {
+            const state = readProp(store, "$state");
+            const formModel = (
+              isObject(readProp(store, "formModel"))
+                ? readProp(store, "formModel")
+                : isObject(state)
+                  ? readProp(state, "formModel")
+                  : undefined
+            ) as RuntimeRecord | undefined;
+            if (!formModel) {
               continue;
             }
-            if (child === runtimeWindow.document || child === runtimeWindow.document.body) {
-              continue;
+            for (const key of candidateKeysFor(store, formModel)) {
+              const model = readProp(formModel, key);
+              if (!isObject(model) || !("amount" in model)) {
+                continue;
+              }
+              try {
+                model.amount = amountToApply;
+                touched.push(key);
+                if ("preAmount" in store) {
+                  store.preAmount = amountToApply;
+                }
+                callSafely(readProp(store, "updateFee"), store, [key]);
+                callSafely(readProp(store, "$patch"), store, [
+                  (draft: RuntimeRecord) => {
+                    const draftFormModel = readProp(draft, "formModel");
+                    const draftModel = isObject(draftFormModel)
+                      ? readProp(draftFormModel, key)
+                      : undefined;
+                    if (isObject(draftModel) && "amount" in draftModel) {
+                      draftModel.amount = amountToApply;
+                    }
+                  },
+                ]);
+                const appliedNumber = parseNumber(model.amount);
+                if (
+                  Number.isFinite(appliedNumber) &&
+                  Math.abs(appliedNumber - expectedNumber) < 0.001
+                ) {
+                  confirmed.push(key);
+                }
+              } catch {
+                // Try the next store/key.
+              }
             }
-            visit(child, depth + 1);
           }
-        };
 
-        const elements = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            "#app,#app *,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],.ui-popup,.van-popup,.modal,.popup,body"
-          )
-        ).slice(0, 2200);
-        for (const element of elements) {
-          visit(element.__vue__, 0);
-          const vue3 = element.__vueParentComponent;
-          if (vue3) {
-            visit(vue3, 0);
-            visit(readProp(vue3, "proxy"), 0);
-            visit(readProp(vue3, "ctx"), 0);
-            visit(readProp(vue3, "setupState"), 0);
-            visit(readProp(vue3, "exposed"), 0);
-            visit(readProp(vue3, "appContext"), 0);
-          }
-          const app = element.__vue_app__;
-          if (app) {
-            visit(app, 0);
-            visit(readProp(app, "_context"), 0);
-            visit(readProp(app, "config"), 0);
-          }
-        }
-
-        const touched: string[] = [];
-        const confirmed: string[] = [];
-        const callSafely = (fn: unknown, thisArg: unknown, args: unknown[]) => {
-          if (typeof fn !== "function") {
-            return;
-          }
-          try {
-            Reflect.apply(fn, thisArg, args);
-          } catch {
-            // Best effort: reactive assignment is the important part.
-          }
-        };
-        const candidateKeysFor = (store: RuntimeRecord, formModel: RuntimeRecord) => {
-          const rawKeys = [
-            readProp(store, "activeCategoryTypeText"),
-            readProp(store, "activeTabIndex"),
-            readProp(store, "activeCategoryType"),
-            "online",
-            "crypto",
-            "transfer",
-            "artificial",
-            "merchant",
-            ...Object.keys(formModel)
-          ];
-          return rawKeys
-            .map((entry) => String(entry ?? "").trim())
-            .filter(Boolean)
-            .filter((entry, index, list) => list.indexOf(entry) === index);
-        };
-
-        for (const store of stores) {
-          const state = readProp(store, "$state");
-          const formModel = (
-            isObject(readProp(store, "formModel"))
-              ? readProp(store, "formModel")
-              : isObject(state)
-                ? readProp(state, "formModel")
-                : undefined
-          ) as RuntimeRecord | undefined;
-          if (!formModel) {
-            continue;
-          }
-          for (const key of candidateKeysFor(store, formModel)) {
-            const model = readProp(formModel, key);
-            if (!isObject(model) || !("amount" in model)) {
+          for (const vm of seen) {
+            if (!("rechargeNumber" in vm)) {
               continue;
             }
             try {
-              model.amount = amountToApply;
-              touched.push(key);
-              if ("preAmount" in store) {
-                store.preAmount = amountToApply;
+              vm.rechargeNumber = amountToApply;
+              touched.push("rechargeNumber");
+              callSafely(readProp(vm, "numberInputEvent"), vm, []);
+              callSafely(readProp(vm, "$forceUpdate"), vm, []);
+              const rechargeAmount = readProp(vm, "rechargeAmount");
+              if (isObject(rechargeAmount)) {
+                rechargeAmount.value = -1;
               }
-              callSafely(readProp(store, "updateFee"), store, [key]);
-              callSafely(readProp(store, "$patch"), store, [
-                (draft: RuntimeRecord) => {
-                  const draftFormModel = readProp(draft, "formModel");
-                  const draftModel = isObject(draftFormModel) ? readProp(draftFormModel, key) : undefined;
-                  if (isObject(draftModel) && "amount" in draftModel) {
-                    draftModel.amount = amountToApply;
-                  }
-                }
-              ]);
-              const appliedNumber = parseNumber(model.amount);
-              if (Number.isFinite(appliedNumber) && Math.abs(appliedNumber - expectedNumber) < 0.001) {
-                confirmed.push(key);
+              const appliedNumber = parseNumber(readProp(vm, "rechargeNumber"));
+              if (
+                Number.isFinite(appliedNumber) &&
+                Math.abs(appliedNumber - expectedNumber) < 0.001
+              ) {
+                confirmed.push("rechargeNumber");
               }
             } catch {
-              // Try the next store/key.
+              // Try the next component.
             }
           }
-        }
 
-        for (const vm of seen) {
-          if (!("rechargeNumber" in vm)) {
-            continue;
-          }
-          try {
-            vm.rechargeNumber = amountToApply;
-            touched.push("rechargeNumber");
-            callSafely(readProp(vm, "numberInputEvent"), vm, []);
-            callSafely(readProp(vm, "$forceUpdate"), vm, []);
-            const rechargeAmount = readProp(vm, "rechargeAmount");
-            if (isObject(rechargeAmount)) {
-              rechargeAmount.value = -1;
+          const forceUpdated = new Set<RuntimeRecord>();
+          for (const element of elements.slice(0, 500)) {
+            for (const value of [
+              element.__vue__,
+              element.__vueParentComponent,
+              element.__vueParentComponent?.proxy,
+            ]) {
+              if (!isObject(value) || forceUpdated.has(value)) {
+                continue;
+              }
+              forceUpdated.add(value);
+              callSafely(readProp(value, "$forceUpdate"), value, []);
+              callSafely(readProp(value, "update"), value, []);
             }
-            const appliedNumber = parseNumber(readProp(vm, "rechargeNumber"));
-            if (Number.isFinite(appliedNumber) && Math.abs(appliedNumber - expectedNumber) < 0.001) {
-              confirmed.push("rechargeNumber");
-            }
-          } catch {
-            // Try the next component.
           }
-        }
 
-        const forceUpdated = new Set<RuntimeRecord>();
-        for (const element of elements.slice(0, 500)) {
-          for (const value of [element.__vue__, element.__vueParentComponent, element.__vueParentComponent?.proxy]) {
-            if (!isObject(value) || forceUpdated.has(value)) {
-              continue;
-            }
-            forceUpdated.add(value);
-            callSafely(readProp(value, "$forceUpdate"), value, []);
-            callSafely(readProp(value, "update"), value, []);
-          }
-        }
-
-        return {
-          confirmed: confirmed.length > 0,
-          reason: confirmed.length > 0 ? "applied" : touched.length > 0 ? "touched-unconfirmed" : "store-not-found",
-          stores: stores.length,
-          touched
-        };
-      }, depositAmount, PATCHRIGHT_MAIN_WORLD)
+          return {
+            confirmed: confirmed.length > 0,
+            reason:
+              confirmed.length > 0
+                ? "applied"
+                : touched.length > 0
+                  ? "touched-unconfirmed"
+                  : "store-not-found",
+            stores: stores.length,
+            touched,
+          };
+        },
+        depositAmount,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch(() => undefined);
 
     if (result?.confirmed) {
@@ -7197,159 +9392,250 @@ export class AutomationRuntimeService {
     return undefined;
   }
 
-  async fillDepositAmountWithVisualKeypad(runId: string, page: Page, amount: string): Promise<string | undefined> {
+  async fillDepositAmountWithVisualKeypad(
+    runId: string,
+    page: Page,
+    amount: string,
+  ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `deposit-keypad-${Date.now()}-${this.randomInt(1000, 9999)}`;
     const frame = resolveContentFrame(page);
     const focused = await frame
-      .evaluate(({ targetToken }) => {
-        type RuntimeElement = {
-          blur?: () => void;
-          click?: () => void;
-          closest?: (selector: string) => RuntimeElement | null;
-          focus?: () => void;
-          getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => {
-            bottom: number;
-            height: number;
-            left: number;
-            right: number;
-            top: number;
-            width: number;
-          };
-          parentElement?: RuntimeElement | null;
-          querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-          setAttribute?: (name: string, value: string) => void;
-          textContent?: string | null;
-          value?: string;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex: string };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: RuntimeElement, allowOffscreen = false) => {
-          const style = runtimeWindow.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          const inViewport = allowOffscreen
-            ? rect.right > -runtimeWindow.innerWidth &&
-              rect.bottom > -runtimeWindow.innerHeight &&
-              rect.left < runtimeWindow.innerWidth * 2 &&
-              rect.top < runtimeWindow.innerHeight * 2
-            : rect.right > 0 &&
-              rect.bottom > 0 &&
-              rect.left < runtimeWindow.innerWidth &&
-              rect.top < runtimeWindow.innerHeight;
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 8 &&
-            rect.height > 8 &&
-            inViewport
-          );
-        };
-        const unique = (items: RuntimeElement[]) => items.filter((element, index, list) => list.indexOf(element) === index);
-        const depositRootSelector =
-          ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-        const roots = Array.from(runtimeWindow.document.querySelectorAll(depositRootSelector))
-          .filter((root) => {
-            const text = normalize([root.textContent, root.getAttribute?.("class"), root.getAttribute?.("id")].join(" "));
-            return isVisible(root, true) && /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix|pagamento|payment/.test(text);
-          })
-          .sort((left, right) => {
-            const leftRect = left.getBoundingClientRect();
-            const rightRect = right.getBoundingClientRect();
-            const leftZ = Number.parseInt(runtimeWindow.getComputedStyle(left).zIndex || "0", 10) || 0;
-            const rightZ = Number.parseInt(runtimeWindow.getComputedStyle(right).zIndex || "0", 10) || 0;
-            return rightZ - leftZ || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-          });
-        const searchRoots = unique([...roots.slice(0, 8), runtimeWindow.document.body]);
-        const injectedOverlaySelector =
-          "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
-        const selectors = [
-          "input",
-          "textarea",
-          "[contenteditable='true']",
-          "[role='textbox']",
-          ".ui-input",
-          ".ui-input__input",
-          "[class*='amount-input' i]",
-          "[class*='amount-form-item' i]",
-          "[class*='input-box' i]",
-          "[class*='money' i]",
-          "[class*='count' i]"
-        ].join(",");
-        const candidates = unique(
-          searchRoots.flatMap((root) => Array.from(root.querySelectorAll?.(selectors) ?? []))
-        )
-          .filter((element) => isVisible(element, true) && !element.closest?.(injectedOverlaySelector))
-          .map((element) => {
-            const rect = element.getBoundingClientRect();
-            const wrapper =
-              element.closest?.(".ui-input,[class*='amount-input' i],[class*='amount-form-item' i],[class*='input-box' i],label") ??
-              element.parentElement ??
-              element;
-            const own = normalize(
-              [
-                element.getAttribute?.("type"),
-                element.getAttribute?.("placeholder"),
-                element.getAttribute?.("name"),
-                element.getAttribute?.("id"),
-                element.getAttribute?.("class"),
-                element.getAttribute?.("inputmode"),
-                element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title"),
-                element.textContent
-              ].join(" ")
-            );
-            const wrapperText = normalize(
-              [
-                wrapper.getAttribute?.("class"),
-                wrapper.getAttribute?.("id"),
-                wrapper.getAttribute?.("aria-label"),
-                wrapper.textContent
-              ].join(" ")
-            );
-            const haystack = `${own} ${wrapperText}`;
-            let score = 0;
-            if (/amount|valor|quantia|montante|money|preco|price/.test(haystack)) score += 85;
-            if (/minimo|maximo|minimum|maximum|limite|limit|min|max/.test(haystack)) score += 55;
-            if (/r\$|brl|pix|moeda|currency/.test(haystack)) score += 45;
-            if (/ui-input|input-box|amount-input|amount-form-item/.test(haystack)) score += 60;
-            if (/input|textarea|textbox|number|tel|numeric|decimal/.test(haystack)) score += 35;
-            if (/deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/.test(haystack)) score += 18;
-            if (rect.top > runtimeWindow.innerHeight * 0.82) score -= 90;
-            if (rect.width * rect.height > runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.3) score -= 60;
-            if (/canal|channel|pagamento|payment|metodo|method|confirmar|submit|depositar agora|saque|withdraw|senha|password|telefone|cpf|email/.test(haystack)) {
-              score -= 120;
-            }
-            return {
-              element: wrapper,
-              label: haystack.slice(0, 96) || "valor",
-              score
+      .evaluate(
+        ({ targetToken }) => {
+          type RuntimeElement = {
+            blur?: () => void;
+            click?: () => void;
+            closest?: (selector: string) => RuntimeElement | null;
+            focus?: () => void;
+            getAttribute?: (name: string) => string | null;
+            getBoundingClientRect: () => {
+              bottom: number;
+              height: number;
+              left: number;
+              right: number;
+              top: number;
+              width: number;
             };
-          })
-          .filter((candidate) => candidate.score > 45)
-          .sort((left, right) => right.score - left.score);
+            parentElement?: RuntimeElement | null;
+            querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
+            setAttribute?: (name: string, value: string) => void;
+            textContent?: string | null;
+            value?: string;
+          };
+          const runtimeWindow = globalThis as unknown as {
+            document: {
+              body: RuntimeElement;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+              zIndex: string;
+            };
+            innerHeight: number;
+            innerWidth: number;
+          };
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const isVisible = (
+            element: RuntimeElement,
+            allowOffscreen = false,
+          ) => {
+            const style = runtimeWindow.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const inViewport = allowOffscreen
+              ? rect.right > -runtimeWindow.innerWidth &&
+                rect.bottom > -runtimeWindow.innerHeight &&
+                rect.left < runtimeWindow.innerWidth * 2 &&
+                rect.top < runtimeWindow.innerHeight * 2
+              : rect.right > 0 &&
+                rect.bottom > 0 &&
+                rect.left < runtimeWindow.innerWidth &&
+                rect.top < runtimeWindow.innerHeight;
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 8 &&
+              rect.height > 8 &&
+              inViewport
+            );
+          };
+          const unique = (items: RuntimeElement[]) =>
+            items.filter(
+              (element, index, list) => list.indexOf(element) === index,
+            );
+          const depositRootSelector =
+            ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
+          const roots = Array.from(
+            runtimeWindow.document.querySelectorAll(depositRootSelector),
+          )
+            .filter((root) => {
+              const text = normalize(
+                [
+                  root.textContent,
+                  root.getAttribute?.("class"),
+                  root.getAttribute?.("id"),
+                ].join(" "),
+              );
+              return (
+                isVisible(root, true) &&
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix|pagamento|payment/.test(
+                  text,
+                )
+              );
+            })
+            .sort((left, right) => {
+              const leftRect = left.getBoundingClientRect();
+              const rightRect = right.getBoundingClientRect();
+              const leftZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(left).zIndex || "0",
+                  10,
+                ) || 0;
+              const rightZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(right).zIndex || "0",
+                  10,
+                ) || 0;
+              return (
+                rightZ - leftZ ||
+                rightRect.width * rightRect.height -
+                  leftRect.width * leftRect.height
+              );
+            });
+          const searchRoots = unique([
+            ...roots.slice(0, 8),
+            runtimeWindow.document.body,
+          ]);
+          const injectedOverlaySelector =
+            "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
+          const selectors = [
+            "input",
+            "textarea",
+            "[contenteditable='true']",
+            "[role='textbox']",
+            ".ui-input",
+            ".ui-input__input",
+            "[class*='amount-input' i]",
+            "[class*='amount-form-item' i]",
+            "[class*='input-box' i]",
+            "[class*='money' i]",
+            "[class*='count' i]",
+          ].join(",");
+          const candidates = unique(
+            searchRoots.flatMap((root) =>
+              Array.from(root.querySelectorAll?.(selectors) ?? []),
+            ),
+          )
+            .filter(
+              (element) =>
+                isVisible(element, true) &&
+                !element.closest?.(injectedOverlaySelector),
+            )
+            .map((element) => {
+              const rect = element.getBoundingClientRect();
+              const wrapper =
+                element.closest?.(
+                  ".ui-input,[class*='amount-input' i],[class*='amount-form-item' i],[class*='input-box' i],label",
+                ) ??
+                element.parentElement ??
+                element;
+              const own = normalize(
+                [
+                  element.getAttribute?.("type"),
+                  element.getAttribute?.("placeholder"),
+                  element.getAttribute?.("name"),
+                  element.getAttribute?.("id"),
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("inputmode"),
+                  element.getAttribute?.("aria-label"),
+                  element.getAttribute?.("title"),
+                  element.textContent,
+                ].join(" "),
+              );
+              const wrapperText = normalize(
+                [
+                  wrapper.getAttribute?.("class"),
+                  wrapper.getAttribute?.("id"),
+                  wrapper.getAttribute?.("aria-label"),
+                  wrapper.textContent,
+                ].join(" "),
+              );
+              const haystack = `${own} ${wrapperText}`;
+              let score = 0;
+              if (
+                /amount|valor|quantia|montante|money|preco|price/.test(haystack)
+              )
+                score += 85;
+              if (
+                /minimo|maximo|minimum|maximum|limite|limit|min|max/.test(
+                  haystack,
+                )
+              )
+                score += 55;
+              if (/r\$|brl|pix|moeda|currency/.test(haystack)) score += 45;
+              if (
+                /ui-input|input-box|amount-input|amount-form-item/.test(
+                  haystack,
+                )
+              )
+                score += 60;
+              if (
+                /input|textarea|textbox|number|tel|numeric|decimal/.test(
+                  haystack,
+                )
+              )
+                score += 35;
+              if (
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/.test(
+                  haystack,
+                )
+              )
+                score += 18;
+              if (rect.top > runtimeWindow.innerHeight * 0.82) score -= 90;
+              if (
+                rect.width * rect.height >
+                runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.3
+              )
+                score -= 60;
+              if (
+                /canal|channel|pagamento|payment|metodo|method|confirmar|submit|depositar agora|saque|withdraw|senha|password|telefone|cpf|email/.test(
+                  haystack,
+                )
+              ) {
+                score -= 120;
+              }
+              return {
+                element: wrapper,
+                label: haystack.slice(0, 96) || "valor",
+                score,
+              };
+            })
+            .filter((candidate) => candidate.score > 45)
+            .sort((left, right) => right.score - left.score);
 
-        const candidate = candidates[0];
-        if (!candidate) {
-          return undefined;
-        }
-        candidate.element.setAttribute?.("data-predator-deposit-keypad-target", targetToken);
-        candidate.element.focus?.();
-        candidate.element.click?.();
-        return candidate.label;
-      }, { targetToken })
+          const candidate = candidates[0];
+          if (!candidate) {
+            return undefined;
+          }
+          candidate.element.setAttribute?.(
+            "data-predator-deposit-keypad-target",
+            targetToken,
+          );
+          candidate.element.focus?.();
+          candidate.element.click?.();
+          return candidate.label;
+        },
+        { targetToken },
+      )
       .catch(() => undefined);
 
     if (!focused) {
@@ -7358,421 +9644,558 @@ export class AutomationRuntimeService {
 
     await page.waitForTimeout(140).catch(() => undefined);
     const keypadResult = await frame
-      .evaluate(async ({ depositAmount, targetToken }) => {
-        type RuntimeElement = {
-          blur?: () => void;
-          click?: () => void;
-          closest?: (selector: string) => RuntimeElement | null;
-          getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => {
-            bottom: number;
-            height: number;
-            left: number;
-            right: number;
-            top: number;
-            width: number;
+      .evaluate(
+        async ({ depositAmount, targetToken }) => {
+          type RuntimeElement = {
+            blur?: () => void;
+            click?: () => void;
+            closest?: (selector: string) => RuntimeElement | null;
+            getAttribute?: (name: string) => string | null;
+            getBoundingClientRect: () => {
+              bottom: number;
+              height: number;
+              left: number;
+              right: number;
+              top: number;
+              width: number;
+            };
+            querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
+            removeAttribute?: (name: string) => void;
+            textContent?: string | null;
+            value?: string;
           };
-          querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-          removeAttribute?: (name: string) => void;
-          textContent?: string | null;
-          value?: string;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: {
-            activeElement?: RuntimeElement | null;
-            body: RuntimeElement;
-            querySelector: (selector: string) => RuntimeElement | null;
-            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          const runtimeWindow = globalThis as unknown as {
+            document: {
+              activeElement?: RuntimeElement | null;
+              body: RuntimeElement;
+              querySelector: (selector: string) => RuntimeElement | null;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+              zIndex: string;
+            };
+            innerHeight: number;
+            innerWidth: number;
           };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex: string };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: RuntimeElement) => {
-          const style = runtimeWindow.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 14 &&
-            rect.height > 14 &&
-            rect.right > 0 &&
-            rect.bottom > 0 &&
-            rect.left < runtimeWindow.innerWidth &&
-            rect.top < runtimeWindow.innerHeight
+          const wait = (ms: number) =>
+            new Promise((resolve) => setTimeout(resolve, ms));
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const isVisible = (element: RuntimeElement) => {
+            const style = runtimeWindow.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 14 &&
+              rect.height > 14 &&
+              rect.right > 0 &&
+              rect.bottom > 0 &&
+              rect.left < runtimeWindow.innerWidth &&
+              rect.top < runtimeWindow.innerHeight
+            );
+          };
+          const parseNumber = (value: string | null | undefined) => {
+            const cleaned = (value || "").replace(/[^\d,.-]/g, "").trim();
+            if (!cleaned) return Number.NaN;
+            const lastComma = cleaned.lastIndexOf(",");
+            const lastDot = cleaned.lastIndexOf(".");
+            const normalized =
+              lastComma > lastDot
+                ? cleaned.replace(/\./g, "").replace(",", ".")
+                : cleaned.replace(/,/g, "");
+            return Number(normalized);
+          };
+          const expectedNumber = parseNumber(depositAmount);
+          const digits = depositAmount.replace(/\D+/g, "");
+          if (!digits || !Number.isFinite(expectedNumber)) {
+            return { clicked: 0, confirmed: false };
+          }
+          const target = runtimeWindow.document.querySelector(
+            `[data-predator-deposit-keypad-target="${targetToken}"]`,
           );
-        };
-        const parseNumber = (value: string | null | undefined) => {
-          const cleaned = (value || "").replace(/[^\d,.-]/g, "").trim();
-          if (!cleaned) return Number.NaN;
-          const lastComma = cleaned.lastIndexOf(",");
-          const lastDot = cleaned.lastIndexOf(".");
-          const normalized = lastComma > lastDot ? cleaned.replace(/\./g, "").replace(",", ".") : cleaned.replace(/,/g, "");
-          return Number(normalized);
-        };
-        const expectedNumber = parseNumber(depositAmount);
-        const digits = depositAmount.replace(/\D+/g, "");
-        if (!digits || !Number.isFinite(expectedNumber)) {
-          return { clicked: 0, confirmed: false };
-        }
-        const target = runtimeWindow.document.querySelector(`[data-predator-deposit-keypad-target="${targetToken}"]`);
-        const readTargetValue = () => {
-          if (!target) return "";
-          const direct = typeof target.value === "string" ? target.value : "";
-          return direct || target.textContent || "";
-        };
-        const isExpected = (value: string | null | undefined) => {
-          const parsed = parseNumber(value);
-          return Number.isFinite(parsed) && Math.abs(parsed - expectedNumber) < 0.001;
-        };
-        if (isExpected(readTargetValue())) {
-          target?.removeAttribute?.("data-predator-deposit-keypad-target");
-          return { clicked: 0, confirmed: true };
-        }
+          const readTargetValue = () => {
+            if (!target) return "";
+            const direct = typeof target.value === "string" ? target.value : "";
+            return direct || target.textContent || "";
+          };
+          const isExpected = (value: string | null | undefined) => {
+            const parsed = parseNumber(value);
+            return (
+              Number.isFinite(parsed) &&
+              Math.abs(parsed - expectedNumber) < 0.001
+            );
+          };
+          if (isExpected(readTargetValue())) {
+            target?.removeAttribute?.("data-predator-deposit-keypad-target");
+            return { clicked: 0, confirmed: true };
+          }
 
-        const clickableSelector =
-          "button,[role='button'],.van-key,.van-number-keyboard__key,.ui-key,.ui-keyboard__key,[class*='key' i],[class*='keyboard' i],[class*='kb' i],div,span";
-        const allClickables = () =>
-          Array.from(runtimeWindow.document.querySelectorAll(clickableSelector))
-            .filter(isVisible)
+          const clickableSelector =
+            "button,[role='button'],.van-key,.van-number-keyboard__key,.ui-key,.ui-keyboard__key,[class*='key' i],[class*='keyboard' i],[class*='kb' i],div,span";
+          const allClickables = () =>
+            Array.from(
+              runtimeWindow.document.querySelectorAll(clickableSelector),
+            )
+              .filter(isVisible)
+              .filter((element) => {
+                const rect = element.getBoundingClientRect();
+                if (rect.top < runtimeWindow.innerHeight * 0.58) return false;
+                const attrs = normalize(
+                  [
+                    element.getAttribute?.("class"),
+                    element.getAttribute?.("id"),
+                    element.getAttribute?.("aria-label"),
+                    element.getAttribute?.("title"),
+                    element.textContent,
+                  ].join(" "),
+                );
+                return !/depositar|confirmar|submit|pagamento|payment|metodo|method|canal|channel/.test(
+                  attrs,
+                );
+              });
+          const findDigitKey = (digit: string) =>
+            allClickables()
+              .filter((element) => normalize(element.textContent) === digit)
+              .sort((left, right) => {
+                const leftRect = left.getBoundingClientRect();
+                const rightRect = right.getBoundingClientRect();
+                return (
+                  rightRect.top - leftRect.top ||
+                  rightRect.width * rightRect.height -
+                    leftRect.width * leftRect.height
+                );
+              })[0];
+
+          let clicked = 0;
+          for (const digit of digits) {
+            const key = findDigitKey(digit);
+            if (!key) {
+              break;
+            }
+            key.click?.();
+            clicked += 1;
+            await wait(80);
+          }
+
+          const hideKey = allClickables()
             .filter((element) => {
               const rect = element.getBoundingClientRect();
-              if (rect.top < runtimeWindow.innerHeight * 0.58) return false;
+              const text = normalize(element.textContent);
               const attrs = normalize(
                 [
                   element.getAttribute?.("class"),
                   element.getAttribute?.("id"),
                   element.getAttribute?.("aria-label"),
                   element.getAttribute?.("title"),
-                  element.textContent
-                ].join(" ")
+                ].join(" "),
               );
-              return !/depositar|confirmar|submit|pagamento|payment|metodo|method|canal|channel/.test(attrs);
-            });
-        const findDigitKey = (digit: string) =>
-          allClickables()
-            .filter((element) => normalize(element.textContent) === digit)
-            .sort((left, right) => {
-              const leftRect = left.getBoundingClientRect();
-              const rightRect = right.getBoundingClientRect();
-              return rightRect.top - leftRect.top || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-            })[0];
+              return (
+                rect.top > runtimeWindow.innerHeight * 0.82 &&
+                (/(keyboard|teclado|hide|close|done|ok|collapse)/.test(attrs) ||
+                  text === "") &&
+                !/(delete|backspace|del|apagar|limpar|clear)/.test(attrs)
+              );
+            })
+            .sort(
+              (left, right) =>
+                left.getBoundingClientRect().left -
+                right.getBoundingClientRect().left,
+            )[0];
+          hideKey?.click?.();
+          runtimeWindow.document.activeElement?.blur?.();
+          target?.blur?.();
+          target?.removeAttribute?.("data-predator-deposit-keypad-target");
+          await wait(120);
 
-        let clicked = 0;
-        for (const digit of digits) {
-          const key = findDigitKey(digit);
-          if (!key) {
-            break;
-          }
-          key.click?.();
-          clicked += 1;
-          await wait(80);
-        }
-
-        const hideKey = allClickables()
-          .filter((element) => {
-            const rect = element.getBoundingClientRect();
-            const text = normalize(element.textContent);
-            const attrs = normalize(
-              [
-                element.getAttribute?.("class"),
-                element.getAttribute?.("id"),
-                element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title")
-              ].join(" ")
-            );
-            return (
-              rect.top > runtimeWindow.innerHeight * 0.82 &&
-              (/(keyboard|teclado|hide|close|done|ok|collapse)/.test(attrs) || text === "") &&
-              !/(delete|backspace|del|apagar|limpar|clear)/.test(attrs)
-            );
-          })
-          .sort((left, right) => left.getBoundingClientRect().left - right.getBoundingClientRect().left)[0];
-        hideKey?.click?.();
-        runtimeWindow.document.activeElement?.blur?.();
-        target?.blur?.();
-        target?.removeAttribute?.("data-predator-deposit-keypad-target");
-        await wait(120);
-
-        return {
-          clicked,
-          confirmed: isExpected(readTargetValue())
-        };
-      }, { depositAmount: amount, targetToken })
+          return {
+            clicked,
+            confirmed: isExpected(readTargetValue()),
+          };
+        },
+        { depositAmount: amount, targetToken },
+      )
       .catch(() => ({ clicked: 0, confirmed: false }));
 
     await page.keyboard.press("Escape").catch(() => undefined);
     await page.waitForTimeout(220).catch(() => undefined);
-    if (keypadResult.confirmed || keypadResult.clicked === amount.replace(/\D+/g, "").length) {
+    if (
+      keypadResult.confirmed ||
+      keypadResult.clicked === amount.replace(/\D+/g, "").length
+    ) {
       return `teclado numerico visual (${focused})`;
     }
 
     return undefined;
   }
 
-  async fillDepositAmountField(runId: string, page: Page, amount: string): Promise<string | undefined> {
+  async fillDepositAmountField(
+    runId: string,
+    page: Page,
+    amount: string,
+  ): Promise<string | undefined> {
     const targetToken = `deposit-${Date.now()}-${this.randomInt(1000, 9999)}`;
     const fieldResult = await resolveContentFrame(page)
-      .evaluate(({ depositAmount, targetToken }) => {
-        type RuntimeElement = {
-          closest?: (selector: string) => RuntimeElement | null;
-          disabled?: boolean;
-          dispatchEvent?: (event: unknown) => boolean;
-          focus?: () => void;
-          getAttribute: (name: string) => string | null;
-          getBoundingClientRect: () => {
-            bottom: number;
-            height: number;
-            left: number;
-            right: number;
-            top: number;
-            width: number;
+      .evaluate(
+        ({ depositAmount, targetToken }) => {
+          type RuntimeElement = {
+            closest?: (selector: string) => RuntimeElement | null;
+            disabled?: boolean;
+            dispatchEvent?: (event: unknown) => boolean;
+            focus?: () => void;
+            getAttribute: (name: string) => string | null;
+            getBoundingClientRect: () => {
+              bottom: number;
+              height: number;
+              left: number;
+              right: number;
+              top: number;
+              width: number;
+            };
+            parentElement?: RuntimeElement | null;
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            readOnly?: boolean;
+            removeAttribute?: (name: string) => void;
+            setAttribute?: (name: string, value: string) => void;
+            textContent?: string | null;
+            value?: string;
           };
-          parentElement?: RuntimeElement | null;
-          querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
-          readOnly?: boolean;
-          removeAttribute?: (name: string) => void;
-          setAttribute?: (name: string, value: string) => void;
-          textContent?: string | null;
-          value?: string;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          Event: new (type: string, init?: { bubbles?: boolean }) => unknown;
-          InputEvent?: new (
-            type: string,
-            init?: { bubbles?: boolean; data?: string; inputType?: string }
-          ) => unknown;
-          document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex: string };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: RuntimeElement, allowOffscreen = false) => {
-          const style = runtimeWindow.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          const inViewport = allowOffscreen
-            ? rect.right > -runtimeWindow.innerWidth && rect.bottom > -runtimeWindow.innerHeight &&
-              rect.left < runtimeWindow.innerWidth * 2 && rect.top < runtimeWindow.innerHeight * 2
-            : rect.right > 0 && rect.bottom > 0 &&
-              rect.left < runtimeWindow.innerWidth && rect.top < runtimeWindow.innerHeight;
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 8 &&
-            rect.height > 8 &&
-            inViewport
+          const runtimeWindow = globalThis as unknown as {
+            Event: new (type: string, init?: { bubbles?: boolean }) => unknown;
+            InputEvent?: new (
+              type: string,
+              init?: { bubbles?: boolean; data?: string; inputType?: string },
+            ) => unknown;
+            document: {
+              body: RuntimeElement;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+              zIndex: string;
+            };
+            innerHeight: number;
+            innerWidth: number;
+          };
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const isVisible = (
+            element: RuntimeElement,
+            allowOffscreen = false,
+          ) => {
+            const style = runtimeWindow.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const inViewport = allowOffscreen
+              ? rect.right > -runtimeWindow.innerWidth &&
+                rect.bottom > -runtimeWindow.innerHeight &&
+                rect.left < runtimeWindow.innerWidth * 2 &&
+                rect.top < runtimeWindow.innerHeight * 2
+              : rect.right > 0 &&
+                rect.bottom > 0 &&
+                rect.left < runtimeWindow.innerWidth &&
+                rect.top < runtimeWindow.innerHeight;
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 8 &&
+              rect.height > 8 &&
+              inViewport
             );
-        };
-        const depositRootSelector =
-          ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-        const roots = Array.from(
-          runtimeWindow.document.querySelectorAll(depositRootSelector)
-        )
-          .filter((root) => {
-            const text = normalize([root.textContent, root.getAttribute("class"), root.getAttribute("id")].join(" "));
-            return isVisible(root, true) && /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(text);
-          })
-          .sort((left, right) => {
-            const leftRect = left.getBoundingClientRect();
-            const rightRect = right.getBoundingClientRect();
-            const leftZ = Number.parseInt(runtimeWindow.getComputedStyle(left).zIndex || "0", 10) || 0;
-            const rightZ = Number.parseInt(runtimeWindow.getComputedStyle(right).zIndex || "0", 10) || 0;
-            return rightZ - leftZ || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-          });
-        const root = roots[0] ?? runtimeWindow.document.body;
-        const rootIsDeposit = roots.length > 0;
-        const injectedOverlaySelector =
-          "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
-        const unique = (items: RuntimeElement[]) => items.filter((element, index, list) => list.indexOf(element) === index);
-        const searchRoots = unique([...roots.slice(0, 8), root, runtimeWindow.document.body]);
-        const visibleInputs = Array.from(
-          unique(
-            searchRoots.flatMap((searchRoot) =>
-              Array.from(searchRoot.querySelectorAll("input,textarea,[contenteditable='true'],[role='textbox']"))
-            )
+          };
+          const depositRootSelector =
+            ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
+          const roots = Array.from(
+            runtimeWindow.document.querySelectorAll(depositRootSelector),
           )
-        ).filter((element) => isVisible(element, true) && !element.closest?.(injectedOverlaySelector));
-        const candidates = visibleInputs
-          .filter((element) => {
-            const type = normalize(element.getAttribute("type"));
-            return !["password", "checkbox", "radio", "hidden", "file"].includes(type);
-          })
-          .map((element) => {
-            const type = normalize(element.getAttribute("type"));
-            const placeholder = normalize(element.getAttribute("placeholder"));
-            const wrapper =
-              element.closest?.("label,.ui-input,.van-field,.form-item,.form-control,.input-item,.el-form-item") ??
-              element.parentElement;
-            const ownHaystack = normalize(
-              [
-                placeholder,
-                element.getAttribute("name"),
-                element.getAttribute("id"),
-                element.getAttribute("class"),
-                element.getAttribute("data-input-name"),
-                element.getAttribute("inputmode"),
-                element.getAttribute("aria-label"),
-                element.getAttribute("title"),
-                type
-              ].join(" ")
+            .filter((root) => {
+              const text = normalize(
+                [
+                  root.textContent,
+                  root.getAttribute("class"),
+                  root.getAttribute("id"),
+                ].join(" "),
+              );
+              return (
+                isVisible(root, true) &&
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(
+                  text,
+                )
+              );
+            })
+            .sort((left, right) => {
+              const leftRect = left.getBoundingClientRect();
+              const rightRect = right.getBoundingClientRect();
+              const leftZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(left).zIndex || "0",
+                  10,
+                ) || 0;
+              const rightZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(right).zIndex || "0",
+                  10,
+                ) || 0;
+              return (
+                rightZ - leftZ ||
+                rightRect.width * rightRect.height -
+                  leftRect.width * leftRect.height
+              );
+            });
+          const root = roots[0] ?? runtimeWindow.document.body;
+          const rootIsDeposit = roots.length > 0;
+          const injectedOverlaySelector =
+            "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
+          const unique = (items: RuntimeElement[]) =>
+            items.filter(
+              (element, index, list) => list.indexOf(element) === index,
             );
-            const wrapperText = normalize(wrapper?.textContent);
-            const haystack = normalize(
-              [
-                ownHaystack,
-                wrapper?.textContent
-              ].join(" ")
-            );
-            const amountPattern = /valor|amount|quantia|montante|money|preco|price/;
-            const depositPattern = /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/;
-            const currencyPattern = /r\$|brl|pix|moeda|currency/;
-            const numericPattern = /numeric|decimal|number|tel/;
-            const limitPattern = /minimo|maximo|minimum|maximum|limite|limit|min|max/;
-            let score = 0;
-            if (amountPattern.test(ownHaystack)) {
-              score += 72;
-            }
-            if (amountPattern.test(wrapperText)) {
-              score += 36;
-            }
-            if (depositPattern.test(ownHaystack)) {
-              score += 34;
-            }
-            if (depositPattern.test(wrapperText)) {
-              score += 18;
-            }
-            if (currencyPattern.test(haystack)) {
-              score += 30;
-            }
-            if (numericPattern.test(ownHaystack)) {
-              score += 32;
-            }
-            if (rootIsDeposit) {
-              score += 28;
-            }
-            if (/text|number|tel|numeric|decimal/.test(ownHaystack)) {
-              score += 24;
-            }
-            if (/^\s*(r\$)?\s*[\d,.]*\s*$/.test(placeholder)) {
-              score += 20;
-            }
-            if (rootIsDeposit && visibleInputs.length <= 3) {
-              score += 20;
-            }
-            if (/conta|usuario|senha|password|phone|telefone|celular|cpf|email/.test(haystack)) {
-              score -= 120;
-            }
-            if (/saque|withdraw|retirada/.test(haystack)) {
-              score -= 45;
-            }
-            if (limitPattern.test(ownHaystack)) {
-              score -= 95;
-            } else if (limitPattern.test(wrapperText) && !amountPattern.test(haystack) && !currencyPattern.test(haystack)) {
-              score -= 30;
-            } else if (limitPattern.test(wrapperText)) {
-              score += 6;
-            }
-            if (element.disabled || element.readOnly) {
-              score -= 70;
-            }
-            if (visibleInputs.length === 1) {
-              score += 45;
-            }
-            if (!rootIsDeposit && !amountPattern.test(haystack) && !depositPattern.test(haystack) && !currencyPattern.test(haystack)) {
-              score -= 35;
-            }
-            return { element, haystack: haystack || ownHaystack || "valor", score };
-          })
-          .filter((candidate) => candidate.score > 18)
-          .sort((left, right) => right.score - left.score);
+          const searchRoots = unique([
+            ...roots.slice(0, 8),
+            root,
+            runtimeWindow.document.body,
+          ]);
+          const visibleInputs = Array.from(
+            unique(
+              searchRoots.flatMap((searchRoot) =>
+                Array.from(
+                  searchRoot.querySelectorAll(
+                    "input,textarea,[contenteditable='true'],[role='textbox']",
+                  ),
+                ),
+              ),
+            ),
+          ).filter(
+            (element) =>
+              isVisible(element, true) &&
+              !element.closest?.(injectedOverlaySelector),
+          );
+          const candidates = visibleInputs
+            .filter((element) => {
+              const type = normalize(element.getAttribute("type"));
+              return ![
+                "password",
+                "checkbox",
+                "radio",
+                "hidden",
+                "file",
+              ].includes(type);
+            })
+            .map((element) => {
+              const type = normalize(element.getAttribute("type"));
+              const placeholder = normalize(
+                element.getAttribute("placeholder"),
+              );
+              const wrapper =
+                element.closest?.(
+                  "label,.ui-input,.van-field,.form-item,.form-control,.input-item,.el-form-item",
+                ) ?? element.parentElement;
+              const ownHaystack = normalize(
+                [
+                  placeholder,
+                  element.getAttribute("name"),
+                  element.getAttribute("id"),
+                  element.getAttribute("class"),
+                  element.getAttribute("data-input-name"),
+                  element.getAttribute("inputmode"),
+                  element.getAttribute("aria-label"),
+                  element.getAttribute("title"),
+                  type,
+                ].join(" "),
+              );
+              const wrapperText = normalize(wrapper?.textContent);
+              const haystack = normalize(
+                [ownHaystack, wrapper?.textContent].join(" "),
+              );
+              const amountPattern =
+                /valor|amount|quantia|montante|money|preco|price/;
+              const depositPattern =
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/;
+              const currencyPattern = /r\$|brl|pix|moeda|currency/;
+              const numericPattern = /numeric|decimal|number|tel/;
+              const limitPattern =
+                /minimo|maximo|minimum|maximum|limite|limit|min|max/;
+              let score = 0;
+              if (amountPattern.test(ownHaystack)) {
+                score += 72;
+              }
+              if (amountPattern.test(wrapperText)) {
+                score += 36;
+              }
+              if (depositPattern.test(ownHaystack)) {
+                score += 34;
+              }
+              if (depositPattern.test(wrapperText)) {
+                score += 18;
+              }
+              if (currencyPattern.test(haystack)) {
+                score += 30;
+              }
+              if (numericPattern.test(ownHaystack)) {
+                score += 32;
+              }
+              if (rootIsDeposit) {
+                score += 28;
+              }
+              if (/text|number|tel|numeric|decimal/.test(ownHaystack)) {
+                score += 24;
+              }
+              if (/^\s*(r\$)?\s*[\d,.]*\s*$/.test(placeholder)) {
+                score += 20;
+              }
+              if (rootIsDeposit && visibleInputs.length <= 3) {
+                score += 20;
+              }
+              if (
+                /conta|usuario|senha|password|phone|telefone|celular|cpf|email/.test(
+                  haystack,
+                )
+              ) {
+                score -= 120;
+              }
+              if (/saque|withdraw|retirada/.test(haystack)) {
+                score -= 45;
+              }
+              if (limitPattern.test(ownHaystack)) {
+                score -= 95;
+              } else if (
+                limitPattern.test(wrapperText) &&
+                !amountPattern.test(haystack) &&
+                !currencyPattern.test(haystack)
+              ) {
+                score -= 30;
+              } else if (limitPattern.test(wrapperText)) {
+                score += 6;
+              }
+              if (element.disabled || element.readOnly) {
+                score -= 70;
+              }
+              if (visibleInputs.length === 1) {
+                score += 45;
+              }
+              if (
+                !rootIsDeposit &&
+                !amountPattern.test(haystack) &&
+                !depositPattern.test(haystack) &&
+                !currencyPattern.test(haystack)
+              ) {
+                score -= 35;
+              }
+              return {
+                element,
+                haystack: haystack || ownHaystack || "valor",
+                score,
+              };
+            })
+            .filter((candidate) => candidate.score > 18)
+            .sort((left, right) => right.score - left.score);
 
-        const candidate = candidates[0];
-        if (!candidate) {
-          return undefined;
-        }
-
-        const dispatchValueEvents = () => {
-          const inputEvent = runtimeWindow.InputEvent
-            ? new runtimeWindow.InputEvent("input", {
-                bubbles: true,
-                data: depositAmount,
-                inputType: "insertText"
-              })
-            : new runtimeWindow.Event("input", { bubbles: true });
-          candidate.element.dispatchEvent?.(new runtimeWindow.Event("beforeinput", { bubbles: true }));
-          candidate.element.dispatchEvent?.(inputEvent);
-          candidate.element.dispatchEvent?.(new runtimeWindow.Event("keyup", { bubbles: true }));
-          candidate.element.dispatchEvent?.(new runtimeWindow.Event("change", { bubbles: true }));
-          candidate.element.dispatchEvent?.(new runtimeWindow.Event("compositionend", { bubbles: true }));
-          candidate.element.dispatchEvent?.(new runtimeWindow.Event("blur", { bubbles: true }));
-        };
-        const readValue = () => {
-          const inputValue = candidate.element.value;
-          return typeof inputValue === "string" ? inputValue : candidate.element.textContent || "";
-        };
-        const parseNumber = (value: string) => {
-          const cleaned = value.replace(/[^\d,.-]/g, "").trim();
-          if (!cleaned) {
-            return Number.NaN;
+          const candidate = candidates[0];
+          if (!candidate) {
+            return undefined;
           }
-          const lastComma = cleaned.lastIndexOf(",");
-          const lastDot = cleaned.lastIndexOf(".");
-          const normalized =
-            lastComma > lastDot
-              ? cleaned.replace(/\./g, "").replace(",", ".")
-              : cleaned.replace(/,/g, "");
-          return Number(normalized);
-        };
 
-        candidate.element.disabled = false;
-        candidate.element.readOnly = false;
-        candidate.element.removeAttribute?.("disabled");
-        candidate.element.removeAttribute?.("readonly");
-        candidate.element.focus?.();
-        const valueSetter = (
-          Object.getOwnPropertyDescriptor(Object.getPrototypeOf(candidate.element), "value") as
-            | { set?: (this: RuntimeElement, value: string) => void }
-            | undefined
-        )?.set;
-        valueSetter?.call(candidate.element, depositAmount);
-        if (!valueSetter) {
-          candidate.element.value = depositAmount;
-        }
-        if (
-          candidate.element.getAttribute("contenteditable") === "true" ||
-          candidate.element.getAttribute("role") === "textbox"
-        ) {
-          candidate.element.textContent = depositAmount;
-        }
-        dispatchValueEvents();
-        candidate.element.setAttribute?.("data-predator-deposit-amount-target", targetToken);
-        const current = readValue();
-        const currentNumber = parseNumber(current);
-        const expectedNumber = parseNumber(depositAmount);
-        const confirmed =
-          current.trim() === depositAmount ||
-          (Number.isFinite(currentNumber) &&
-            Number.isFinite(expectedNumber) &&
-            Math.abs(currentNumber - expectedNumber) < 0.001);
-        return { confirmed, label: candidate.haystack || "valor" };
-      }, { depositAmount: amount, targetToken })
+          const dispatchValueEvents = () => {
+            const inputEvent = runtimeWindow.InputEvent
+              ? new runtimeWindow.InputEvent("input", {
+                  bubbles: true,
+                  data: depositAmount,
+                  inputType: "insertText",
+                })
+              : new runtimeWindow.Event("input", { bubbles: true });
+            candidate.element.dispatchEvent?.(
+              new runtimeWindow.Event("beforeinput", { bubbles: true }),
+            );
+            candidate.element.dispatchEvent?.(inputEvent);
+            candidate.element.dispatchEvent?.(
+              new runtimeWindow.Event("keyup", { bubbles: true }),
+            );
+            candidate.element.dispatchEvent?.(
+              new runtimeWindow.Event("change", { bubbles: true }),
+            );
+            candidate.element.dispatchEvent?.(
+              new runtimeWindow.Event("compositionend", { bubbles: true }),
+            );
+            candidate.element.dispatchEvent?.(
+              new runtimeWindow.Event("blur", { bubbles: true }),
+            );
+          };
+          const readValue = () => {
+            const inputValue = candidate.element.value;
+            return typeof inputValue === "string"
+              ? inputValue
+              : candidate.element.textContent || "";
+          };
+          const parseNumber = (value: string) => {
+            const cleaned = value.replace(/[^\d,.-]/g, "").trim();
+            if (!cleaned) {
+              return Number.NaN;
+            }
+            const lastComma = cleaned.lastIndexOf(",");
+            const lastDot = cleaned.lastIndexOf(".");
+            const normalized =
+              lastComma > lastDot
+                ? cleaned.replace(/\./g, "").replace(",", ".")
+                : cleaned.replace(/,/g, "");
+            return Number(normalized);
+          };
+
+          candidate.element.disabled = false;
+          candidate.element.readOnly = false;
+          candidate.element.removeAttribute?.("disabled");
+          candidate.element.removeAttribute?.("readonly");
+          candidate.element.focus?.();
+          const valueSetter = (
+            Object.getOwnPropertyDescriptor(
+              Object.getPrototypeOf(candidate.element),
+              "value",
+            ) as
+              | { set?: (this: RuntimeElement, value: string) => void }
+              | undefined
+          )?.set;
+          valueSetter?.call(candidate.element, depositAmount);
+          if (!valueSetter) {
+            candidate.element.value = depositAmount;
+          }
+          if (
+            candidate.element.getAttribute("contenteditable") === "true" ||
+            candidate.element.getAttribute("role") === "textbox"
+          ) {
+            candidate.element.textContent = depositAmount;
+          }
+          dispatchValueEvents();
+          candidate.element.setAttribute?.(
+            "data-predator-deposit-amount-target",
+            targetToken,
+          );
+          const current = readValue();
+          const currentNumber = parseNumber(current);
+          const expectedNumber = parseNumber(depositAmount);
+          const confirmed =
+            current.trim() === depositAmount ||
+            (Number.isFinite(currentNumber) &&
+              Number.isFinite(expectedNumber) &&
+              Math.abs(currentNumber - expectedNumber) < 0.001);
+          return { confirmed, label: candidate.haystack || "valor" };
+        },
+        { depositAmount: amount, targetToken },
+      )
       .catch(() => undefined);
 
     const fieldLabel = fieldResult?.label;
@@ -7780,12 +10203,22 @@ export class AutomationRuntimeService {
       return undefined;
     }
 
-    const markedField = resolveContentFrame(page).locator(`[data-predator-deposit-amount-target="${targetToken}"]`).first();
+    const markedField = resolveContentFrame(page)
+      .locator(`[data-predator-deposit-amount-target="${targetToken}"]`)
+      .first();
     if (fieldResult.confirmed) {
-      await markedField.evaluate((element) => element.removeAttribute("data-predator-deposit-amount-target")).catch(() => undefined);
+      await markedField
+        .evaluate((element) =>
+          element.removeAttribute("data-predator-deposit-amount-target"),
+        )
+        .catch(() => undefined);
       return fieldLabel;
     }
-    await markedField.evaluate((el) => el.scrollIntoView({ block: "center", inline: "center" })).catch(() => null);
+    await markedField
+      .evaluate((el) =>
+        el.scrollIntoView({ block: "center", inline: "center" }),
+      )
+      .catch(() => null);
     await this.waitActionable(markedField).catch(() => null);
     await markedField
       .fill(amount, { timeout: AutomationRuntimeService.ACTIONABLE_BUDGET_MS })
@@ -7794,12 +10227,23 @@ export class AutomationRuntimeService {
         // e usa pressSequentially pelo locator (que espera o campo ficar acionavel e
         // focado) em vez de keyboard.type — evita perder o 1o caractere quando o campo
         // ainda nao estava pronto (a causa do "49" virar "9").
-        await this.focusFieldForTyping(runId, page, markedField).catch(() => null);
-        await markedField.fill("", { timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS }).catch(async () => {
-          await page.keyboard.press("Control+A").catch(() => null);
-          await page.keyboard.press("Delete").catch(() => null);
-        });
-        await markedField.pressSequentially(amount, { delay: 35, timeout: AutomationRuntimeService.ACTIONABLE_BUDGET_MS }).catch(() => null);
+        await this.focusFieldForTyping(runId, page, markedField).catch(
+          () => null,
+        );
+        await markedField
+          .fill("", {
+            timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS,
+          })
+          .catch(async () => {
+            await page.keyboard.press("Control+A").catch(() => null);
+            await page.keyboard.press("Delete").catch(() => null);
+          });
+        await markedField
+          .pressSequentially(amount, {
+            delay: 35,
+            timeout: AutomationRuntimeService.ACTIONABLE_BUDGET_MS,
+          })
+          .catch(() => null);
       });
     const valueConfirmed = await markedField
       .evaluate((element, expectedAmount) => {
@@ -7807,12 +10251,14 @@ export class AutomationRuntimeService {
           Event: new (type: string, init?: { bubbles?: boolean }) => Event;
           InputEvent?: new (
             type: string,
-            init?: { bubbles?: boolean; data?: string; inputType?: string }
+            init?: { bubbles?: boolean; data?: string; inputType?: string },
           ) => Event;
         };
         const readValue = () => {
           const inputValue = (element as unknown as { value?: unknown }).value;
-          return typeof inputValue === "string" ? inputValue : element.textContent || "";
+          return typeof inputValue === "string"
+            ? inputValue
+            : element.textContent || "";
         };
         const parseNumber = (value: string) => {
           const cleaned = value.replace(/[^\d,.-]/g, "").trim();
@@ -7831,15 +10277,25 @@ export class AutomationRuntimeService {
           ? new runtimeWindow.InputEvent("input", {
               bubbles: true,
               data: expectedAmount,
-              inputType: "insertText"
+              inputType: "insertText",
             })
           : new runtimeWindow.Event("input", { bubbles: true });
-        element.dispatchEvent(new runtimeWindow.Event("beforeinput", { bubbles: true }));
+        element.dispatchEvent(
+          new runtimeWindow.Event("beforeinput", { bubbles: true }),
+        );
         element.dispatchEvent(inputEvent);
-        element.dispatchEvent(new runtimeWindow.Event("keyup", { bubbles: true }));
-        element.dispatchEvent(new runtimeWindow.Event("change", { bubbles: true }));
-        element.dispatchEvent(new runtimeWindow.Event("compositionend", { bubbles: true }));
-        element.dispatchEvent(new runtimeWindow.Event("blur", { bubbles: true }));
+        element.dispatchEvent(
+          new runtimeWindow.Event("keyup", { bubbles: true }),
+        );
+        element.dispatchEvent(
+          new runtimeWindow.Event("change", { bubbles: true }),
+        );
+        element.dispatchEvent(
+          new runtimeWindow.Event("compositionend", { bubbles: true }),
+        );
+        element.dispatchEvent(
+          new runtimeWindow.Event("blur", { bubbles: true }),
+        );
         element.removeAttribute("data-predator-deposit-amount-target");
         const current = readValue();
         const currentNumber = parseNumber(current);
@@ -7866,206 +10322,318 @@ export class AutomationRuntimeService {
   async trySubmitDepositViaSpaCommand(
     runId: string,
     page: Page,
-    _profileName: string
+    _profileName: string,
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const result = await resolveContentFrame(page)
-      .evaluate(async () => {
-        type RuntimeRecord = Record<PropertyKey, unknown>;
-        type RuntimeElement = {
-          __vue__?: unknown;
-          __vueParentComponent?: RuntimeRecord | null;
-          __vue_app__?: RuntimeRecord | null;
-          closest?: (selector: string) => RuntimeElement | null;
-          getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => { bottom: number; height: number; left: number; right: number; top: number; width: number };
-          querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-          textContent?: string | null;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex?: string };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isObject = (value: unknown): value is RuntimeRecord =>
-          Boolean(value) && (typeof value === "object" || typeof value === "function");
-        const readProp = (target: RuntimeRecord, key: PropertyKey): unknown => {
-          try {
-            return target[key];
-          } catch {
-            return undefined;
-          }
-        };
-        const isVisible = (element: RuntimeElement, allowOffscreen = false) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          const inViewport = allowOffscreen
-            ? rect.right > -runtimeWindow.innerWidth &&
-              rect.bottom > -runtimeWindow.innerHeight &&
-              rect.left < runtimeWindow.innerWidth * 2 &&
-              rect.top < runtimeWindow.innerHeight * 2
-            : rect.right > 0 &&
-              rect.bottom > 0 &&
-              rect.left < runtimeWindow.innerWidth &&
-              rect.top < runtimeWindow.innerHeight;
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 8 &&
-            rect.height > 8 &&
-            inViewport
-          );
-        };
-        const call = async (owner: RuntimeRecord, key: PropertyKey, args: unknown[]) => {
-          const fn = readProp(owner, key);
-          if (typeof fn !== "function") return false;
-          try {
-            await Reflect.apply(fn, owner, args);
-            return true;
-          } catch {
-            return false;
-          }
-        };
-        const depositRootSelector =
-          ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-        const roots = Array.from(runtimeWindow.document.querySelectorAll(depositRootSelector))
-          .filter((root) => {
-            const text = normalize([root.textContent, root.getAttribute?.("class"), root.getAttribute?.("id")].join(" "));
-            return isVisible(root, true) && /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix|pagamento|payment/.test(text);
-          })
-          .sort((left, right) => {
-            const leftRect = left.getBoundingClientRect();
-            const rightRect = right.getBoundingClientRect();
-            const leftZ = Number.parseInt(runtimeWindow.getComputedStyle(left).zIndex || "0", 10) || 0;
-            const rightZ = Number.parseInt(runtimeWindow.getComputedStyle(right).zIndex || "0", 10) || 0;
-            return rightZ - leftZ || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-          });
-        const unique = (items: RuntimeElement[]) => items.filter((element, index, list) => list.indexOf(element) === index);
-        const searchRoots = unique([...roots.slice(0, 8), runtimeWindow.document.body]);
-        const elements = unique(
-          searchRoots.flatMap((root) =>
-            Array.from(root.querySelectorAll?.("button,a,input,[role='button'],.ui-button,.van-button,div,span,*") ?? [])
-          )
-        ).slice(0, 1800);
-        const likelySubmitElements = elements
-          .filter((element) => isVisible(element, true))
-          .map((element) => {
-            const text = normalize(
-              [
-                element.textContent,
-                element.getAttribute?.("class"),
-                element.getAttribute?.("id"),
-                element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title"),
-                element.getAttribute?.("value")
-              ].join(" ")
-            );
-            let score = 0;
-            if (/^(depositar|depositar agora|deposite|deposite agora|recarregar|recarregar agora|gerar|pagar|confirmar|confirmar pagamento|proximo|continuar|enviar|submit|pay|recharge)$/.test(text)) {
-              score += 120;
-            } else if (/depositar|deposite|recarregar|gerar|pagar|confirmar|submit|pay|recharge|qr|pix/.test(text)) {
-              score += 70;
+      .evaluate(
+        async () => {
+          type RuntimeRecord = Record<PropertyKey, unknown>;
+          type RuntimeElement = {
+            __vue__?: unknown;
+            __vueParentComponent?: RuntimeRecord | null;
+            __vue_app__?: RuntimeRecord | null;
+            closest?: (selector: string) => RuntimeElement | null;
+            getAttribute?: (name: string) => string | null;
+            getBoundingClientRect: () => {
+              bottom: number;
+              height: number;
+              left: number;
+              right: number;
+              top: number;
+              width: number;
+            };
+            querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
+            textContent?: string | null;
+          };
+          const runtimeWindow = globalThis as unknown as {
+            document: {
+              body: RuntimeElement;
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+              zIndex?: string;
+            };
+            innerHeight: number;
+            innerWidth: number;
+          };
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const isObject = (value: unknown): value is RuntimeRecord =>
+            Boolean(value) &&
+            (typeof value === "object" || typeof value === "function");
+          const readProp = (
+            target: RuntimeRecord,
+            key: PropertyKey,
+          ): unknown => {
+            try {
+              return target[key];
+            } catch {
+              return undefined;
             }
-            if (/submit|confirm|primary|button|btn|submittable|raeinput|red-btn|btn-box/.test(text)) score += 35;
-            if (/cancelar|cancel|fechar|close|voltar|back|saque|withdraw|login|registro|suporte|service/.test(text)) score -= 120;
+          };
+          const isVisible = (
+            element: RuntimeElement,
+            allowOffscreen = false,
+          ) => {
             const rect = element.getBoundingClientRect();
-            if (rect.top > runtimeWindow.innerHeight * 0.45) score += 15;
-            if (rect.width * rect.height > runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.28) score -= 80;
-            return { element, score, text };
-          })
-          .filter((candidate) => candidate.score > 55)
-          .sort((left, right) => right.score - left.score);
+            const style = runtimeWindow.getComputedStyle(element);
+            const inViewport = allowOffscreen
+              ? rect.right > -runtimeWindow.innerWidth &&
+                rect.bottom > -runtimeWindow.innerHeight &&
+                rect.left < runtimeWindow.innerWidth * 2 &&
+                rect.top < runtimeWindow.innerHeight * 2
+              : rect.right > 0 &&
+                rect.bottom > 0 &&
+                rect.left < runtimeWindow.innerWidth &&
+                rect.top < runtimeWindow.innerHeight;
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity || "1") > 0.01 &&
+              rect.width > 8 &&
+              rect.height > 8 &&
+              inViewport
+            );
+          };
+          const call = async (
+            owner: RuntimeRecord,
+            key: PropertyKey,
+            args: unknown[],
+          ) => {
+            const fn = readProp(owner, key);
+            if (typeof fn !== "function") return false;
+            try {
+              await Reflect.apply(fn, owner, args);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const depositRootSelector =
+            ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
+          const roots = Array.from(
+            runtimeWindow.document.querySelectorAll(depositRootSelector),
+          )
+            .filter((root) => {
+              const text = normalize(
+                [
+                  root.textContent,
+                  root.getAttribute?.("class"),
+                  root.getAttribute?.("id"),
+                ].join(" "),
+              );
+              return (
+                isVisible(root, true) &&
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix|pagamento|payment/.test(
+                  text,
+                )
+              );
+            })
+            .sort((left, right) => {
+              const leftRect = left.getBoundingClientRect();
+              const rightRect = right.getBoundingClientRect();
+              const leftZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(left).zIndex || "0",
+                  10,
+                ) || 0;
+              const rightZ =
+                Number.parseInt(
+                  runtimeWindow.getComputedStyle(right).zIndex || "0",
+                  10,
+                ) || 0;
+              return (
+                rightZ - leftZ ||
+                rightRect.width * rightRect.height -
+                  leftRect.width * leftRect.height
+              );
+            });
+          const unique = (items: RuntimeElement[]) =>
+            items.filter(
+              (element, index, list) => list.indexOf(element) === index,
+            );
+          const searchRoots = unique([
+            ...roots.slice(0, 8),
+            runtimeWindow.document.body,
+          ]);
+          const elements = unique(
+            searchRoots.flatMap((root) =>
+              Array.from(
+                root.querySelectorAll?.(
+                  "button,a,input,[role='button'],.ui-button,.van-button,div,span,*",
+                ) ?? [],
+              ),
+            ),
+          ).slice(0, 1800);
+          const likelySubmitElements = elements
+            .filter((element) => isVisible(element, true))
+            .map((element) => {
+              const text = normalize(
+                [
+                  element.textContent,
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("id"),
+                  element.getAttribute?.("aria-label"),
+                  element.getAttribute?.("title"),
+                  element.getAttribute?.("value"),
+                ].join(" "),
+              );
+              let score = 0;
+              if (
+                /^(depositar|depositar agora|deposite|deposite agora|recarregar|recarregar agora|gerar|pagar|confirmar|confirmar pagamento|proximo|continuar|enviar|submit|pay|recharge)$/.test(
+                  text,
+                )
+              ) {
+                score += 120;
+              } else if (
+                /depositar|deposite|recarregar|gerar|pagar|confirmar|submit|pay|recharge|qr|pix/.test(
+                  text,
+                )
+              ) {
+                score += 70;
+              }
+              if (
+                /submit|confirm|primary|button|btn|submittable|raeinput|red-btn|btn-box/.test(
+                  text,
+                )
+              )
+                score += 35;
+              if (
+                /cancelar|cancel|fechar|close|voltar|back|saque|withdraw|login|registro|suporte|service/.test(
+                  text,
+                )
+              )
+                score -= 120;
+              const rect = element.getBoundingClientRect();
+              if (rect.top > runtimeWindow.innerHeight * 0.45) score += 15;
+              if (
+                rect.width * rect.height >
+                runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.28
+              )
+                score -= 80;
+              return { element, score, text };
+            })
+            .filter((candidate) => candidate.score > 55)
+            .sort((left, right) => right.score - left.score);
 
-        const objectSet = new Set<RuntimeRecord>();
-        const objects: RuntimeRecord[] = [];
-        const addObject = (value: unknown) => {
-          if (!isObject(value) || objectSet.has(value)) return;
-          objectSet.add(value);
-          objects.push(value);
-        };
-        const addComponentObjects = (element: RuntimeElement | undefined) => {
-          if (!element) return;
-          let current: RuntimeElement | null | undefined = element;
-          for (let depth = 0; current && depth < 5; depth += 1) {
-            addObject(current.__vue__);
-            const component = current.__vueParentComponent;
+          const objectSet = new Set<RuntimeRecord>();
+          const objects: RuntimeRecord[] = [];
+          const addObject = (value: unknown) => {
+            if (!isObject(value) || objectSet.has(value)) return;
+            objectSet.add(value);
+            objects.push(value);
+          };
+          const addComponentObjects = (element: RuntimeElement | undefined) => {
+            if (!element) return;
+            let current: RuntimeElement | null | undefined = element;
+            for (let depth = 0; current && depth < 5; depth += 1) {
+              addObject(current.__vue__);
+              const component = current.__vueParentComponent;
+              if (component) {
+                addObject(component);
+                addObject(readProp(component, "proxy"));
+                addObject(readProp(component, "ctx"));
+                addObject(readProp(component, "setupState"));
+                addObject(readProp(component, "exposed"));
+              }
+              current = current.closest?.("*");
+              break;
+            }
+          };
+          for (const candidate of likelySubmitElements.slice(0, 6)) {
+            addComponentObjects(candidate.element);
+            const parent = candidate.element.closest?.(
+              ".ui-popup,.van-popup,.modal,.popup,[class*='recharge' i],[class*='deposit' i],[class*='wallet' i],[class*='cashier' i]",
+            );
+            addComponentObjects(parent ?? undefined);
+          }
+          for (const root of searchRoots.slice(0, 6)) {
+            addComponentObjects(root);
+          }
+          for (const raw of runtimeWindow.document.querySelectorAll(
+            "#app,#app *,body",
+          )) {
+            const element = raw as RuntimeElement;
+            addObject(element.__vue__);
+            const component = element.__vueParentComponent;
             if (component) {
-              addObject(component);
-              addObject(readProp(component, "proxy"));
-              addObject(readProp(component, "ctx"));
-              addObject(readProp(component, "setupState"));
-              addObject(readProp(component, "exposed"));
+              const state = readProp(component, "setupState");
+              const ctx = readProp(component, "ctx");
+              const proxy = readProp(component, "proxy");
+              const text = normalize(
+                [
+                  element.textContent,
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("id"),
+                ].join(" "),
+              );
+              if (
+                /recharge|deposit|cashier|wallet|recarga|deposito|pagamento|payment/.test(
+                  text,
+                )
+              ) {
+                addObject(component);
+                addObject(state);
+                addObject(ctx);
+                addObject(proxy);
+              }
             }
-            current = current.closest?.("*");
-            break;
+            if (objects.length > 200) break;
           }
-        };
-        for (const candidate of likelySubmitElements.slice(0, 6)) {
-          addComponentObjects(candidate.element);
-          const parent = candidate.element.closest?.(
-            ".ui-popup,.van-popup,.modal,.popup,[class*='recharge' i],[class*='deposit' i],[class*='wallet' i],[class*='cashier' i]"
-          );
-          addComponentObjects(parent ?? undefined);
-        }
-        for (const root of searchRoots.slice(0, 6)) {
-          addComponentObjects(root);
-        }
-        for (const raw of runtimeWindow.document.querySelectorAll("#app,#app *,body")) {
-          const element = raw as RuntimeElement;
-          addObject(element.__vue__);
-          const component = element.__vueParentComponent;
-          if (component) {
-            const state = readProp(component, "setupState");
-            const ctx = readProp(component, "ctx");
-            const proxy = readProp(component, "proxy");
-            const text = normalize([element.textContent, element.getAttribute?.("class"), element.getAttribute?.("id")].join(" "));
-            if (/recharge|deposit|cashier|wallet|recarga|deposito|pagamento|payment/.test(text)) {
-              addObject(component);
-              addObject(state);
-              addObject(ctx);
-              addObject(proxy);
-            }
-          }
-          if (objects.length > 200) break;
-        }
 
-        const methodPattern =
-          /(submit|confirm|create.*order|order.*create|recharge.*(pay|submit|order|event)|deposit.*(pay|submit|order)|pay.*(submit|order|way)|handlePay|handleSubmit|onSubmit|submitOrder|submitRecharge|submitDeposit|payOrder|payNow|payWayEvent|rechargeEvent|createPay|createRecharge|createDeposit)/i;
-        const rejectPattern = /withdraw|saque|login|register|registro|close|cancel|captcha|refresh|delete|remove/i;
-        const methods: Array<{ args: unknown[]; key: PropertyKey; keyText: string; owner: RuntimeRecord; score: number }> = [];
-        for (const owner of objects) {
-          for (const key of Reflect.ownKeys(owner).slice(0, 160)) {
-            const keyText = String(key);
-            const value = readProp(owner, key);
-            if (typeof value !== "function" || !methodPattern.test(keyText) || rejectPattern.test(keyText)) {
-              continue;
+          const methodPattern =
+            /(submit|confirm|create.*order|order.*create|recharge.*(pay|submit|order|event)|deposit.*(pay|submit|order)|pay.*(submit|order|way)|handlePay|handleSubmit|onSubmit|submitOrder|submitRecharge|submitDeposit|payOrder|payNow|payWayEvent|rechargeEvent|createPay|createRecharge|createDeposit)/i;
+          const rejectPattern =
+            /withdraw|saque|login|register|registro|close|cancel|captcha|refresh|delete|remove/i;
+          const methods: Array<{
+            args: unknown[];
+            key: PropertyKey;
+            keyText: string;
+            owner: RuntimeRecord;
+            score: number;
+          }> = [];
+          for (const owner of objects) {
+            for (const key of Reflect.ownKeys(owner).slice(0, 160)) {
+              const keyText = String(key);
+              const value = readProp(owner, key);
+              if (
+                typeof value !== "function" ||
+                !methodPattern.test(keyText) ||
+                rejectPattern.test(keyText)
+              ) {
+                continue;
+              }
+              let score = 80;
+              if (/submit|confirm/i.test(keyText)) score += 45;
+              if (/order|pay/i.test(keyText)) score += 30;
+              if (/recharge|deposit/i.test(keyText)) score += 25;
+              const args = /payWayEvent/i.test(keyText) ? [0] : [];
+              methods.push({ args, key, keyText, owner, score });
             }
-            let score = 80;
-            if (/submit|confirm/i.test(keyText)) score += 45;
-            if (/order|pay/i.test(keyText)) score += 30;
-            if (/recharge|deposit/i.test(keyText)) score += 25;
-            const args = /payWayEvent/i.test(keyText) ? [0] : [];
-            methods.push({ args, key, keyText, owner, score });
           }
-        }
-        const method = methods.sort((left, right) => right.score - left.score)[0];
-        if (!method) {
+          const method = methods.sort(
+            (left, right) => right.score - left.score,
+          )[0];
+          if (!method) {
+            return { label: "" };
+          }
+          if (await call(method.owner, method.key, method.args)) {
+            return { label: `method:${method.keyText}` };
+          }
           return { label: "" };
-        }
-        if (await call(method.owner, method.key, method.args)) {
-          return { label: `method:${method.keyText}` };
-        }
-        return { label: "" };
-      }, undefined, PATCHRIGHT_MAIN_WORLD)
+        },
+        undefined,
+        PATCHRIGHT_MAIN_WORLD,
+      )
       .catch(() => undefined);
 
     if (result?.label) {
@@ -8075,7 +10643,10 @@ export class AutomationRuntimeService {
     return undefined;
   }
 
-  async clickDepositSubmitButton(runId: string, page: Page): Promise<string | undefined> {
+  async clickDepositSubmitButton(
+    runId: string,
+    page: Page,
+  ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `deposit-submit-${Date.now()}-${this.randomInt(1000, 9999)}`;
     const label = await resolveContentFrame(page)
@@ -8098,8 +10669,16 @@ export class AutomationRuntimeService {
           textContent?: string | null;
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { body: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string; zIndex: string };
+          document: {
+            body: RuntimeElement;
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
+          getComputedStyle: (element: RuntimeElement) => {
+            display: string;
+            opacity: string;
+            visibility: string;
+            zIndex: string;
+          };
           innerHeight: number;
           innerWidth: number;
         };
@@ -8114,10 +10693,14 @@ export class AutomationRuntimeService {
           const style = runtimeWindow.getComputedStyle(element);
           const rect = element.getBoundingClientRect();
           const inViewport = allowOffscreen
-            ? rect.right > -runtimeWindow.innerWidth && rect.bottom > -runtimeWindow.innerHeight &&
-              rect.left < runtimeWindow.innerWidth * 2 && rect.top < runtimeWindow.innerHeight * 2
-            : rect.right > 0 && rect.bottom > 0 &&
-              rect.left < runtimeWindow.innerWidth && rect.top < runtimeWindow.innerHeight;
+            ? rect.right > -runtimeWindow.innerWidth &&
+              rect.bottom > -runtimeWindow.innerHeight &&
+              rect.left < runtimeWindow.innerWidth * 2 &&
+              rect.top < runtimeWindow.innerHeight * 2
+            : rect.right > 0 &&
+              rect.bottom > 0 &&
+              rect.left < runtimeWindow.innerWidth &&
+              rect.top < runtimeWindow.innerHeight;
           return (
             style.display !== "none" &&
             style.visibility !== "hidden" &&
@@ -8130,22 +10713,52 @@ export class AutomationRuntimeService {
         const depositRootSelector =
           ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
         const roots = Array.from(
-          runtimeWindow.document.querySelectorAll(depositRootSelector)
+          runtimeWindow.document.querySelectorAll(depositRootSelector),
         )
           .filter((root) => {
-          const text = normalize([root.textContent, root.getAttribute?.("class"), root.getAttribute?.("id")].join(" "));
-          return isVisible(root, true) && /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(text);
+            const text = normalize(
+              [
+                root.textContent,
+                root.getAttribute?.("class"),
+                root.getAttribute?.("id"),
+              ].join(" "),
+            );
+            return (
+              isVisible(root, true) &&
+              /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(
+                text,
+              )
+            );
           })
           .sort((left, right) => {
             const leftRect = left.getBoundingClientRect();
             const rightRect = right.getBoundingClientRect();
-            const leftZ = Number.parseInt(runtimeWindow.getComputedStyle(left).zIndex || "0", 10) || 0;
-            const rightZ = Number.parseInt(runtimeWindow.getComputedStyle(right).zIndex || "0", 10) || 0;
-            return rightZ - leftZ || rightRect.width * rightRect.height - leftRect.width * leftRect.height;
+            const leftZ =
+              Number.parseInt(
+                runtimeWindow.getComputedStyle(left).zIndex || "0",
+                10,
+              ) || 0;
+            const rightZ =
+              Number.parseInt(
+                runtimeWindow.getComputedStyle(right).zIndex || "0",
+                10,
+              ) || 0;
+            return (
+              rightZ - leftZ ||
+              rightRect.width * rightRect.height -
+                leftRect.width * leftRect.height
+            );
           });
         const root = roots[0] ?? runtimeWindow.document.body;
-        const unique = (items: RuntimeElement[]) => items.filter((element, index, list) => list.indexOf(element) === index);
-        const searchRoots = unique([...roots.slice(0, 8), root, runtimeWindow.document.body]);
+        const unique = (items: RuntimeElement[]) =>
+          items.filter(
+            (element, index, list) => list.indexOf(element) === index,
+          );
+        const searchRoots = unique([
+          ...roots.slice(0, 8),
+          root,
+          runtimeWindow.document.body,
+        ]);
         const submitTextPattern =
           /depositar|depositar agora|deposite|deposite agora|deposit now|recarregar|recarregar agora|gerar|pagar|confirmar|confirm|proximo|continuar|enviar|submit|pay|recharge|qr|pix|agora/;
         const exactSubmitTextPattern =
@@ -8159,13 +10772,24 @@ export class AutomationRuntimeService {
           "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
         const candidates = unique(
           searchRoots.flatMap((searchRoot) =>
-            Array.from(searchRoot.querySelectorAll?.("button,a,input,[role='button'],.ui-button,.van-button,div,span") ?? [])
-          )
+            Array.from(
+              searchRoot.querySelectorAll?.(
+                "button,a,input,[role='button'],.ui-button,.van-button,div,span",
+              ) ?? [],
+            ),
+          ),
         )
           .map((element) => element.closest?.(clickableSelector) ?? element)
-          .filter((element, index, elements) => elements.indexOf(element) === index)
+          .filter(
+            (element, index, elements) => elements.indexOf(element) === index,
+          )
           .filter((element) => {
-            const attrs = normalize([element.getAttribute?.("class"), element.getAttribute?.("aria-disabled")].join(" "));
+            const attrs = normalize(
+              [
+                element.getAttribute?.("class"),
+                element.getAttribute?.("aria-disabled"),
+              ].join(" "),
+            );
             return (
               isVisible(element, true) &&
               !element.closest?.(injectedOverlaySelector) &&
@@ -8184,8 +10808,8 @@ export class AutomationRuntimeService {
                 element.getAttribute?.("title"),
                 element.getAttribute?.("data-testid"),
                 element.getAttribute?.("translate"),
-                element.getAttribute?.("value")
-              ].join(" ")
+                element.getAttribute?.("value"),
+              ].join(" "),
             );
             let score = 0;
             if (exactSubmitTextPattern.test(text)) {
@@ -8199,22 +10823,36 @@ export class AutomationRuntimeService {
             if (/submittable|raeinput|mem-icon|red-btn|btn-box/.test(text)) {
               score += 34;
             }
-            const buttonLike = /button|btn|submit|confirm|primary|ui-button|van-button/.test(text);
+            const buttonLike =
+              /button|btn|submit|confirm|primary|ui-button|van-button/.test(
+                text,
+              );
             if (buttonLike) {
               score += 24;
             } else if (text.length > 30) {
               score -= 40;
             }
-            if (/cancelar|cancel|fechar|close|voltar|back|saque|withdraw|login|registro|suporte|service/.test(text)) {
+            if (
+              /cancelar|cancel|fechar|close|voltar|back|saque|withdraw|login|registro|suporte|service/.test(
+                text,
+              )
+            ) {
               score -= 90;
             }
-            if (/copiar|copy|codigo qr|qrcode|status do pedido|numero do pedido/.test(text)) {
+            if (
+              /copiar|copy|codigo qr|qrcode|status do pedido|numero do pedido/.test(
+                text,
+              )
+            ) {
               score -= 90;
             }
             if (rect.top > runtimeWindow.innerHeight * 0.48) {
               score += 12;
             }
-            if (rect.width * rect.height > runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.25) {
+            if (
+              rect.width * rect.height >
+              runtimeWindow.innerWidth * runtimeWindow.innerHeight * 0.25
+            ) {
               score -= 60;
             }
             return { element, score, text };
@@ -8223,7 +10861,10 @@ export class AutomationRuntimeService {
           .sort((left, right) => right.score - left.score);
 
         const candidate = candidates[0];
-        candidate?.element.setAttribute?.("data-predator-deposit-submit-target", token);
+        candidate?.element.setAttribute?.(
+          "data-predator-deposit-submit-target",
+          token,
+        );
         return candidate?.text;
       }, targetToken)
       .catch(() => undefined);
@@ -8232,12 +10873,23 @@ export class AutomationRuntimeService {
       return undefined;
     }
 
-    const target = resolveContentFrame(page).locator(`[data-predator-deposit-submit-target="${targetToken}"]`).first();
+    const target = resolveContentFrame(page)
+      .locator(`[data-predator-deposit-submit-target="${targetToken}"]`)
+      .first();
     const clicked = await this.withPopupPageGuard(page, async () => {
-      if (await this.fastClickControl(runId, page, target).then(() => true).catch(() => false)) {
+      if (
+        await this.fastClickControl(runId, page, target)
+          .then(() => true)
+          .catch(() => false)
+      ) {
         return true;
       }
-      if (await target.click({ timeout: 1200, force: true }).then(() => true).catch(() => false)) {
+      if (
+        await target
+          .click({ timeout: 1200, force: true })
+          .then(() => true)
+          .catch(() => false)
+      ) {
         return true;
       }
       return target
@@ -8248,14 +10900,21 @@ export class AutomationRuntimeService {
         .catch(() => false);
     }).catch(() => false);
 
-    await target.evaluate((element) => element.removeAttribute("data-predator-deposit-submit-target")).catch(() => undefined);
+    await target
+      .evaluate((element) =>
+        element.removeAttribute("data-predator-deposit-submit-target"),
+      )
+      .catch(() => undefined);
     if (!clicked) {
       return undefined;
     }
     return label;
   }
 
-  private async waitForDepositQrCode(page: Page, timeoutMs: number): Promise<boolean> {
+  private async waitForDepositQrCode(
+    page: Page,
+    timeoutMs: number,
+  ): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const found = await resolveContentFrame(page)
@@ -8273,8 +10932,15 @@ export class AutomationRuntimeService {
             innerText?: string;
           };
           const runtimeWindow = globalThis as unknown as {
-            document: { body: { innerText: string }; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-            getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string };
+            document: {
+              body: { innerText: string };
+              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            };
+            getComputedStyle: (element: RuntimeElement) => {
+              display: string;
+              opacity: string;
+              visibility: string;
+            };
             innerHeight: number;
             innerWidth: number;
             localStorage?: { getItem: (key: string) => string | null };
@@ -8317,36 +10983,69 @@ export class AutomationRuntimeService {
             "canvas[class*='qr' i]",
             "img[class*='qr' i]",
             "img[src*='qr' i]",
-            "svg[class*='qr' i]"
+            "svg[class*='qr' i]",
           ].join(",");
           const isRealQrElement = (el: RuntimeElement) => {
             if (!isVisible(el)) return false;
             const rect = el.getBoundingClientRect();
             if (rect.width < 16 || rect.height < 16) return false;
-            const tag = ((el as unknown as { tagName?: string }).tagName || "").toLowerCase();
+            const tag = (
+              (el as unknown as { tagName?: string }).tagName || ""
+            ).toLowerCase();
             if (tag === "img") {
               const src = (el as unknown as { src?: string }).src || "";
-              if (!src || src.startsWith("data:image/gif") || src.startsWith("data:image/png;base64,iVBOR")) return false;
+              if (
+                !src ||
+                src.startsWith("data:image/gif") ||
+                src.startsWith("data:image/png;base64,iVBOR")
+              )
+                return false;
             }
             if (tag === "canvas") {
               try {
-                const ctx = (el as unknown as { getContext?: (type: string) => { getImageData: (x: number, y: number, w: number, h: number) => { data: Uint8ClampedArray } } | null }).getContext?.("2d");
+                const ctx = (
+                  el as unknown as {
+                    getContext?: (
+                      type: string,
+                    ) => {
+                      getImageData: (
+                        x: number,
+                        y: number,
+                        w: number,
+                        h: number,
+                      ) => { data: Uint8ClampedArray };
+                    } | null;
+                  }
+                ).getContext?.("2d");
                 if (ctx) {
-                  const sample = ctx.getImageData(0, 0, Math.min(4, Math.round(rect.width)), Math.min(4, Math.round(rect.height)));
-                  const hasContent = sample.data.some((v, i) => i % 4 !== 3 && v !== 0 && v !== 255) ||
-                    sample.data.some((v, i) => i % 4 !== 3 && v < 128);
+                  const sample = ctx.getImageData(
+                    0,
+                    0,
+                    Math.min(4, Math.round(rect.width)),
+                    Math.min(4, Math.round(rect.height)),
+                  );
+                  const hasContent =
+                    sample.data.some(
+                      (v, i) => i % 4 !== 3 && v !== 0 && v !== 255,
+                    ) || sample.data.some((v, i) => i % 4 !== 3 && v < 128);
                   if (!hasContent) return false;
                 }
-              } catch { /* tainted canvas — treat as valid */ }
+              } catch {
+                /* tainted canvas — treat as valid */
+              }
             }
             return true;
           };
-          const qrElement = Array.from(runtimeWindow.document.querySelectorAll(qrElementSelector)).some(isRealQrElement);
+          const qrElement = Array.from(
+            runtimeWindow.document.querySelectorAll(qrElementSelector),
+          ).some(isRealQrElement);
           // Tira o texto dos overlays injetados (o "CHAVE PIX" do overlay adicionaria "pix").
           const injectedOverlaySelector =
             "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
           let rawText = runtimeWindow.document.body.innerText || "";
-          for (const overlay of Array.from(runtimeWindow.document.querySelectorAll(injectedOverlaySelector))) {
+          for (const overlay of Array.from(
+            runtimeWindow.document.querySelectorAll(injectedOverlaySelector),
+          )) {
             const overlayText = overlay.innerText || "";
             if (overlayText) {
               rawText = rawText.split(overlayText).join(" ");
@@ -8355,16 +11054,23 @@ export class AutomationRuntimeService {
           const text = normalize(rawText);
           const resultTextReady =
             /copiar codigo qr|endereco do codigo qr|numero do pedido|numero do pedido do comerciante|status do pedido|tempo efetivo/.test(
-              text
+              text,
             ) && /pix|deposito|pagamento|brl|valor/.test(text);
           const storedOrderReady = (() => {
             try {
-              const raw = runtimeWindow.localStorage?.getItem("szOrderInfo") || "";
+              const raw =
+                runtimeWindow.localStorage?.getItem("szOrderInfo") || "";
               if (!raw) {
                 return false;
               }
-              const parsed = JSON.parse(raw) as { orderid?: unknown; order3rd?: unknown; qrcode?: unknown };
-              return Boolean(parsed && (parsed.qrcode || parsed.orderid || parsed.order3rd));
+              const parsed = JSON.parse(raw) as {
+                orderid?: unknown;
+                order3rd?: unknown;
+                qrcode?: unknown;
+              };
+              return Boolean(
+                parsed && (parsed.qrcode || parsed.orderid || parsed.order3rd),
+              );
             } catch {
               return false;
             }
@@ -8387,7 +11093,7 @@ export class AutomationRuntimeService {
     page: Page,
     profileName: string,
     stage: string,
-    timeoutMs: number
+    timeoutMs: number,
   ): Promise<{ qrCodeReady: boolean; handledCaptcha: boolean }> {
     const startedAt = Date.now();
     let handledCaptcha = false;
@@ -8402,9 +11108,15 @@ export class AutomationRuntimeService {
       const challenge = await this.detectCaptchaChallenge(page);
       if (challenge.active) {
         handledCaptcha = true;
-        await this.waitForManualCaptchaIfPresent(runId, page, profileName, stage, {
-          appearanceTimeoutMs: 0
-        });
+        await this.waitForManualCaptchaIfPresent(
+          runId,
+          page,
+          profileName,
+          stage,
+          {
+            appearanceTimeoutMs: 0,
+          },
+        );
         continue;
       }
 
@@ -8414,7 +11126,10 @@ export class AutomationRuntimeService {
     return { qrCodeReady: false, handledCaptcha };
   }
 
-  private async dismissPostRegistrationPopups(runId: string, page: Page): Promise<void> {
+  private async dismissPostRegistrationPopups(
+    runId: string,
+    page: Page,
+  ): Promise<void> {
     for (let pass = 0; pass < 5; pass += 1) {
       this.ensureRunActive(runId);
       if ((await this.detectCaptchaChallenge(page)).active) {
@@ -8444,8 +11159,16 @@ export class AutomationRuntimeService {
               target?: RuntimeElement | null;
             };
             const runtimeWindow = globalThis as unknown as {
-              addEventListener: (type: string, listener: (event: RuntimeEvent) => void, options?: boolean) => void;
-              document: { querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
+              addEventListener: (
+                type: string,
+                listener: (event: RuntimeEvent) => void,
+                options?: boolean,
+              ) => void;
+              document: {
+                querySelectorAll: (
+                  selector: string,
+                ) => Iterable<RuntimeElement>;
+              };
               getComputedStyle: (element: RuntimeElement) => {
                 display: string;
                 visibility: string;
@@ -8455,7 +11178,11 @@ export class AutomationRuntimeService {
               innerHeight: number;
               innerWidth: number;
               open?: (...args: unknown[]) => unknown;
-              removeEventListener: (type: string, listener: (event: RuntimeEvent) => void, options?: boolean) => void;
+              removeEventListener: (
+                type: string,
+                listener: (event: RuntimeEvent) => void,
+                options?: boolean,
+              ) => void;
               setTimeout: (callback: () => void, timeout: number) => unknown;
             };
             const normalizeText = (value: string | null | undefined) =>
@@ -8469,17 +11196,39 @@ export class AutomationRuntimeService {
               const normalized = normalizeText(href);
               return Boolean(
                 normalized &&
-                  normalized !== "#" &&
-                  !normalized.startsWith("#") &&
-                  !normalized.startsWith("javascript:") &&
-                  !normalized.startsWith("void(") &&
-                  normalized !== "about:blank"
+                normalized !== "#" &&
+                !normalized.startsWith("#") &&
+                !normalized.startsWith("javascript:") &&
+                !normalized.startsWith("void(") &&
+                normalized !== "about:blank",
               );
             };
             const isUrlLikeText = (text: string) =>
-              /https?:|www\.|t\.me|telegram|facebook|whatsapp|wa\.me|\.com\b|\.net\b|\.org\b/i.test(text);
-            const exactDismissTexts = ["fechar", "close", "cancelar", "entendi", "ok", "x", "×", "✕", "✖"];
-            const phraseDismissTexts = ["agora não", "agora nao", "não agora", "nao agora", "depois", "mais tarde", "later", "pular", "skip"];
+              /https?:|www\.|t\.me|telegram|facebook|whatsapp|wa\.me|\.com\b|\.net\b|\.org\b/i.test(
+                text,
+              );
+            const exactDismissTexts = [
+              "fechar",
+              "close",
+              "cancelar",
+              "entendi",
+              "ok",
+              "x",
+              "×",
+              "✕",
+              "✖",
+            ];
+            const phraseDismissTexts = [
+              "agora não",
+              "agora nao",
+              "não agora",
+              "nao agora",
+              "depois",
+              "mais tarde",
+              "later",
+              "pular",
+              "skip",
+            ];
             const actionDismissTexts = [
               "confirmar",
               "confimar",
@@ -8495,7 +11244,7 @@ export class AutomationRuntimeService {
               "salvar",
               "save",
               "pronto",
-              "done"
+              "done",
             ];
             const isDismissText = (value: string | null | undefined) => {
               const text = normalizeText(value);
@@ -8505,14 +11254,19 @@ export class AutomationRuntimeService {
               return (
                 exactDismissTexts.includes(text) ||
                 actionDismissTexts.includes(text) ||
-                phraseDismissTexts.some((hint) => text === hint || text.includes(hint)) ||
-                (text.length <= 24 && (text.includes("fechar") || text.includes("close")))
+                phraseDismissTexts.some(
+                  (hint) => text === hint || text.includes(hint),
+                ) ||
+                (text.length <= 24 &&
+                  (text.includes("fechar") || text.includes("close")))
               );
             };
             const popupRootSelector =
               ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.el-dialog,.el-drawer,.m_sign_in,.sign_in_body,.login_content,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,[class*='messagepopup' i],[class*='notice' i],[class*='popup' i],[class*='modal' i],[class*='dialog' i],[class*='announce' i],[class*='activity' i],[class*='promo' i],[class*='ppp' i]";
             const getPopupRoot = (element: RuntimeElement) =>
-              element.closest?.(popupRootSelector) ?? element.closest?.(".ui-overlay") ?? element;
+              element.closest?.(popupRootSelector) ??
+              element.closest?.(".ui-overlay") ??
+              element;
             const isVisible = (element: RuntimeElement) => {
               const style = runtimeWindow.getComputedStyle(element);
               const rect = element.getBoundingClientRect();
@@ -8530,13 +11284,17 @@ export class AutomationRuntimeService {
             };
             const isSafeClickTarget = (element: RuntimeElement) => {
               const anchor = element.closest?.("a[href]");
-              const href = anchor?.getAttribute?.("href") ?? element.getAttribute?.("href");
+              const href =
+                anchor?.getAttribute?.("href") ??
+                element.getAttribute?.("href");
               return !isNavigatingHref(href);
             };
             const normalizeCloseClickTarget = (element: RuntimeElement) =>
               element.closest?.(
-                ".ui-dialog-close-box,.van-popup__close-icon,.van-icon-cross,.icon-guanbi,.iconfontguanbistyle,.xiazaipppclose,.imgx,.popupshowimgx,.pofswpclosestyle,.xImgaes,[class*='modal-close' i],[class*='popup-close' i],[class*='dialog-close' i],[class*='icon-close' i],[class*='close-btn' i],[class*='closeBtn' i],[class*='guanbi' i],[class*='imgx' i],[class*='closestyle' i],[aria-label*='close' i],[aria-label*='fechar' i]"
-              ) ?? element.closest?.("button,[role='button'],a") ?? element;
+                ".ui-dialog-close-box,.van-popup__close-icon,.van-icon-cross,.icon-guanbi,.iconfontguanbistyle,.xiazaipppclose,.imgx,.popupshowimgx,.pofswpclosestyle,.xImgaes,[class*='modal-close' i],[class*='popup-close' i],[class*='dialog-close' i],[class*='icon-close' i],[class*='close-btn' i],[class*='closeBtn' i],[class*='guanbi' i],[class*='imgx' i],[class*='closestyle' i],[aria-label*='close' i],[aria-label*='fechar' i]",
+              ) ??
+              element.closest?.("button,[role='button'],a") ??
+              element;
             const getClosePriority = (element: RuntimeElement) => {
               const root = getPopupRoot(element);
               const marker = normalizeText(
@@ -8547,8 +11305,8 @@ export class AutomationRuntimeService {
                   element.getAttribute?.("title"),
                   element.getAttribute?.("data-testid"),
                   root.getAttribute?.("data-dialog-name"),
-                  root.getAttribute?.("class")
-                ].join(" ")
+                  root.getAttribute?.("class"),
+                ].join(" "),
               );
               let priority = 0;
               if (/messagepopup/.test(marker)) {
@@ -8559,7 +11317,7 @@ export class AutomationRuntimeService {
               }
               if (
                 /modal-close|popup-close|dialog-close|icon-close|close-btn|closebtn|van-popup__close|van-icon-cross|guanbi|xiazaipppclose|popupshowimgx|pofswpclosestyle|ximgaes|imgx|closestyle/.test(
-                  marker
+                  marker,
                 )
               ) {
                 priority += 45;
@@ -8581,11 +11339,14 @@ export class AutomationRuntimeService {
                   root.getAttribute?.("id"),
                   root.getAttribute?.("class"),
                   root.getAttribute?.("aria-label"),
-                  root.getAttribute?.("title")
-                ].join(" ")
+                  root.getAttribute?.("title"),
+                ].join(" "),
               );
 
-              return captchaTextPattern.test(haystack) || Boolean(root.querySelector?.(captchaSelector));
+              return (
+                captchaTextPattern.test(haystack) ||
+                Boolean(root.querySelector?.(captchaSelector))
+              );
             };
             const isDepositPopupElement = (element: RuntimeElement) => {
               const root = getPopupRoot(element);
@@ -8595,20 +11356,25 @@ export class AutomationRuntimeService {
                   root.getAttribute?.("id"),
                   root.getAttribute?.("class"),
                   root.getAttribute?.("aria-label"),
-                  root.getAttribute?.("title")
-                ].join(" ")
+                  root.getAttribute?.("title"),
+                ].join(" "),
               );
-              const hasDepositTerm = /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/.test(text);
+              const hasDepositTerm =
+                /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/.test(
+                  text,
+                );
               if (!hasDepositTerm) {
                 return false;
               }
 
               const hasPaymentTerm =
-                /pix|valor|amount|canal|channel|pagamento|payment|metodo|method|qrcode|qr code/.test(text);
+                /pix|valor|amount|canal|channel|pagamento|payment|metodo|method|qrcode|qr code/.test(
+                  text,
+                );
               const hasPaymentField = Boolean(
                 root.querySelector?.(
-                  "input[placeholder*='valor' i],input[placeholder*='amount' i],input[placeholder*='pix' i],input[name*='amount' i],input[id*='amount' i],[class*='recharge' i],[class*='deposit' i],[id*='recharge' i],[id*='deposit' i]"
-                )
+                  "input[placeholder*='valor' i],input[placeholder*='amount' i],input[placeholder*='pix' i],input[name*='amount' i],input[id*='amount' i],[class*='recharge' i],[class*='deposit' i],[id*='recharge' i],[id*='deposit' i]",
+                ),
               );
 
               return hasPaymentTerm || hasPaymentField;
@@ -8620,7 +11386,11 @@ export class AutomationRuntimeService {
               const rootRect = root.getBoundingClientRect();
               return {
                 rootArea: rootRect.width * rootRect.height,
-                zIndex: Number.parseInt(rootStyle.zIndex || elementStyle.zIndex || "0", 10) || 0
+                zIndex:
+                  Number.parseInt(
+                    rootStyle.zIndex || elementStyle.zIndex || "0",
+                    10,
+                  ) || 0,
               };
             };
             const preventAnchorNavigation = (event: RuntimeEvent) => {
@@ -8633,13 +11403,29 @@ export class AutomationRuntimeService {
               const originalOpen = runtimeWindow.open;
               try {
                 runtimeWindow.open = () => null;
-                runtimeWindow.addEventListener("click", preventAnchorNavigation, true);
-                runtimeWindow.addEventListener("auxclick", preventAnchorNavigation, true);
+                runtimeWindow.addEventListener(
+                  "click",
+                  preventAnchorNavigation,
+                  true,
+                );
+                runtimeWindow.addEventListener(
+                  "auxclick",
+                  preventAnchorNavigation,
+                  true,
+                );
                 element.click?.();
               } finally {
                 runtimeWindow.setTimeout(() => {
-                  runtimeWindow.removeEventListener("click", preventAnchorNavigation, true);
-                  runtimeWindow.removeEventListener("auxclick", preventAnchorNavigation, true);
+                  runtimeWindow.removeEventListener(
+                    "click",
+                    preventAnchorNavigation,
+                    true,
+                  );
+                  runtimeWindow.removeEventListener(
+                    "auxclick",
+                    preventAnchorNavigation,
+                    true,
+                  );
                   runtimeWindow.open = originalOpen;
                 }, 1000);
               }
@@ -8675,28 +11461,40 @@ export class AutomationRuntimeService {
               "[class*='guanbi' i]",
               "[class*='imgx' i]",
               "[class*='closestyle' i]",
-              "[class*='close' i]"
+              "[class*='close' i]",
             ];
             const candidates = new Set<RuntimeElement>();
             for (const selector of closeSelectors) {
-              for (const element of runtimeWindow.document.querySelectorAll(selector)) {
+              for (const element of runtimeWindow.document.querySelectorAll(
+                selector,
+              )) {
                 candidates.add(normalizeCloseClickTarget(element));
               }
             }
 
-            for (const root of runtimeWindow.document.querySelectorAll(popupRootSelector)) {
-              if (!isVisible(root) || isCaptchaPopupElement(root) || isDepositPopupElement(root)) {
+            for (const root of runtimeWindow.document.querySelectorAll(
+              popupRootSelector,
+            )) {
+              if (
+                !isVisible(root) ||
+                isCaptchaPopupElement(root) ||
+                isDepositPopupElement(root)
+              ) {
                 continue;
               }
 
-              for (const element of root.querySelectorAll?.("button,[role='button'],.ui-button,.van-button,span,div") ?? []) {
+              for (const element of root.querySelectorAll?.(
+                "button,[role='button'],.ui-button,.van-button,span,div",
+              ) ?? []) {
                 if (isDismissText(element.textContent)) {
                   candidates.add(normalizeCloseClickTarget(element));
                 }
               }
             }
 
-            for (const element of runtimeWindow.document.querySelectorAll("button,[role='button'],a")) {
+            for (const element of runtimeWindow.document.querySelectorAll(
+              "button,[role='button'],a",
+            )) {
               if (isDismissText(element.textContent)) {
                 candidates.add(normalizeCloseClickTarget(element));
               }
@@ -8708,7 +11506,7 @@ export class AutomationRuntimeService {
                   isVisible(element) &&
                   isSafeClickTarget(element) &&
                   !isCaptchaPopupElement(element) &&
-                  !isDepositPopupElement(element)
+                  !isDepositPopupElement(element),
               )
               .sort((a, b) => {
                 const aRect = a.getBoundingClientRect();
@@ -8724,12 +11522,22 @@ export class AutomationRuntimeService {
               })[0];
 
             if (!candidate) {
-              const blockingPopup = Array.from(runtimeWindow.document.querySelectorAll(popupRootSelector))
-                .filter((root) => isVisible(root) && !isCaptchaPopupElement(root) && !isDepositPopupElement(root))
+              const blockingPopup = Array.from(
+                runtimeWindow.document.querySelectorAll(popupRootSelector),
+              )
+                .filter(
+                  (root) =>
+                    isVisible(root) &&
+                    !isCaptchaPopupElement(root) &&
+                    !isDepositPopupElement(root),
+                )
                 .sort((a, b) => {
                   const aScore = getPopupScore(a);
                   const bScore = getPopupScore(b);
-                  return bScore.zIndex - aScore.zIndex || bScore.rootArea - aScore.rootArea;
+                  return (
+                    bScore.zIndex - aScore.zIndex ||
+                    bScore.rootArea - aScore.rootArea
+                  );
                 })[0];
               if (!blockingPopup) {
                 return 0;
@@ -8737,7 +11545,9 @@ export class AutomationRuntimeService {
 
               const rootRect = blockingPopup.getBoundingClientRect();
               const cornerCandidates = Array.from(
-                blockingPopup.querySelectorAll?.("button,[role='button'],a,span,div,svg,img") ?? []
+                blockingPopup.querySelectorAll?.(
+                  "button,[role='button'],a,span,div,svg,img",
+                ) ?? [],
               )
                 .filter((element) => {
                   if (!isVisible(element) || !isSafeClickTarget(element)) {
@@ -8747,27 +11557,37 @@ export class AutomationRuntimeService {
                   const area = rect.width * rect.height;
                   const nearTopRight =
                     rect.left >= rootRect.left + rootRect.width * 0.55 &&
-                    rect.top <= rootRect.top + Math.max(90, rootRect.height * 0.35);
-                  const smallControl = area <= Math.max(9000, rootRect.width * rootRect.height * 0.08);
+                    rect.top <=
+                      rootRect.top + Math.max(90, rootRect.height * 0.35);
+                  const smallControl =
+                    area <=
+                    Math.max(9000, rootRect.width * rootRect.height * 0.08);
                   const text = normalizeText(element.textContent);
                   const marker = normalizeText(
                     [
                       element.getAttribute?.("class"),
                       element.getAttribute?.("id"),
                       element.getAttribute?.("aria-label"),
-                      element.getAttribute?.("title")
-                    ].join(" ")
+                      element.getAttribute?.("title"),
+                    ].join(" "),
                   );
                   return (
                     nearTopRight &&
                     smallControl &&
-                    (isDismissText(text) || /close|fechar|guanbi|imgx|closestyle|(^|\s|_|-)x(\s|_|-|$)/.test(marker))
+                    (isDismissText(text) ||
+                      /close|fechar|guanbi|imgx|closestyle|(^|\s|_|-)x(\s|_|-|$)/.test(
+                        marker,
+                      ))
                   );
                 })
                 .sort((a, b) => {
                   const ar = a.getBoundingClientRect();
                   const br = b.getBoundingClientRect();
-                  return ar.width * ar.height - br.width * br.height || br.left - ar.left || ar.top - br.top;
+                  return (
+                    ar.width * ar.height - br.width * br.height ||
+                    br.left - ar.left ||
+                    ar.top - br.top
+                  );
                 });
 
               const cornerCandidate = cornerCandidates[0];
@@ -8781,7 +11601,7 @@ export class AutomationRuntimeService {
             clickWithoutOpeningTabs(candidate);
             return 1;
           })
-          .catch(() => 0)
+          .catch(() => 0),
       );
 
       if (dismissed < 0) {
@@ -8796,7 +11616,10 @@ export class AutomationRuntimeService {
     }
   }
 
-  private async waitForDepositSurface(page: Page, timeoutMs: number): Promise<boolean> {
+  private async waitForDepositSurface(
+    page: Page,
+    timeoutMs: number,
+  ): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       if (await hasDepositSurface(page)) {
@@ -8819,18 +11642,37 @@ export class AutomationRuntimeService {
         type RuntimeElement = {
           closest?: (selector: string) => RuntimeElement | null;
           getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => { bottom: number; height: number; left: number; right: number; top: number; width: number };
+          getBoundingClientRect: () => {
+            bottom: number;
+            height: number;
+            left: number;
+            right: number;
+            top: number;
+            width: number;
+          };
           querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
           textContent?: string | null;
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { body?: RuntimeElement; querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string };
+          document: {
+            body?: RuntimeElement;
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
+          getComputedStyle: (element: RuntimeElement) => {
+            display: string;
+            opacity: string;
+            visibility: string;
+          };
           innerHeight: number;
           innerWidth: number;
         };
         const normalize = (value: string | null | undefined) =>
-          (value || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+          (value || "")
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
         const isVisible = (element: RuntimeElement) => {
           const style = runtimeWindow.getComputedStyle(element);
           const rect = element.getBoundingClientRect();
@@ -8844,20 +11686,49 @@ export class AutomationRuntimeService {
         };
         const depositRootSelector =
           ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-        const roots = Array.from(runtimeWindow.document.querySelectorAll(depositRootSelector)).filter((root) => {
-          const text = normalize([root.textContent, root.getAttribute?.("class"), root.getAttribute?.("id")].join(" "));
-          return isVisible(root) && /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(text);
-        }).sort((left, right) => {
-          const leftRect = left.getBoundingClientRect();
-          const rightRect = right.getBoundingClientRect();
-          return rightRect.width * rightRect.height - leftRect.width * leftRect.height;
-        });
-        const unique = (items: RuntimeElement[]) => items.filter((element, index, list) => list.indexOf(element) === index);
-        const searchRoots = unique([...roots.slice(0, 8), runtimeWindow.document.body].filter(Boolean) as RuntimeElement[]);
+        const roots = Array.from(
+          runtimeWindow.document.querySelectorAll(depositRootSelector),
+        )
+          .filter((root) => {
+            const text = normalize(
+              [
+                root.textContent,
+                root.getAttribute?.("class"),
+                root.getAttribute?.("id"),
+              ].join(" "),
+            );
+            return (
+              isVisible(root) &&
+              /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix/.test(
+                text,
+              )
+            );
+          })
+          .sort((left, right) => {
+            const leftRect = left.getBoundingClientRect();
+            const rightRect = right.getBoundingClientRect();
+            return (
+              rightRect.width * rightRect.height -
+              leftRect.width * leftRect.height
+            );
+          });
+        const unique = (items: RuntimeElement[]) =>
+          items.filter(
+            (element, index, list) => list.indexOf(element) === index,
+          );
+        const searchRoots = unique(
+          [...roots.slice(0, 8), runtimeWindow.document.body].filter(
+            Boolean,
+          ) as RuntimeElement[],
+        );
         const allInputs = unique(
           searchRoots.flatMap((searchRoot) =>
-            Array.from(searchRoot?.querySelectorAll?.("input,textarea,[contenteditable='true'],[role='textbox'],.ui-input,.ui-input__input,[class*='amount-input' i],[class*='input-box' i]") ?? [])
-          )
+            Array.from(
+              searchRoot?.querySelectorAll?.(
+                "input,textarea,[contenteditable='true'],[role='textbox'],.ui-input,.ui-input__input,[class*='amount-input' i],[class*='input-box' i]",
+              ) ?? [],
+            ),
+          ),
         );
         const describe = (element: RuntimeElement) => {
           const rect = element.getBoundingClientRect();
@@ -8869,25 +11740,43 @@ export class AutomationRuntimeService {
               element.getAttribute?.("name"),
               element.getAttribute?.("id"),
               element.getAttribute?.("inputmode"),
-              element.getAttribute?.("class")
-            ].join(" ")
+              element.getAttribute?.("class"),
+            ].join(" "),
           ).slice(0, 90);
           return `${isVisible(element) ? "v" : "h"}:${Math.round(rect.width)}x${Math.round(rect.height)}:${attrs}`;
         };
         const presets = unique(
           searchRoots.flatMap((searchRoot) =>
-            Array.from(searchRoot?.querySelectorAll?.("button,[role='button'],.van-button,[class*='btn' i],[class*='chip' i],li,span,div") ?? [])
-          )
+            Array.from(
+              searchRoot?.querySelectorAll?.(
+                "button,[role='button'],.van-button,[class*='btn' i],[class*='chip' i],li,span,div",
+              ) ?? [],
+            ),
+          ),
         )
-          .filter((element) => isVisible(element) && /^\s*(r\$)?\s*[\d.,]{1,7}\s*$/.test(normalize(element.textContent)))
+          .filter(
+            (element) =>
+              isVisible(element) &&
+              /^\s*(r\$)?\s*[\d.,]{1,7}\s*$/.test(
+                normalize(element.textContent),
+              ),
+          )
           .slice(0, 10)
           .map((element) => normalize(element.textContent).slice(0, 12));
         const keypad = unique(
-          Array.from(runtimeWindow.document.querySelectorAll("button,[role='button'],[class*='key' i],[class*='keyboard' i],[class*='kb' i],div,span"))
+          Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "button,[role='button'],[class*='key' i],[class*='keyboard' i],[class*='kb' i],div,span",
+            ),
+          ),
         )
           .filter((element) => {
             const rect = element.getBoundingClientRect();
-            return isVisible(element) && rect.top > runtimeWindow.innerHeight * 0.58 && /^[0-9]$/.test(normalize(element.textContent));
+            return (
+              isVisible(element) &&
+              rect.top > runtimeWindow.innerHeight * 0.58 &&
+              /^[0-9]$/.test(normalize(element.textContent))
+            );
           })
           .slice(0, 12)
           .map((element) => {
@@ -8896,7 +11785,12 @@ export class AutomationRuntimeService {
           });
         const rootSummary = roots.slice(0, 5).map((element) => {
           const rect = element.getBoundingClientRect();
-          const attrs = normalize([element.getAttribute?.("id"), element.getAttribute?.("class")].join(" ")).slice(0, 50);
+          const attrs = normalize(
+            [
+              element.getAttribute?.("id"),
+              element.getAttribute?.("class"),
+            ].join(" "),
+          ).slice(0, 50);
           return `${Math.round(rect.width)}x${Math.round(rect.height)}:${attrs}`;
         });
         return {
@@ -8907,7 +11801,7 @@ export class AutomationRuntimeService {
           inputsVisible: allInputs.filter(isVisible).length,
           inputs: allInputs.slice(0, 8).map(describe),
           keypad,
-          presets
+          presets,
         };
       })
       .catch(() => undefined);
@@ -8924,7 +11818,10 @@ export class AutomationRuntimeService {
     );
   }
 
-  private async clickRegistrationEntryPoint(runId: string, page: Page): Promise<string | undefined> {
+  private async clickRegistrationEntryPoint(
+    runId: string,
+    page: Page,
+  ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `registration-entry-${Date.now()}-${this.randomInt(1000, 9999)}`;
     const label = await page
@@ -8944,7 +11841,9 @@ export class AutomationRuntimeService {
           textContent?: string | null;
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
+          document: {
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
           getComputedStyle: (element: RuntimeElement) => {
             display: string;
             opacity: string;
@@ -8971,8 +11870,8 @@ export class AutomationRuntimeService {
               element.getAttribute?.("data-route"),
               element.getAttribute?.("data-testid"),
               element.getAttribute?.("aria-label"),
-              element.getAttribute?.("title")
-            ].join(" ")
+              element.getAttribute?.("title"),
+            ].join(" "),
           );
         const isVisible = (element: RuntimeElement) => {
           const style = runtimeWindow.getComputedStyle(element);
@@ -8991,9 +11890,14 @@ export class AutomationRuntimeService {
         };
         const clickSelector =
           "button,a,[role='button'],[role='tab'],.ui-tabbar-item,[id*='register' i],[id*='signup' i],[id*='regist' i],[class*='register' i],[class*='signup' i],[class*='regist' i],[class*='cadastro' i],[class*='navItem' i],[class*='menu-item' i],[class*='menuItem' i],[class*='itemContent' i],[class*='item_' i]";
-        const candidates = new Map<RuntimeElement, { element: RuntimeElement; label: string; score: number; y: number }>();
+        const candidates = new Map<
+          RuntimeElement,
+          { element: RuntimeElement; label: string; score: number; y: number }
+        >();
 
-        for (const element of runtimeWindow.document.querySelectorAll("button,a,[role='button'],[role='tab'],div,span")) {
+        for (const element of runtimeWindow.document.querySelectorAll(
+          "button,a,[role='button'],[role='tab'],div,span",
+        )) {
           const clickable = element.closest?.(clickSelector) ?? element;
           if (!isVisible(clickable)) {
             continue;
@@ -9001,17 +11905,33 @@ export class AutomationRuntimeService {
 
           const rect = clickable.getBoundingClientRect();
           const area = rect.width * rect.height;
-          const viewportArea = runtimeWindow.innerWidth * runtimeWindow.innerHeight;
-          const text = normalize(`${element.textContent || ""} ${clickable.textContent || ""}`);
+          const viewportArea =
+            runtimeWindow.innerWidth * runtimeWindow.innerHeight;
+          const text = normalize(
+            `${element.textContent || ""} ${clickable.textContent || ""}`,
+          );
           const attrs = `${readAttrs(element)} ${readAttrs(clickable)}`;
           const haystack = normalize(`${text} ${attrs}`);
-          const exact = /^(registro|registrar|cadastro|cadastrar|cadastre-se|criar conta|sign up|signup|register|join)$/i.test(text);
-          const contains = /registro|registrar|cadastro|cadastrar|cadastre-se|criar conta|sign up|signup|register|join/.test(haystack);
-          const strongAttr = /(^|\s|_|-|\/)(register|signup|sign-up|regist|cadastro)(\s|_|-|\/|$)|registerclick|registermodal/.test(attrs);
+          const exact =
+            /^(registro|registrar|cadastro|cadastrar|cadastre-se|criar conta|sign up|signup|register|join)$/i.test(
+              text,
+            );
+          const contains =
+            /registro|registrar|cadastro|cadastrar|cadastre-se|criar conta|sign up|signup|register|join/.test(
+              haystack,
+            );
+          const strongAttr =
+            /(^|\s|_|-|\/)(register|signup|sign-up|regist|cadastro)(\s|_|-|\/|$)|registerclick|registermodal/.test(
+              attrs,
+            );
 
           if (
-            /tenho mais de 18 anos|acordo de usuario|termos|terms|agreement|vinculativo|suporte ao cliente/.test(haystack) ||
-            /checkbox|register_text|footercenter|dating-img|agreement|terms/.test(attrs)
+            /tenho mais de 18 anos|acordo de usuario|termos|terms|agreement|vinculativo|suporte ao cliente/.test(
+              haystack,
+            ) ||
+            /checkbox|register_text|footercenter|dating-img|agreement|terms/.test(
+              attrs,
+            )
           ) {
             continue;
           }
@@ -9029,13 +11949,24 @@ export class AutomationRuntimeService {
           } else if (contains) {
             score += 55;
           }
-          if (/button|btn|tabbar|navitem|menu-item|menuitem|itemcontent|primary/.test(haystack)) {
+          if (
+            /button|btn|tabbar|navitem|menu-item|menuitem|itemcontent|primary/.test(
+              haystack,
+            )
+          ) {
             score += 22;
           }
-          if (rect.top < runtimeWindow.innerHeight * 0.35 || rect.top > runtimeWindow.innerHeight * 0.62) {
+          if (
+            rect.top < runtimeWindow.innerHeight * 0.35 ||
+            rect.top > runtimeWindow.innerHeight * 0.62
+          ) {
             score += 10;
           }
-          if (/login|entrar|deposit|deposito|recarga|saque|withdraw|bonus|promocao|promotion|close|fechar|captcha|suporte|service/.test(haystack)) {
+          if (
+            /login|entrar|deposit|deposito|recarga|saque|withdraw|bonus|promocao|promotion|close|fechar|captcha|suporte|service/.test(
+              haystack,
+            )
+          ) {
             score -= 85;
           }
           if (area > viewportArea * 0.3 || text.length > 90) {
@@ -9052,13 +11983,18 @@ export class AutomationRuntimeService {
               element: clickable,
               label,
               score,
-              y: rect.top + rect.height / 2
+              y: rect.top + rect.height / 2,
             });
           }
         }
 
-        const best = Array.from(candidates.values()).sort((left, right) => right.score - left.score || left.y - right.y)[0];
-        best?.element.setAttribute?.("data-predator-registration-entry-target", token);
+        const best = Array.from(candidates.values()).sort(
+          (left, right) => right.score - left.score || left.y - right.y,
+        )[0];
+        best?.element.setAttribute?.(
+          "data-predator-registration-entry-target",
+          token,
+        );
         return best?.label;
       }, targetToken)
       .catch(() => undefined);
@@ -9067,28 +12003,42 @@ export class AutomationRuntimeService {
       return undefined;
     }
 
-    const target = page.locator(`[data-predator-registration-entry-target="${targetToken}"]`).first();
+    const target = page
+      .locator(`[data-predator-registration-entry-target="${targetToken}"]`)
+      .first();
     await this.withPopupPageGuard(page, async () => {
       await this.humanMouseClick(runId, page, target).catch(async () => {
         await target.click({ timeout: 1200, force: true }).catch(async () => {
-          await target.evaluate((element) => {
-            (element as unknown as { click: () => void }).click();
-          }).catch(() => undefined);
+          await target
+            .evaluate((element) => {
+              (element as unknown as { click: () => void }).click();
+            })
+            .catch(() => undefined);
         });
       });
     }).catch(() => undefined);
-    await target.evaluate((element) => element.removeAttribute("data-predator-registration-entry-target")).catch(() => undefined);
+    await target
+      .evaluate((element) =>
+        element.removeAttribute("data-predator-registration-entry-target"),
+      )
+      .catch(() => undefined);
 
     return label;
   }
-  private async normalizeRegistrationEntryPage(_runId: string, page: Page, profileName: string): Promise<void> {
+  private async normalizeRegistrationEntryPage(
+    _runId: string,
+    page: Page,
+    profileName: string,
+  ): Promise<void> {
     const iframeSource = await page
       .evaluate(() => {
         type RuntimeElement = {
           getAttribute: (name: string) => string | null;
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { querySelector: (selector: string) => RuntimeElement | null };
+          document: {
+            querySelector: (selector: string) => RuntimeElement | null;
+          };
         };
         return (
           runtimeWindow.document
@@ -9102,7 +12052,9 @@ export class AutomationRuntimeService {
       try {
         const iframeUrl = new URL(iframeSource, page.url()).toString();
         if (iframeUrl !== page.url()) {
-          await page.goto(iframeUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
+          await page
+            .goto(iframeUrl, { waitUntil: "domcontentloaded", timeout: 30000 })
+            .catch(() => null);
           await page.waitForTimeout(500).catch(() => null);
         }
       } catch {
@@ -9112,11 +12064,17 @@ export class AutomationRuntimeService {
 
     const uiFamily = await detectRegistrationUiFamily(page);
     if (uiFamily) {
-      console.log(`[${profileName}] Adaptador de cadastro detectado: ${uiFamily}.`);
+      console.log(
+        `[${profileName}] Adaptador de cadastro detectado: ${uiFamily}.`,
+      );
     }
   }
 
-  private async ensureRegistrationDialogOpen(runId: string, page: Page, profileName: string): Promise<void> {
+  private async ensureRegistrationDialogOpen(
+    runId: string,
+    page: Page,
+    profileName: string,
+  ): Promise<void> {
     const accountHints = ["Digite o Conta", "Conta", "usuario", "usuÃ¡rio"];
     accountHints.push("account");
     {
@@ -9127,7 +12085,11 @@ export class AutomationRuntimeService {
           return;
         }
 
-        await this.dismissInitialPopupsBeforeRegistration(runId, page, profileName);
+        await this.dismissInitialPopupsBeforeRegistration(
+          runId,
+          page,
+          profileName,
+        );
 
         if (await this.isRegistrationFormReady(runId, page, accountHints)) {
           return;
@@ -9139,14 +12101,22 @@ export class AutomationRuntimeService {
           continue;
         }
 
-        if (await this.isRegistrationFormReady(runId, page, accountHints, 1400)) {
+        if (
+          await this.isRegistrationFormReady(runId, page, accountHints, 1400)
+        ) {
           return;
         }
 
-        await this.dismissInitialPopupsBeforeRegistration(runId, page, profileName);
+        await this.dismissInitialPopupsBeforeRegistration(
+          runId,
+          page,
+          profileName,
+        );
       }
 
-      throw new Error("Popup de cadastro nao abriu apos fechar popups e clicar em Registro.");
+      throw new Error(
+        "Popup de cadastro nao abriu apos fechar popups e clicar em Registro.",
+      );
     }
   }
 
@@ -9154,28 +12124,41 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     accountHints: string[],
-    timeoutMs = 500
+    timeoutMs = 500,
   ): Promise<boolean> {
-    const accountInput = await this.getVisibleInputByHints(runId, page, "conta", accountHints, {
-      optional: true,
-      timeoutMs
-    });
+    const accountInput = await this.getVisibleInputByHints(
+      runId,
+      page,
+      "conta",
+      accountHints,
+      {
+        optional: true,
+        timeoutMs,
+      },
+    );
     if (!accountInput) {
       return false;
     }
 
-    const passwordCount = await this.countVisibleRegistrationPasswordInputs(page);
+    const passwordCount =
+      await this.countVisibleRegistrationPasswordInputs(page);
     if (passwordCount < 2) {
       return false;
     }
 
-    const registerSubmit = await this.getVisibleRegistrationSubmitControl(runId, page, {
-      timeoutMs: Math.min(timeoutMs, 700)
-    });
+    const registerSubmit = await this.getVisibleRegistrationSubmitControl(
+      runId,
+      page,
+      {
+        timeoutMs: Math.min(timeoutMs, 700),
+      },
+    );
     return Boolean(registerSubmit);
   }
 
-  private async countVisibleRegistrationPasswordInputs(page: Page): Promise<number> {
+  private async countVisibleRegistrationPasswordInputs(
+    page: Page,
+  ): Promise<number> {
     return page
       .evaluate(() => {
         type RuntimeElement = {
@@ -9190,7 +12173,9 @@ export class AutomationRuntimeService {
           };
         };
         const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
+          document: {
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
           getComputedStyle: (element: RuntimeElement) => {
             display: string;
             opacity: string;
@@ -9227,25 +12212,43 @@ export class AutomationRuntimeService {
               element.getAttribute("class"),
               element.getAttribute("placeholder"),
               element.getAttribute("aria-label"),
-              element.getAttribute("title")
-            ].join(" ")
+              element.getAttribute("title"),
+            ].join(" "),
           );
-          return normalize(element.getAttribute("type")) === "password" || /new-password|senha|password|confirm/.test(haystack);
+          return (
+            normalize(element.getAttribute("type")) === "password" ||
+            /new-password|senha|password|confirm/.test(haystack)
+          );
         };
 
-        return Array.from(runtimeWindow.document.querySelectorAll("input"))
-          .filter((input) => isVisible(input) && isPasswordLikeInput(input))
+        return Array.from(
+          runtimeWindow.document.querySelectorAll("input"),
+        ).filter((input) => isVisible(input) && isPasswordLikeInput(input))
           .length;
       })
-      .catch(() => page.locator("input[type='password']:visible").count().catch(() => 0));
+      .catch(() =>
+        page
+          .locator("input[type='password']:visible")
+          .count()
+          .catch(() => 0),
+      );
   }
 
-  private async getRequiredRegistrationSubmitControl(runId: string, page: Page): Promise<Locator> {
-    const locator = await this.getVisibleRegistrationSubmitControl(runId, page, {
-      timeoutMs: 15000
-    });
+  private async getRequiredRegistrationSubmitControl(
+    runId: string,
+    page: Page,
+  ): Promise<Locator> {
+    const locator = await this.getVisibleRegistrationSubmitControl(
+      runId,
+      page,
+      {
+        timeoutMs: 15000,
+      },
+    );
     if (!locator) {
-      throw new Error("Botao de registro nao encontrado no formulario de cadastro.");
+      throw new Error(
+        "Botao de registro nao encontrado no formulario de cadastro.",
+      );
     }
     return locator;
   }
@@ -9253,7 +12256,7 @@ export class AutomationRuntimeService {
   private async getVisibleRegistrationSubmitControl(
     runId: string,
     page: Page,
-    options?: { timeoutMs?: number }
+    options?: { timeoutMs?: number },
   ): Promise<Locator | undefined> {
     const timeoutMs = options?.timeoutMs ?? 45000;
     const startedAt = Date.now();
@@ -9261,7 +12264,11 @@ export class AutomationRuntimeService {
     while (Date.now() - startedAt < timeoutMs) {
       this.ensureRunActive(runId);
 
-      const fixedSubmit = page.locator("#insideRegisterSubmitClick:visible,.insideRegisterSubmitClick:visible").first();
+      const fixedSubmit = page
+        .locator(
+          "#insideRegisterSubmitClick:visible,.insideRegisterSubmitClick:visible",
+        )
+        .first();
       if (await fixedSubmit.isVisible({ timeout: 150 }).catch(() => false)) {
         return fixedSubmit;
       }
@@ -9305,8 +12312,14 @@ export class AutomationRuntimeService {
               .replace(/\s+/g, " ")
               .trim()
               .toLowerCase();
-          const queryAll = (root: RuntimeElement | undefined, selector: string) =>
-            Array.from(root?.querySelectorAll?.(selector) ?? runtimeWindow.document.querySelectorAll(selector));
+          const queryAll = (
+            root: RuntimeElement | undefined,
+            selector: string,
+          ) =>
+            Array.from(
+              root?.querySelectorAll?.(selector) ??
+                runtimeWindow.document.querySelectorAll(selector),
+            );
           const readAttrs = (element: RuntimeElement) =>
             normalize(
               [
@@ -9316,8 +12329,8 @@ export class AutomationRuntimeService {
                 element.getAttribute?.("role"),
                 element.getAttribute?.("type"),
                 element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title")
-              ].join(" ")
+                element.getAttribute?.("title"),
+              ].join(" "),
             );
           const isRendered = (element: RuntimeElement) => {
             const style = runtimeWindow.getComputedStyle(element);
@@ -9330,23 +12343,35 @@ export class AutomationRuntimeService {
               rect.height > 8
             );
           };
-          const inputType = (element: RuntimeElement) => normalize(element.getAttribute?.("type"));
+          const inputType = (element: RuntimeElement) =>
+            normalize(element.getAttribute?.("type"));
           const sectionSelector =
             "form,.ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,.m_sign_in,.sign_in_body,.login_content,.form_box";
           const sections = Array.from(
-            new Set([runtimeWindow.document.body, ...Array.from(runtimeWindow.document.querySelectorAll(sectionSelector))])
+            new Set([
+              runtimeWindow.document.body,
+              ...Array.from(
+                runtimeWindow.document.querySelectorAll(sectionSelector),
+              ),
+            ]),
           )
             .filter(isRendered)
             .map((section) => {
               const inputs = queryAll(section, "input").filter(isRendered);
-              const passwordInputs = inputs.filter((input) => inputType(input) === "password");
+              const passwordInputs = inputs.filter(
+                (input) => inputType(input) === "password",
+              );
               const text = normalize(section.textContent).slice(0, 2500);
               const rect = section.getBoundingClientRect();
               let score = 0;
               if (passwordInputs.length >= 2) {
                 score += 100;
               }
-              if (/registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join/.test(text)) {
+              if (
+                /registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join/.test(
+                  text,
+                )
+              ) {
                 score += 45;
               }
               if (/senha|password/.test(text)) {
@@ -9355,39 +12380,65 @@ export class AutomationRuntimeService {
               return {
                 area: rect.width * rect.height,
                 element: section,
-                passwordBottom: Math.max(0, ...passwordInputs.map((input) => input.getBoundingClientRect().bottom)),
-                score
+                passwordBottom: Math.max(
+                  0,
+                  ...passwordInputs.map(
+                    (input) => input.getBoundingClientRect().bottom,
+                  ),
+                ),
+                score,
               };
             })
             .filter((section) => section.score >= 100)
-            .sort((left, right) => right.score - left.score || left.area - right.area);
+            .sort(
+              (left, right) =>
+                right.score - left.score || left.area - right.area,
+            );
 
-          const roots = sections.length > 0 ? sections : [{ element: runtimeWindow.document.body, passwordBottom: 0 }];
+          const roots =
+            sections.length > 0
+              ? sections
+              : [{ element: runtimeWindow.document.body, passwordBottom: 0 }];
           const clickSelector =
             "button,a,[role='button'],input[type='submit'],input[type='button'],.sing_btn,.login_sign_btn,.register_btn,.primary,.submit,.btn,[class*='submit' i],[class*='register' i],[class*='regist' i],[id*='submit' i],[id*='register' i],[id*='regist' i]";
-          const candidates = new Map<RuntimeElement, { element: RuntimeElement; label: string; score: number; y: number }>();
+          const candidates = new Map<
+            RuntimeElement,
+            { element: RuntimeElement; label: string; score: number; y: number }
+          >();
 
           for (const root of roots) {
-            for (const element of queryAll(root.element, "button,a,input,[role='button'],div,span")) {
+            for (const element of queryAll(
+              root.element,
+              "button,a,input,[role='button'],div,span",
+            )) {
               const clickable = element.closest?.(clickSelector) ?? element;
               if (!isRendered(clickable)) {
                 continue;
               }
 
               const rect = clickable.getBoundingClientRect();
-              const viewportArea = runtimeWindow.innerWidth * runtimeWindow.innerHeight;
+              const viewportArea =
+                runtimeWindow.innerWidth * runtimeWindow.innerHeight;
               const elementText = normalize(element.textContent);
               const clickableText = normalize(clickable.textContent);
               const label = clickableText || elementText || "registro";
               const attrs = `${readAttrs(element)} ${readAttrs(clickable)}`;
               const haystack = normalize(`${label} ${attrs}`);
               const exactSubmit =
-                /^(registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join)$/i.test(label) ||
-                /^(registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join)$/i.test(elementText);
+                /^(registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join)$/i.test(
+                  label,
+                ) ||
+                /^(registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join)$/i.test(
+                  elementText,
+                );
               const containsSubmit =
-                /registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join/.test(haystack);
+                /registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join/.test(
+                  haystack,
+                );
               const strongSubmit =
-                /insideregistersubmitclick|login_sign_btn|sing_btn|submit|register_btn|primary|(^|\s)btn(\s|$)/.test(attrs);
+                /insideregistersubmitclick|login_sign_btn|sing_btn|submit|register_btn|primary|(^|\s)btn(\s|$)/.test(
+                  attrs,
+                );
 
               if (!exactSubmit && !containsSubmit && !strongSubmit) {
                 continue;
@@ -9414,10 +12465,17 @@ export class AutomationRuntimeService {
               if (!strongSubmit && (rect.width < 120 || rect.height < 28)) {
                 score -= 70;
               }
-              if (/login|entrar|suporte|cliente|vinculativo|download|baixar|termos|acordo/.test(label)) {
+              if (
+                /login|entrar|suporte|cliente|vinculativo|download|baixar|termos|acordo/.test(
+                  label,
+                )
+              ) {
                 score -= 75;
               }
-              if (rect.width * rect.height > viewportArea * 0.45 || label.length > 90) {
+              if (
+                rect.width * rect.height > viewportArea * 0.45 ||
+                label.length > 90
+              ) {
                 score -= 70;
               }
               if (score < 60) {
@@ -9430,20 +12488,29 @@ export class AutomationRuntimeService {
                   element: clickable,
                   label,
                   score,
-                  y: rect.top + rect.height / 2
+                  y: rect.top + rect.height / 2,
                 });
               }
             }
           }
 
-          const best = Array.from(candidates.values()).sort((left, right) => right.score - left.score || right.y - left.y)[0];
-          best?.element.setAttribute?.("data-predator-registration-submit-target", token);
+          const best = Array.from(candidates.values()).sort(
+            (left, right) => right.score - left.score || right.y - left.y,
+          )[0];
+          best?.element.setAttribute?.(
+            "data-predator-registration-submit-target",
+            token,
+          );
           return best ? { label: best.label, score: best.score } : undefined;
         }, targetToken)
         .catch(() => undefined);
 
       if (match) {
-        const target = page.locator(`[data-predator-registration-submit-target="${targetToken}"]`).first();
+        const target = page
+          .locator(
+            `[data-predator-registration-submit-target="${targetToken}"]`,
+          )
+          .first();
         if (await target.isVisible({ timeout: 300 }).catch(() => false)) {
           return target;
         }
@@ -9459,16 +12526,27 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     fieldName: string,
-    hints: string[]
+    hints: string[],
   ): Promise<Locator> {
-    const locator = await this.getVisibleInputByHints(runId, page, fieldName, hints);
+    const locator = await this.getVisibleInputByHints(
+      runId,
+      page,
+      fieldName,
+      hints,
+    );
     if (!locator) {
-      throw new Error(`Campo ${fieldName} nao encontrado no popup de cadastro.`);
+      throw new Error(
+        `Campo ${fieldName} nao encontrado no popup de cadastro.`,
+      );
     }
     return locator;
   }
 
-  private async dismissInitialPopupsBeforeRegistration(runId: string, page: Page, profileName: string): Promise<void> {
+  private async dismissInitialPopupsBeforeRegistration(
+    runId: string,
+    page: Page,
+    profileName: string,
+  ): Promise<void> {
     let totalDismissed = 0;
     let escapeFallbacks = 0;
 
@@ -9476,404 +12554,491 @@ export class AutomationRuntimeService {
       this.ensureRunActive(runId);
       const result = await this.withPopupPageGuard(page, () =>
         resolveContentFrame(page)
-        .evaluate(() => {
-          type DismissPopupResult = {
-            dismissed: number;
-            hasBlockingPopup: boolean;
-            hasCaptchaPopup: boolean;
-          };
-          type RuntimeElement = {
-            click?: () => void;
-            closest?: (selector: string) => RuntimeElement | null;
-            getAttribute?: (name: string) => string | null;
-            getBoundingClientRect: () => {
-              bottom: number;
-              height: number;
-              left: number;
-              right: number;
-              top: number;
-              width: number;
+          .evaluate(() => {
+            type DismissPopupResult = {
+              dismissed: number;
+              hasBlockingPopup: boolean;
+              hasCaptchaPopup: boolean;
             };
-            querySelector?: (selector: string) => RuntimeElement | null;
-            querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-            textContent?: string | null;
-          };
-          type RuntimeEvent = {
-            preventDefault?: () => void;
-            target?: RuntimeElement | null;
-          };
-          const runtimeWindow = globalThis as unknown as {
-            addEventListener: (type: string, listener: (event: RuntimeEvent) => void, options?: boolean) => void;
-            document: {
-              querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+            type RuntimeElement = {
+              click?: () => void;
+              closest?: (selector: string) => RuntimeElement | null;
+              getAttribute?: (name: string) => string | null;
+              getBoundingClientRect: () => {
+                bottom: number;
+                height: number;
+                left: number;
+                right: number;
+                top: number;
+                width: number;
+              };
+              querySelector?: (selector: string) => RuntimeElement | null;
+              querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
+              textContent?: string | null;
             };
-            getComputedStyle: (element: RuntimeElement) => {
-              display: string;
-              visibility: string;
-              opacity: string;
-              zIndex: string;
+            type RuntimeEvent = {
+              preventDefault?: () => void;
+              target?: RuntimeElement | null;
             };
-            innerHeight: number;
-            innerWidth: number;
-            open?: (...args: unknown[]) => unknown;
-            removeEventListener: (type: string, listener: (event: RuntimeEvent) => void, options?: boolean) => void;
-            setTimeout: (callback: () => void, timeout: number) => unknown;
-          };
-          const noPopupResult = (): DismissPopupResult => ({
-            dismissed: 0,
-            hasBlockingPopup: false,
-            hasCaptchaPopup: false
-          });
-          const normalizeText = (value: string | null | undefined) =>
-            (value || "")
-              .normalize("NFD")
-              .replace(/[\u0300-\u036f]/g, "")
-              .replace(/\s+/g, " ")
-              .trim()
-              .toLowerCase();
-          const isNavigatingHref = (href: string | null | undefined) => {
-            const normalized = normalizeText(href);
-            return Boolean(
-              normalized &&
+            const runtimeWindow = globalThis as unknown as {
+              addEventListener: (
+                type: string,
+                listener: (event: RuntimeEvent) => void,
+                options?: boolean,
+              ) => void;
+              document: {
+                querySelectorAll: (
+                  selector: string,
+                ) => Iterable<RuntimeElement>;
+              };
+              getComputedStyle: (element: RuntimeElement) => {
+                display: string;
+                visibility: string;
+                opacity: string;
+                zIndex: string;
+              };
+              innerHeight: number;
+              innerWidth: number;
+              open?: (...args: unknown[]) => unknown;
+              removeEventListener: (
+                type: string,
+                listener: (event: RuntimeEvent) => void,
+                options?: boolean,
+              ) => void;
+              setTimeout: (callback: () => void, timeout: number) => unknown;
+            };
+            const noPopupResult = (): DismissPopupResult => ({
+              dismissed: 0,
+              hasBlockingPopup: false,
+              hasCaptchaPopup: false,
+            });
+            const normalizeText = (value: string | null | undefined) =>
+              (value || "")
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLowerCase();
+            const isNavigatingHref = (href: string | null | undefined) => {
+              const normalized = normalizeText(href);
+              return Boolean(
+                normalized &&
                 normalized !== "#" &&
                 !normalized.startsWith("#") &&
                 !normalized.startsWith("javascript:") &&
                 !normalized.startsWith("void(") &&
-                normalized !== "about:blank"
-            );
-          };
-          const isUrlLikeText = (text: string) =>
-            /https?:|www\.|t\.me|telegram|facebook|whatsapp|wa\.me|\.com\b|\.net\b|\.org\b/i.test(text);
-          const exactDismissTexts = ["fechar", "close", "cancelar", "entendi", "ok"];
-          const phraseDismissTexts = ["agora não", "agora nao", "não agora", "nao agora", "depois", "mais tarde", "later"];
-          const actionDismissTexts = [
-            "confirmar",
-            "confimar",
-            "confirm",
-            "confirmacao",
-            "continuar",
-            "continue",
-            "prosseguir",
-            "aceitar",
-            "accept",
-            "concordo",
-            "agree",
-            "salvar",
-            "save",
-            "pronto",
-            "done"
-          ];
-          const isDismissText = (value: string | null | undefined) => {
-            const text = normalizeText(value);
-            if (!text || text.length > 48 || isUrlLikeText(text)) {
-              return false;
-            }
-            return (
-              exactDismissTexts.includes(text) ||
-              actionDismissTexts.includes(text) ||
-              phraseDismissTexts.some((hint) => text === hint || text.includes(hint)) ||
-              (text.length <= 24 && (text.includes("fechar") || text.includes("close")))
-            );
-          };
-          const isVisible = (element: RuntimeElement) => {
-            const style = runtimeWindow.getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-            return (
-              style.display !== "none" &&
-              style.visibility !== "hidden" &&
-              Number(style.opacity || "1") > 0.01 &&
-              rect.width > 4 &&
-              rect.height > 4 &&
-              rect.right > 0 &&
-              rect.bottom > 0 &&
-              rect.left < runtimeWindow.innerWidth &&
-              rect.top < runtimeWindow.innerHeight
-            );
-          };
-          const isSafeClickTarget = (element: RuntimeElement) => {
-            const anchor = element.closest?.("a[href]");
-            const href = anchor?.getAttribute?.("href") ?? element.getAttribute?.("href");
-            return !isNavigatingHref(href);
-          };
-          const normalizeCloseClickTarget = (element: RuntimeElement) =>
-            element.closest?.(
-              ".ui-dialog-close-box,.van-popup__close-icon,.van-icon-cross,.icon-guanbi,.iconfontguanbistyle,.xiazaipppclose,.imgx,.popupshowimgx,.pofswpclosestyle,.xImgaes,[class*='modal-close' i],[class*='popup-close' i],[class*='dialog-close' i],[class*='icon-close' i],[class*='close-btn' i],[class*='closeBtn' i],[class*='guanbi' i],[class*='imgx' i],[class*='closestyle' i],[aria-label*='close' i],[aria-label*='fechar' i]"
-            ) ?? element.closest?.("button,[role='button'],a") ?? element;
-          const popupRootSelector =
-            ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.el-dialog,.el-drawer,.m_sign_in,.sign_in_body,.login_content,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,[class*='messagepopup' i],[class*='notice' i],[class*='popup' i],[class*='ppp' i]";
-          const getPopupRoot = (element: RuntimeElement) =>
-            element.closest?.(popupRootSelector) ?? element.closest?.(".ui-overlay") ?? element;
-          const getClosePriority = (element: RuntimeElement) => {
-            const root = getPopupRoot(element);
-            const marker = normalizeText(
-              [
-                element.getAttribute?.("id"),
-                element.getAttribute?.("class"),
-                element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title"),
-                element.getAttribute?.("data-testid"),
-                root.getAttribute?.("data-dialog-name"),
-                root.getAttribute?.("class")
-              ].join(" ")
-            );
-            let priority = 0;
-            if (/messagepopup/.test(marker)) {
-              priority += 80;
-            }
-            if (/ui-dialog-close-box/.test(marker)) {
-              priority += 70;
-            }
-            if (
-              /modal-close|popup-close|dialog-close|icon-close|close-btn|closebtn|van-popup__close|van-icon-cross|guanbi|xiazaipppclose|popupshowimgx|pofswpclosestyle|ximgaes|imgx|closestyle/.test(
-                marker
-              )
-            ) {
-              priority += 45;
-            }
-            if (/close|fechar/.test(marker)) {
-              priority += 25;
-            }
-            return priority;
-          };
-          const captchaTextPattern =
-            /captcha|recaptcha|hcaptcha|turnstile|geetest|gee test|deslize|arraste/i;
-          const captchaSelector =
-            "iframe[src*='captcha' i],iframe[src*='recaptcha' i],iframe[src*='hcaptcha' i],iframe[src*='turnstile' i],iframe[src*='geetest' i],[class*='captcha' i],[id*='captcha' i],[class*='geetest' i],[id*='geetest' i]";
-          const isCaptchaPopupElement = (element: RuntimeElement) => {
-            const root = getPopupRoot(element);
-            const haystack = normalizeText(
-              [
-                root.textContent,
-                root.getAttribute?.("id"),
-                root.getAttribute?.("class"),
-                root.getAttribute?.("aria-label"),
-                root.getAttribute?.("title")
-              ].join(" ")
-            );
-
-            return captchaTextPattern.test(haystack) || Boolean(root.querySelector?.(captchaSelector));
-          };
-          const isPasswordLikeInput = (element: RuntimeElement) => {
-            const haystack = normalizeText(
-              [
-                element.getAttribute?.("type"),
-                element.getAttribute?.("autocomplete"),
-                element.getAttribute?.("name"),
-                element.getAttribute?.("id"),
-                element.getAttribute?.("class"),
-                element.getAttribute?.("placeholder"),
-                element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title")
-              ].join(" ")
-            );
-            return normalizeText(element.getAttribute?.("type")) === "password" || /new-password|senha|password|confirm/.test(haystack);
-          };
-          const isRegistrationPopupElement = (element: RuntimeElement) => {
-            const root = getPopupRoot(element);
-            const inputs = Array.from(root.querySelectorAll?.("input") ?? []).filter(isVisible);
-            const inputText = normalizeText(
-              inputs
-                .map((input) =>
-                  [
-                    input.getAttribute?.("type"),
-                    input.getAttribute?.("autocomplete"),
-                    input.getAttribute?.("name"),
-                    input.getAttribute?.("id"),
-                    input.getAttribute?.("class"),
-                    input.getAttribute?.("placeholder"),
-                    input.getAttribute?.("aria-label"),
-                    input.getAttribute?.("title")
-                  ].join(" ")
-                )
-                .join(" ")
-            );
-            const text = normalizeText(root.textContent);
-            const passwordLikeCount = inputs.filter(isPasswordLikeInput).length;
-            return (
-              inputs.length >= 3 &&
-              passwordLikeCount >= 2 &&
-              /registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join/.test(`${text} ${inputText}`) &&
-              /conta|account|usuario|username|celular|telefone|phone|mobile/.test(`${text} ${inputText}`)
-            );
-          };
-          const getPopupScore = (element: RuntimeElement) => {
-            const root = getPopupRoot(element);
-            const rootStyle = runtimeWindow.getComputedStyle(root);
-            const elementStyle = runtimeWindow.getComputedStyle(element);
-            const rootRect = root.getBoundingClientRect();
-            return {
-              rootArea: rootRect.width * rootRect.height,
-              zIndex: Number.parseInt(rootStyle.zIndex || elementStyle.zIndex || "0", 10) || 0
+                normalized !== "about:blank",
+              );
             };
-          };
-          const visiblePopupRoots = Array.from(runtimeWindow.document.querySelectorAll(popupRootSelector))
-            .filter((element) => isVisible(element));
-          const hasCaptchaPopup = visiblePopupRoots.some((element) => isCaptchaPopupElement(element));
-          const hasBlockingPopup = visiblePopupRoots.some(
-            (element) => !isCaptchaPopupElement(element) && !isRegistrationPopupElement(element)
-          );
-          const preventAnchorNavigation = (event: RuntimeEvent) => {
-            const anchor = event.target?.closest?.("a[href]");
-            if (isNavigatingHref(anchor?.getAttribute?.("href"))) {
-              event.preventDefault?.();
+            const isUrlLikeText = (text: string) =>
+              /https?:|www\.|t\.me|telegram|facebook|whatsapp|wa\.me|\.com\b|\.net\b|\.org\b/i.test(
+                text,
+              );
+            const exactDismissTexts = [
+              "fechar",
+              "close",
+              "cancelar",
+              "entendi",
+              "ok",
+            ];
+            const phraseDismissTexts = [
+              "agora não",
+              "agora nao",
+              "não agora",
+              "nao agora",
+              "depois",
+              "mais tarde",
+              "later",
+            ];
+            const actionDismissTexts = [
+              "confirmar",
+              "confimar",
+              "confirm",
+              "confirmacao",
+              "continuar",
+              "continue",
+              "prosseguir",
+              "aceitar",
+              "accept",
+              "concordo",
+              "agree",
+              "salvar",
+              "save",
+              "pronto",
+              "done",
+            ];
+            const isDismissText = (value: string | null | undefined) => {
+              const text = normalizeText(value);
+              if (!text || text.length > 48 || isUrlLikeText(text)) {
+                return false;
+              }
+              return (
+                exactDismissTexts.includes(text) ||
+                actionDismissTexts.includes(text) ||
+                phraseDismissTexts.some(
+                  (hint) => text === hint || text.includes(hint),
+                ) ||
+                (text.length <= 24 &&
+                  (text.includes("fechar") || text.includes("close")))
+              );
+            };
+            const isVisible = (element: RuntimeElement) => {
+              const style = runtimeWindow.getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              return (
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                Number(style.opacity || "1") > 0.01 &&
+                rect.width > 4 &&
+                rect.height > 4 &&
+                rect.right > 0 &&
+                rect.bottom > 0 &&
+                rect.left < runtimeWindow.innerWidth &&
+                rect.top < runtimeWindow.innerHeight
+              );
+            };
+            const isSafeClickTarget = (element: RuntimeElement) => {
+              const anchor = element.closest?.("a[href]");
+              const href =
+                anchor?.getAttribute?.("href") ??
+                element.getAttribute?.("href");
+              return !isNavigatingHref(href);
+            };
+            const normalizeCloseClickTarget = (element: RuntimeElement) =>
+              element.closest?.(
+                ".ui-dialog-close-box,.van-popup__close-icon,.van-icon-cross,.icon-guanbi,.iconfontguanbistyle,.xiazaipppclose,.imgx,.popupshowimgx,.pofswpclosestyle,.xImgaes,[class*='modal-close' i],[class*='popup-close' i],[class*='dialog-close' i],[class*='icon-close' i],[class*='close-btn' i],[class*='closeBtn' i],[class*='guanbi' i],[class*='imgx' i],[class*='closestyle' i],[aria-label*='close' i],[aria-label*='fechar' i]",
+              ) ??
+              element.closest?.("button,[role='button'],a") ??
+              element;
+            const popupRootSelector =
+              ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.el-dialog,.el-drawer,.m_sign_in,.sign_in_body,.login_content,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,[class*='messagepopup' i],[class*='notice' i],[class*='popup' i],[class*='ppp' i]";
+            const getPopupRoot = (element: RuntimeElement) =>
+              element.closest?.(popupRootSelector) ??
+              element.closest?.(".ui-overlay") ??
+              element;
+            const getClosePriority = (element: RuntimeElement) => {
+              const root = getPopupRoot(element);
+              const marker = normalizeText(
+                [
+                  element.getAttribute?.("id"),
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("aria-label"),
+                  element.getAttribute?.("title"),
+                  element.getAttribute?.("data-testid"),
+                  root.getAttribute?.("data-dialog-name"),
+                  root.getAttribute?.("class"),
+                ].join(" "),
+              );
+              let priority = 0;
+              if (/messagepopup/.test(marker)) {
+                priority += 80;
+              }
+              if (/ui-dialog-close-box/.test(marker)) {
+                priority += 70;
+              }
+              if (
+                /modal-close|popup-close|dialog-close|icon-close|close-btn|closebtn|van-popup__close|van-icon-cross|guanbi|xiazaipppclose|popupshowimgx|pofswpclosestyle|ximgaes|imgx|closestyle/.test(
+                  marker,
+                )
+              ) {
+                priority += 45;
+              }
+              if (/close|fechar/.test(marker)) {
+                priority += 25;
+              }
+              return priority;
+            };
+            const captchaTextPattern =
+              /captcha|recaptcha|hcaptcha|turnstile|geetest|gee test|deslize|arraste/i;
+            const captchaSelector =
+              "iframe[src*='captcha' i],iframe[src*='recaptcha' i],iframe[src*='hcaptcha' i],iframe[src*='turnstile' i],iframe[src*='geetest' i],[class*='captcha' i],[id*='captcha' i],[class*='geetest' i],[id*='geetest' i]";
+            const isCaptchaPopupElement = (element: RuntimeElement) => {
+              const root = getPopupRoot(element);
+              const haystack = normalizeText(
+                [
+                  root.textContent,
+                  root.getAttribute?.("id"),
+                  root.getAttribute?.("class"),
+                  root.getAttribute?.("aria-label"),
+                  root.getAttribute?.("title"),
+                ].join(" "),
+              );
+
+              return (
+                captchaTextPattern.test(haystack) ||
+                Boolean(root.querySelector?.(captchaSelector))
+              );
+            };
+            const isPasswordLikeInput = (element: RuntimeElement) => {
+              const haystack = normalizeText(
+                [
+                  element.getAttribute?.("type"),
+                  element.getAttribute?.("autocomplete"),
+                  element.getAttribute?.("name"),
+                  element.getAttribute?.("id"),
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("placeholder"),
+                  element.getAttribute?.("aria-label"),
+                  element.getAttribute?.("title"),
+                ].join(" "),
+              );
+              return (
+                normalizeText(element.getAttribute?.("type")) === "password" ||
+                /new-password|senha|password|confirm/.test(haystack)
+              );
+            };
+            const isRegistrationPopupElement = (element: RuntimeElement) => {
+              const root = getPopupRoot(element);
+              const inputs = Array.from(
+                root.querySelectorAll?.("input") ?? [],
+              ).filter(isVisible);
+              const inputText = normalizeText(
+                inputs
+                  .map((input) =>
+                    [
+                      input.getAttribute?.("type"),
+                      input.getAttribute?.("autocomplete"),
+                      input.getAttribute?.("name"),
+                      input.getAttribute?.("id"),
+                      input.getAttribute?.("class"),
+                      input.getAttribute?.("placeholder"),
+                      input.getAttribute?.("aria-label"),
+                      input.getAttribute?.("title"),
+                    ].join(" "),
+                  )
+                  .join(" "),
+              );
+              const text = normalizeText(root.textContent);
+              const passwordLikeCount =
+                inputs.filter(isPasswordLikeInput).length;
+              return (
+                inputs.length >= 3 &&
+                passwordLikeCount >= 2 &&
+                /registro|registrar|cadastro|cadastrar|criar conta|sign up|signup|register|join/.test(
+                  `${text} ${inputText}`,
+                ) &&
+                /conta|account|usuario|username|celular|telefone|phone|mobile/.test(
+                  `${text} ${inputText}`,
+                )
+              );
+            };
+            const getPopupScore = (element: RuntimeElement) => {
+              const root = getPopupRoot(element);
+              const rootStyle = runtimeWindow.getComputedStyle(root);
+              const elementStyle = runtimeWindow.getComputedStyle(element);
+              const rootRect = root.getBoundingClientRect();
+              return {
+                rootArea: rootRect.width * rootRect.height,
+                zIndex:
+                  Number.parseInt(
+                    rootStyle.zIndex || elementStyle.zIndex || "0",
+                    10,
+                  ) || 0,
+              };
+            };
+            const visiblePopupRoots = Array.from(
+              runtimeWindow.document.querySelectorAll(popupRootSelector),
+            ).filter((element) => isVisible(element));
+            const hasCaptchaPopup = visiblePopupRoots.some((element) =>
+              isCaptchaPopupElement(element),
+            );
+            const hasBlockingPopup = visiblePopupRoots.some(
+              (element) =>
+                !isCaptchaPopupElement(element) &&
+                !isRegistrationPopupElement(element),
+            );
+            const preventAnchorNavigation = (event: RuntimeEvent) => {
+              const anchor = event.target?.closest?.("a[href]");
+              if (isNavigatingHref(anchor?.getAttribute?.("href"))) {
+                event.preventDefault?.();
+              }
+            };
+            const clickWithoutOpeningTabs = (element: RuntimeElement) => {
+              const originalOpen = runtimeWindow.open;
+              try {
+                runtimeWindow.open = () => null;
+                runtimeWindow.addEventListener(
+                  "click",
+                  preventAnchorNavigation,
+                  true,
+                );
+                runtimeWindow.addEventListener(
+                  "auxclick",
+                  preventAnchorNavigation,
+                  true,
+                );
+                element.click?.();
+              } finally {
+                runtimeWindow.setTimeout(() => {
+                  runtimeWindow.removeEventListener(
+                    "click",
+                    preventAnchorNavigation,
+                    true,
+                  );
+                  runtimeWindow.removeEventListener(
+                    "auxclick",
+                    preventAnchorNavigation,
+                    true,
+                  );
+                  runtimeWindow.open = originalOpen;
+                }, 1400);
+              }
+            };
+
+            const closeSelectors = [
+              "#loginRegisterModalCloseButton",
+              ".ui-dialog-close-box__icon",
+              ".ui-dialog-close-box",
+              ".van-popup__close-icon",
+              ".van-icon-cross",
+              ".icon-guanbi",
+              ".iconfontguanbistyle",
+              ".xiazaipppclose",
+              ".imgx",
+              ".popupshowimgx",
+              ".pofswpclosestyle",
+              ".xImgaes",
+              "[aria-label*='fechar' i]",
+              "[aria-label*='close' i]",
+              "[title*='fechar' i]",
+              "[title*='close' i]",
+              "[data-testid*='close' i]",
+              "[data-testid*='fechar' i]",
+              "img[class*='close' i]",
+              "svg[class*='close' i]",
+              "[class*='modal-close' i]",
+              "[class*='popup-close' i]",
+              "[class*='dialog-close' i]",
+              "[class*='icon-close' i]",
+              "[class*='close-icon' i]",
+              "[class*='closeIcon' i]",
+              "[class*='close-btn' i]",
+              "[class*='closeBtn' i]",
+              "[class*='guanbi' i]",
+              "[class*='imgx' i]",
+              "[class*='closestyle' i]",
+              "[class*='close' i]",
+            ];
+            const textDismissHints = [
+              "fechar",
+              "close",
+              "agora não",
+              "agora nao",
+              "não agora",
+              "nao agora",
+              "depois",
+              "mais tarde",
+              "later",
+              "cancelar",
+              "entendi",
+              "ok",
+            ];
+
+            void textDismissHints;
+
+            const candidates = new Set<RuntimeElement>();
+            for (const selector of closeSelectors) {
+              for (const element of runtimeWindow.document.querySelectorAll(
+                selector,
+              )) {
+                candidates.add(normalizeCloseClickTarget(element));
+              }
             }
-          };
-          const clickWithoutOpeningTabs = (element: RuntimeElement) => {
-            const originalOpen = runtimeWindow.open;
-            try {
-              runtimeWindow.open = () => null;
-              runtimeWindow.addEventListener("click", preventAnchorNavigation, true);
-              runtimeWindow.addEventListener("auxclick", preventAnchorNavigation, true);
-              element.click?.();
-            } finally {
-              runtimeWindow.setTimeout(() => {
-                runtimeWindow.removeEventListener("click", preventAnchorNavigation, true);
-                runtimeWindow.removeEventListener("auxclick", preventAnchorNavigation, true);
-                runtimeWindow.open = originalOpen;
-              }, 1400);
-            }
-          };
 
-          const closeSelectors = [
-            "#loginRegisterModalCloseButton",
-            ".ui-dialog-close-box__icon",
-            ".ui-dialog-close-box",
-            ".van-popup__close-icon",
-            ".van-icon-cross",
-            ".icon-guanbi",
-            ".iconfontguanbistyle",
-            ".xiazaipppclose",
-            ".imgx",
-            ".popupshowimgx",
-            ".pofswpclosestyle",
-            ".xImgaes",
-            "[aria-label*='fechar' i]",
-            "[aria-label*='close' i]",
-            "[title*='fechar' i]",
-            "[title*='close' i]",
-            "[data-testid*='close' i]",
-            "[data-testid*='fechar' i]",
-            "img[class*='close' i]",
-            "svg[class*='close' i]",
-            "[class*='modal-close' i]",
-            "[class*='popup-close' i]",
-            "[class*='dialog-close' i]",
-            "[class*='icon-close' i]",
-            "[class*='close-icon' i]",
-            "[class*='closeIcon' i]",
-            "[class*='close-btn' i]",
-            "[class*='closeBtn' i]",
-            "[class*='guanbi' i]",
-            "[class*='imgx' i]",
-            "[class*='closestyle' i]",
-            "[class*='close' i]"
-          ];
-          const textDismissHints = [
-            "fechar",
-            "close",
-            "agora não",
-            "agora nao",
-            "não agora",
-            "nao agora",
-            "depois",
-            "mais tarde",
-            "later",
-            "cancelar",
-            "entendi",
-            "ok"
-          ];
-
-          void textDismissHints;
-
-          const candidates = new Set<RuntimeElement>();
-          for (const selector of closeSelectors) {
-            for (const element of runtimeWindow.document.querySelectorAll(selector)) {
-              candidates.add(normalizeCloseClickTarget(element));
-            }
-          }
-
-          for (const element of runtimeWindow.document.querySelectorAll("button,[role='button'],a")) {
-            if (isDismissText(element.textContent)) {
-              candidates.add(normalizeCloseClickTarget(element));
-            }
-          }
-
-          for (const root of runtimeWindow.document.querySelectorAll(popupRootSelector)) {
-            if (!isVisible(root) || isCaptchaPopupElement(root) || isRegistrationPopupElement(root)) {
-              continue;
-            }
-
-            for (const element of root.querySelectorAll?.("button,[role='button'],.ui-button,.van-button") ?? []) {
+            for (const element of runtimeWindow.document.querySelectorAll(
+              "button,[role='button'],a",
+            )) {
               if (isDismissText(element.textContent)) {
                 candidates.add(normalizeCloseClickTarget(element));
               }
             }
-          }
 
-          for (const element of runtimeWindow.document.querySelectorAll("button,[role='button'],a,div,span,svg,img")) {
-            const marker = normalizeText(
-              [
-                element.getAttribute?.("id"),
-                element.getAttribute?.("class"),
-                element.getAttribute?.("aria-label"),
-                element.getAttribute?.("title"),
-                element.getAttribute?.("data-testid")
-              ].join(" ")
-            );
-            if (
-              /close|fechar|modal-close|popup-close|dialog-close|icon-close|closebtn|close-btn|van-popup__close|van-icon-cross|guanbi|xiazaipppclose|popupshowimgx|pofswpclosestyle|ximgaes|imgx|closestyle/.test(
-                marker
-              )
-            ) {
-              candidates.add(normalizeCloseClickTarget(element));
+            for (const root of runtimeWindow.document.querySelectorAll(
+              popupRootSelector,
+            )) {
+              if (
+                !isVisible(root) ||
+                isCaptchaPopupElement(root) ||
+                isRegistrationPopupElement(root)
+              ) {
+                continue;
+              }
+
+              for (const element of root.querySelectorAll?.(
+                "button,[role='button'],.ui-button,.van-button",
+              ) ?? []) {
+                if (isDismissText(element.textContent)) {
+                  candidates.add(normalizeCloseClickTarget(element));
+                }
+              }
             }
-          }
 
-          const candidate = Array.from(candidates)
-            .filter(
-              (element) =>
-                isVisible(element) &&
-                isSafeClickTarget(element) &&
-                !isCaptchaPopupElement(element) &&
-                !isRegistrationPopupElement(element)
-            )
-            .sort((a, b) => {
-              const aRect = a.getBoundingClientRect();
-              const bRect = b.getBoundingClientRect();
-              const aScore = getPopupScore(a);
-              const bScore = getPopupScore(b);
-              return (
-                getClosePriority(b) - getClosePriority(a) ||
-                bScore.zIndex - aScore.zIndex ||
-                aRect.width * aRect.height - bRect.width * bRect.height ||
-                aScore.rootArea - bScore.rootArea
+            for (const element of runtimeWindow.document.querySelectorAll(
+              "button,[role='button'],a,div,span,svg,img",
+            )) {
+              const marker = normalizeText(
+                [
+                  element.getAttribute?.("id"),
+                  element.getAttribute?.("class"),
+                  element.getAttribute?.("aria-label"),
+                  element.getAttribute?.("title"),
+                  element.getAttribute?.("data-testid"),
+                ].join(" "),
               );
-            })[0];
+              if (
+                /close|fechar|modal-close|popup-close|dialog-close|icon-close|closebtn|close-btn|van-popup__close|van-icon-cross|guanbi|xiazaipppclose|popupshowimgx|pofswpclosestyle|ximgaes|imgx|closestyle/.test(
+                  marker,
+                )
+              ) {
+                candidates.add(normalizeCloseClickTarget(element));
+              }
+            }
 
-          if (!candidate) {
-            return {
-              dismissed: 0,
-              hasBlockingPopup,
-              hasCaptchaPopup
-            };
-          }
+            const candidate = Array.from(candidates)
+              .filter(
+                (element) =>
+                  isVisible(element) &&
+                  isSafeClickTarget(element) &&
+                  !isCaptchaPopupElement(element) &&
+                  !isRegistrationPopupElement(element),
+              )
+              .sort((a, b) => {
+                const aRect = a.getBoundingClientRect();
+                const bRect = b.getBoundingClientRect();
+                const aScore = getPopupScore(a);
+                const bScore = getPopupScore(b);
+                return (
+                  getClosePriority(b) - getClosePriority(a) ||
+                  bScore.zIndex - aScore.zIndex ||
+                  aRect.width * aRect.height - bRect.width * bRect.height ||
+                  aScore.rootArea - bScore.rootArea
+                );
+              })[0];
 
-          try {
-            clickWithoutOpeningTabs(candidate);
-            return {
-              dismissed: 1,
-              hasBlockingPopup,
-              hasCaptchaPopup
-            };
-          } catch {
-            return noPopupResult();
-          }
-        })
-        .catch(() => ({
-          dismissed: 0,
-          hasBlockingPopup: false,
-          hasCaptchaPopup: false
-        }))
+            if (!candidate) {
+              return {
+                dismissed: 0,
+                hasBlockingPopup,
+                hasCaptchaPopup,
+              };
+            }
+
+            try {
+              clickWithoutOpeningTabs(candidate);
+              return {
+                dismissed: 1,
+                hasBlockingPopup,
+                hasCaptchaPopup,
+              };
+            } catch {
+              return noPopupResult();
+            }
+          })
+          .catch(() => ({
+            dismissed: 0,
+            hasBlockingPopup: false,
+            hasCaptchaPopup: false,
+          })),
       );
 
       totalDismissed += result.dismissed;
@@ -9882,7 +13047,11 @@ export class AutomationRuntimeService {
         continue;
       }
 
-      if (result.hasBlockingPopup && !result.hasCaptchaPopup && escapeFallbacks < 3) {
+      if (
+        result.hasBlockingPopup &&
+        !result.hasCaptchaPopup &&
+        escapeFallbacks < 3
+      ) {
         escapeFallbacks += 1;
         await page.keyboard.press("Escape").catch(() => null);
         await page.waitForTimeout(180);
@@ -9893,11 +13062,16 @@ export class AutomationRuntimeService {
     }
 
     if (totalDismissed > 0) {
-      console.log(`[${profileName}] Popups iniciais fechados antes de abrir o cadastro (${totalDismissed} clique(s)).`);
+      console.log(
+        `[${profileName}] Popups iniciais fechados antes de abrir o cadastro (${totalDismissed} clique(s)).`,
+      );
     }
   }
 
-  private async withPopupPageGuard<T>(page: Page, action: () => Promise<T>): Promise<T> {
+  private async withPopupPageGuard<T>(
+    page: Page,
+    action: () => Promise<T>,
+  ): Promise<T> {
     const context = page.context();
     const existingPages = new Set(context.pages());
     const openedPages: Page[] = [];
@@ -9917,7 +13091,9 @@ export class AutomationRuntimeService {
       await Promise.allSettled(
         openedPages
           .filter((openedPage) => openedPage !== page && !openedPage.isClosed())
-          .map((openedPage) => openedPage.close({ runBeforeUnload: false }).catch(() => null))
+          .map((openedPage) =>
+            openedPage.close({ runBeforeUnload: false }).catch(() => null),
+          ),
       );
     }
   }
@@ -9927,10 +13103,15 @@ export class AutomationRuntimeService {
     page: Page,
     fieldName: string,
     hints: string[],
-    options?: { optional?: boolean; timeoutMs?: number; rejectHints?: string[] }
+    options?: {
+      optional?: boolean;
+      timeoutMs?: number;
+      rejectHints?: string[];
+    },
   ): Promise<Locator | undefined> {
     const timeoutMs = options?.timeoutMs ?? 45000;
-    const rejectHints = options?.rejectHints?.map((hint) => this.normalizeSearchText(hint)) ?? [];
+    const rejectHints =
+      options?.rejectHints?.map((hint) => this.normalizeSearchText(hint)) ?? [];
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
@@ -9940,121 +13121,143 @@ export class AutomationRuntimeService {
 
       for (let index = 0; index < count; index += 1) {
         const candidate = inputs.nth(index);
-        const context = await candidate.evaluate((element) => {
-          type RuntimeElement = {
-            closest?: (selector: string) => RuntimeElement | null;
-            getAttribute: (name: string) => string | null;
-            nextElementSibling?: RuntimeElement | null;
-            parentElement?: RuntimeElement | null;
-            previousElementSibling?: RuntimeElement | null;
-            querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-            textContent?: string | null;
-          };
-          const runtimeElement = element as unknown as RuntimeElement;
-          const runtimeGlobal = globalThis as unknown as {
-            document: {
-              getElementById: (id: string) => RuntimeElement | null;
-              querySelector: (selector: string) => RuntimeElement | null;
+        const context = await candidate
+          .evaluate((element) => {
+            type RuntimeElement = {
+              closest?: (selector: string) => RuntimeElement | null;
+              getAttribute: (name: string) => string | null;
+              nextElementSibling?: RuntimeElement | null;
+              parentElement?: RuntimeElement | null;
+              previousElementSibling?: RuntimeElement | null;
+              querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
+              textContent?: string | null;
             };
-          };
-          const normalize = (value: string | null | undefined) =>
-            (value || "")
-              .normalize("NFD")
-              .replace(/[\u0300-\u036f]/g, "")
-              .replace(/\s+/g, " ")
-              .trim()
-              .toLowerCase();
-          const cssEscape = (value: string) => value.replace(/["\\]/g, "\\$&");
-          const read = (target: RuntimeElement | null | undefined) => normalize(target?.textContent);
-          const id = runtimeElement.getAttribute("id");
-          const ariaLabelledBy = runtimeElement.getAttribute("aria-labelledby");
-          const labelledByText = ariaLabelledBy
-            ?.split(/\s+/)
-            .map((entry: string) => read(runtimeGlobal.document.getElementById(entry)))
-            .join(" ");
-          const labelText = [
-            id ? read(runtimeGlobal.document.querySelector(`label[for="${cssEscape(id)}"]`)) : "",
-            read(runtimeElement.closest?.("label")),
-            normalize(runtimeElement.getAttribute("aria-label")),
-            normalize(labelledByText)
-          ].join(" ");
-          const wrapper =
-            runtimeElement.closest?.(
-              "label,.ui-input,.van-field,.form-item,.form-control,.input-item,.input_box,.m_input_box,.el-form-item,.field,.form-row"
-            ) ?? runtimeElement.parentElement;
-          const section =
-            runtimeElement.closest?.(
-              "form,.ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,.m_sign_in,.sign_in_body,.login_content,.form_box"
-            ) ?? runtimeElement.parentElement;
-          const siblings = [
-            runtimeElement.previousElementSibling,
-            runtimeElement.nextElementSibling,
-            wrapper?.previousElementSibling,
-            wrapper?.nextElementSibling
-          ]
-            .map(read)
-            .join(" ");
-          const inputs = Array.from(section?.querySelectorAll?.("input") ?? []);
-          const isPasswordLikeInput = (input: RuntimeElement) => {
-            const haystack = normalize(
-              [
-                input.getAttribute("type"),
-                input.getAttribute("autocomplete"),
-                input.getAttribute("name"),
-                input.getAttribute("id"),
-                input.getAttribute("data-input-name"),
-                input.getAttribute("class"),
-                input.getAttribute("placeholder"),
-                input.getAttribute("aria-label"),
-                input.getAttribute("title")
-              ].join(" ")
+            const runtimeElement = element as unknown as RuntimeElement;
+            const runtimeGlobal = globalThis as unknown as {
+              document: {
+                getElementById: (id: string) => RuntimeElement | null;
+                querySelector: (selector: string) => RuntimeElement | null;
+              };
+            };
+            const normalize = (value: string | null | undefined) =>
+              (value || "")
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .toLowerCase();
+            const cssEscape = (value: string) =>
+              value.replace(/["\\]/g, "\\$&");
+            const read = (target: RuntimeElement | null | undefined) =>
+              normalize(target?.textContent);
+            const id = runtimeElement.getAttribute("id");
+            const ariaLabelledBy =
+              runtimeElement.getAttribute("aria-labelledby");
+            const labelledByText = ariaLabelledBy
+              ?.split(/\s+/)
+              .map((entry: string) =>
+                read(runtimeGlobal.document.getElementById(entry)),
+              )
+              .join(" ");
+            const labelText = [
+              id
+                ? read(
+                    runtimeGlobal.document.querySelector(
+                      `label[for="${cssEscape(id)}"]`,
+                    ),
+                  )
+                : "",
+              read(runtimeElement.closest?.("label")),
+              normalize(runtimeElement.getAttribute("aria-label")),
+              normalize(labelledByText),
+            ].join(" ");
+            const wrapper =
+              runtimeElement.closest?.(
+                "label,.ui-input,.van-field,.form-item,.form-control,.input-item,.input_box,.m_input_box,.el-form-item,.field,.form-row",
+              ) ?? runtimeElement.parentElement;
+            const section =
+              runtimeElement.closest?.(
+                "form,.ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,.m_sign_in,.sign_in_body,.login_content,.form_box",
+              ) ?? runtimeElement.parentElement;
+            const siblings = [
+              runtimeElement.previousElementSibling,
+              runtimeElement.nextElementSibling,
+              wrapper?.previousElementSibling,
+              wrapper?.nextElementSibling,
+            ]
+              .map(read)
+              .join(" ");
+            const inputs = Array.from(
+              section?.querySelectorAll?.("input") ?? [],
             );
-            return normalize(input.getAttribute("type")) === "password" || /new-password|senha|password|confirm/.test(haystack);
-          };
-          const passwordInputs = inputs.filter(isPasswordLikeInput);
-          return {
-            autocomplete: normalize(runtimeElement.getAttribute("autocomplete")),
-            identity: normalize(
-              [
-                runtimeElement.getAttribute("name"),
-                runtimeElement.getAttribute("id"),
-                runtimeElement.getAttribute("data-input-name"),
-                runtimeElement.getAttribute("class")
-              ].join(" ")
-            ),
-            inputMode: normalize(runtimeElement.getAttribute("inputmode")),
-            labelText,
-            siblingText: normalize(siblings),
-            wrapperText: normalize(wrapper?.textContent),
-            placeholder: normalize(runtimeElement.getAttribute("placeholder")),
-            sectionText: normalize(section?.textContent).slice(0, 1200),
-            title: normalize(runtimeElement.getAttribute("title")),
-            type: normalize(runtimeElement.getAttribute("type")),
-            maxLength: normalize(runtimeElement.getAttribute("maxlength")),
-            passwordLike: isPasswordLikeInput(runtimeElement),
-            passwordIndex: passwordInputs.indexOf(runtimeElement),
-            passwordInputCount: passwordInputs.length,
-            visibleIndex: Math.max(0, inputs.indexOf(runtimeElement)),
-            visibleInputCount: inputs.length
-          };
-        }).catch(() => ({
-          autocomplete: "",
-          identity: "",
-          inputMode: "",
-          labelText: "",
-          passwordIndex: -1,
-          placeholder: "",
-          sectionText: "",
-          siblingText: "",
-          title: "",
-          type: "",
-          maxLength: "",
-          passwordLike: false,
-          visibleIndex: index,
-          visibleInputCount: count,
-          passwordInputCount: 0,
-          wrapperText: ""
-        }));
+            const isPasswordLikeInput = (input: RuntimeElement) => {
+              const haystack = normalize(
+                [
+                  input.getAttribute("type"),
+                  input.getAttribute("autocomplete"),
+                  input.getAttribute("name"),
+                  input.getAttribute("id"),
+                  input.getAttribute("data-input-name"),
+                  input.getAttribute("class"),
+                  input.getAttribute("placeholder"),
+                  input.getAttribute("aria-label"),
+                  input.getAttribute("title"),
+                ].join(" "),
+              );
+              return (
+                normalize(input.getAttribute("type")) === "password" ||
+                /new-password|senha|password|confirm/.test(haystack)
+              );
+            };
+            const passwordInputs = inputs.filter(isPasswordLikeInput);
+            return {
+              autocomplete: normalize(
+                runtimeElement.getAttribute("autocomplete"),
+              ),
+              identity: normalize(
+                [
+                  runtimeElement.getAttribute("name"),
+                  runtimeElement.getAttribute("id"),
+                  runtimeElement.getAttribute("data-input-name"),
+                  runtimeElement.getAttribute("class"),
+                ].join(" "),
+              ),
+              inputMode: normalize(runtimeElement.getAttribute("inputmode")),
+              labelText,
+              siblingText: normalize(siblings),
+              wrapperText: normalize(wrapper?.textContent),
+              placeholder: normalize(
+                runtimeElement.getAttribute("placeholder"),
+              ),
+              sectionText: normalize(section?.textContent).slice(0, 1200),
+              title: normalize(runtimeElement.getAttribute("title")),
+              type: normalize(runtimeElement.getAttribute("type")),
+              maxLength: normalize(runtimeElement.getAttribute("maxlength")),
+              passwordLike: isPasswordLikeInput(runtimeElement),
+              passwordIndex: passwordInputs.indexOf(runtimeElement),
+              passwordInputCount: passwordInputs.length,
+              visibleIndex: Math.max(0, inputs.indexOf(runtimeElement)),
+              visibleInputCount: inputs.length,
+            };
+          })
+          .catch(() => ({
+            autocomplete: "",
+            identity: "",
+            inputMode: "",
+            labelText: "",
+            passwordIndex: -1,
+            placeholder: "",
+            sectionText: "",
+            siblingText: "",
+            title: "",
+            type: "",
+            maxLength: "",
+            passwordLike: false,
+            visibleIndex: index,
+            visibleInputCount: count,
+            passwordInputCount: 0,
+            wrapperText: "",
+          }));
 
         const rejectHaystack = this.normalizeSearchText(
           [
@@ -10064,15 +13267,17 @@ export class AutomationRuntimeService {
             context.inputMode,
             context.title,
             context.placeholder,
-            context.siblingText
-          ].join(" ")
+            context.siblingText,
+          ].join(" "),
         );
 
         if (rejectHints.some((hint) => rejectHaystack.includes(hint))) {
           continue;
         }
 
-        const normalizedHints = hints.map((hint) => this.normalizeSearchText(hint)).filter(Boolean);
+        const normalizedHints = hints
+          .map((hint) => this.normalizeSearchText(hint))
+          .filter(Boolean);
         const hintsText = normalizedHints.join(" ");
         const sourceScore = (value: string, weight: number) =>
           normalizedHints.some((hint) => value.includes(hint)) ? weight : 0;
@@ -10094,7 +13299,10 @@ export class AutomationRuntimeService {
           }
         }
 
-        if (/conta|account|usuario|username/.test(hintsText) && context.type !== "password") {
+        if (
+          /conta|account|usuario|username/.test(hintsText) &&
+          context.type !== "password"
+        ) {
           const accountStructuralText = this.normalizeSearchText(
             [
               context.labelText,
@@ -10103,10 +13311,12 @@ export class AutomationRuntimeService {
               context.identity,
               context.inputMode,
               context.title,
-              context.placeholder
-            ].join(" ")
+              context.placeholder,
+            ].join(" "),
           );
-          const hasAccountHint = /conta|account|usuario|username/.test(accountStructuralText);
+          const hasAccountHint = /conta|account|usuario|username/.test(
+            accountStructuralText,
+          );
           if (hasAccountHint) {
             score += 46;
           }
@@ -10123,19 +13333,34 @@ export class AutomationRuntimeService {
           const phoneStructuralText = `${context.type} ${context.inputMode} ${context.autocomplete} ${context.identity}`;
           const maxLength = Number.parseInt(context.maxLength || "0", 10);
           const hasPhoneSizedLimit = maxLength >= 8 && maxLength <= 15;
-          if (/tel|numeric|decimal|phone|mobile|cell|celular|telefone/.test(phoneStructuralText)) {
+          if (
+            /tel|numeric|decimal|phone|mobile|cell|celular|telefone/.test(
+              phoneStructuralText,
+            )
+          ) {
             score += 46;
           }
-          if (context.passwordInputCount >= 2 && context.visibleIndex > context.passwordInputCount) {
+          if (
+            context.passwordInputCount >= 2 &&
+            context.visibleIndex > context.passwordInputCount
+          ) {
             score += 18;
           }
           if (hasPhoneSizedLimit) {
             score += 8;
           }
-          if (context.passwordInputCount >= 2 && context.visibleIndex > context.passwordInputCount && hasPhoneSizedLimit) {
+          if (
+            context.passwordInputCount >= 2 &&
+            context.visibleIndex > context.passwordInputCount &&
+            hasPhoneSizedLimit
+          ) {
             score += 30;
           }
-          if (/email|cpf|document|documento|realname|real-name|nome/.test(phoneStructuralText)) {
+          if (
+            /email|cpf|document|documento|realname|real-name|nome/.test(
+              phoneStructuralText,
+            )
+          ) {
             score -= 70;
           }
         }
@@ -10152,19 +13377,25 @@ export class AutomationRuntimeService {
       return undefined;
     }
 
-      throw new Error(`Campo ${fieldName} nao encontrado no popup de cadastro.`);
+    throw new Error(`Campo ${fieldName} nao encontrado no popup de cadastro.`);
   }
 
   private async fastFillRegistrationMainFields(
     runId: string,
     page: Page,
-    fields: Array<{ fieldName: string; locator: Locator; value: string }>
+    fields: Array<{ fieldName: string; locator: Locator; value: string }>,
   ): Promise<boolean> {
     this.ensureRunActive(runId);
     try {
-      await Promise.all(fields.map((field) => this.forceSetFieldValue(field.locator, field.value)));
+      await Promise.all(
+        fields.map((field) =>
+          this.forceSetFieldValue(field.locator, field.value),
+        ),
+      );
       await page.waitForTimeout(25).catch(() => null);
-      const values = await Promise.all(fields.map((field) => this.readFieldValue(field.locator)));
+      const values = await Promise.all(
+        fields.map((field) => this.readFieldValue(field.locator)),
+      );
       return values.every((value, index) => value === fields[index]?.value);
     } catch {
       return false;
@@ -10174,7 +13405,7 @@ export class AutomationRuntimeService {
   private async fastFillRegistrationOptionalFields(
     runId: string,
     page: Page,
-    values: { cpf?: string; phoneNumber?: string; realName?: string }
+    values: { cpf?: string; phoneNumber?: string; realName?: string },
   ): Promise<{ cpf: boolean; phone: boolean; realName: boolean }> {
     this.ensureRunActive(runId);
     return page
@@ -10226,7 +13457,12 @@ export class AutomationRuntimeService {
           innerWidth: number;
           InputEvent?: new (
             type: string,
-            init?: { bubbles?: boolean; cancelable?: boolean; data?: string; inputType?: string }
+            init?: {
+              bubbles?: boolean;
+              cancelable?: boolean;
+              data?: string;
+              inputType?: string;
+            },
           ) => Event;
         };
         const runtimeWindow = globalThis as RuntimeWindow;
@@ -10238,7 +13474,8 @@ export class AutomationRuntimeService {
             .trim()
             .toLowerCase();
         const cssEscape = (value: string) => value.replace(/["\\]/g, "\\$&");
-        const read = (target: RuntimeElement | null | undefined) => normalize(target?.textContent);
+        const read = (target: RuntimeElement | null | undefined) =>
+          normalize(target?.textContent);
         const isVisible = (element: RuntimeElement) => {
           const style = runtimeWindow.getComputedStyle(element);
           const rect = element.getBoundingClientRect();
@@ -10265,10 +13502,13 @@ export class AutomationRuntimeService {
               input.getAttribute?.("class"),
               input.getAttribute?.("placeholder"),
               input.getAttribute?.("aria-label"),
-              input.getAttribute?.("title")
-            ].join(" ")
+              input.getAttribute?.("title"),
+            ].join(" "),
           );
-          return normalize(input.getAttribute?.("type")) === "password" || /new-password|senha|password|confirm/.test(haystack);
+          return (
+            normalize(input.getAttribute?.("type")) === "password" ||
+            /new-password|senha|password|confirm/.test(haystack)
+          );
         };
         const setValue = (target: RuntimeElement, nextValue: string) => {
           target.disabled = false;
@@ -10277,7 +13517,10 @@ export class AutomationRuntimeService {
           target.removeAttribute?.("readonly");
           target.focus?.({ preventScroll: true });
           const valueSetter = (
-            Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target), "value") as
+            Object.getOwnPropertyDescriptor(
+              Object.getPrototypeOf(target),
+              "value",
+            ) as
               | { set?: (this: RuntimeElement, value: string) => void }
               | undefined
           )?.set;
@@ -10288,7 +13531,10 @@ export class AutomationRuntimeService {
           } else {
             target.textContent = nextValue;
           }
-          if (target.getAttribute?.("contenteditable") === "true" || target.getAttribute?.("role") === "textbox") {
+          if (
+            target.getAttribute?.("contenteditable") === "true" ||
+            target.getAttribute?.("role") === "textbox"
+          ) {
             target.textContent = nextValue;
           }
           const inputEvent = runtimeWindow.InputEvent
@@ -10296,49 +13542,81 @@ export class AutomationRuntimeService {
                 bubbles: true,
                 cancelable: true,
                 data: nextValue,
-                inputType: "insertText"
+                inputType: "insertText",
               })
-            : new runtimeWindow.Event("input", { bubbles: true, cancelable: true });
-          target.dispatchEvent?.(new runtimeWindow.Event("beforeinput", { bubbles: true, cancelable: true }));
+            : new runtimeWindow.Event("input", {
+                bubbles: true,
+                cancelable: true,
+              });
+          target.dispatchEvent?.(
+            new runtimeWindow.Event("beforeinput", {
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
           target.dispatchEvent?.(inputEvent);
-          target.dispatchEvent?.(new runtimeWindow.Event("keyup", { bubbles: true }));
-          target.dispatchEvent?.(new runtimeWindow.Event("change", { bubbles: true }));
-          target.dispatchEvent?.(new runtimeWindow.Event("compositionend", { bubbles: true }));
+          target.dispatchEvent?.(
+            new runtimeWindow.Event("keyup", { bubbles: true }),
+          );
+          target.dispatchEvent?.(
+            new runtimeWindow.Event("change", { bubbles: true }),
+          );
+          target.dispatchEvent?.(
+            new runtimeWindow.Event("compositionend", { bubbles: true }),
+          );
         };
-        const allInputs = (Array.from(
-          runtimeWindow.document.querySelectorAll("input,textarea,[contenteditable='true'],[role='textbox']")
-        ) as unknown as RuntimeElement[]).filter(isVisible);
+        const allInputs = (
+          Array.from(
+            runtimeWindow.document.querySelectorAll(
+              "input,textarea,[contenteditable='true'],[role='textbox']",
+            ),
+          ) as unknown as RuntimeElement[]
+        ).filter(isVisible);
         const rootFor = (input: RuntimeElement) =>
           input.closest?.(
-            "form,.ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,.m_sign_in,.sign_in_body,.login_content,.form_box"
+            "form,.ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup,.dialog,.m_sign_in,.sign_in_body,.login_content,.form_box",
           ) ?? runtimeWindow.document.body;
         const contextFor = (input: RuntimeElement) => {
           const id = input.getAttribute?.("id");
           const ariaLabelledBy = input.getAttribute?.("aria-labelledby");
           const labelledByText = ariaLabelledBy
             ?.split(/\s+/)
-            .map((entry: string) => read(runtimeWindow.document.getElementById(entry) as unknown as RuntimeElement | null))
+            .map((entry: string) =>
+              read(
+                runtimeWindow.document.getElementById(
+                  entry,
+                ) as unknown as RuntimeElement | null,
+              ),
+            )
             .join(" ");
           const labelText = [
-            id ? read(runtimeWindow.document.querySelector(`label[for="${cssEscape(id)}"]`) as unknown as RuntimeElement | null) : "",
+            id
+              ? read(
+                  runtimeWindow.document.querySelector(
+                    `label[for="${cssEscape(id)}"]`,
+                  ) as unknown as RuntimeElement | null,
+                )
+              : "",
             read(input.closest?.("label")),
             normalize(input.getAttribute?.("aria-label")),
-            normalize(labelledByText)
+            normalize(labelledByText),
           ].join(" ");
           const wrapper =
             input.closest?.(
-              "label,.ui-input,.van-field,.form-item,.form-control,.input-item,.input_box,.m_input_box,.el-form-item,.field,.form-row"
+              "label,.ui-input,.van-field,.form-item,.form-control,.input-item,.input_box,.m_input_box,.el-form-item,.field,.form-row",
             ) ?? input.parentElement;
           const section = rootFor(input);
           const siblings = [
             input.previousElementSibling,
             input.nextElementSibling,
             wrapper?.previousElementSibling,
-            wrapper?.nextElementSibling
+            wrapper?.nextElementSibling,
           ]
             .map(read)
             .join(" ");
-          const sectionInputs = Array.from(section?.querySelectorAll?.("input") ?? []).filter(isVisible);
+          const sectionInputs = Array.from(
+            section?.querySelectorAll?.("input") ?? [],
+          ).filter(isVisible);
           const passwordInputs = sectionInputs.filter(isPasswordLikeInput);
           return {
             autocomplete: normalize(input.getAttribute?.("autocomplete")),
@@ -10347,8 +13625,8 @@ export class AutomationRuntimeService {
                 input.getAttribute?.("name"),
                 input.getAttribute?.("id"),
                 input.getAttribute?.("data-input-name"),
-                input.getAttribute?.("class")
-              ].join(" ")
+                input.getAttribute?.("class"),
+              ].join(" "),
             ),
             inputMode: normalize(input.getAttribute?.("inputmode")),
             labelText,
@@ -10360,13 +13638,21 @@ export class AutomationRuntimeService {
             siblingText: normalize(siblings),
             title: normalize(input.getAttribute?.("title")),
             type: normalize(input.getAttribute?.("type")),
-            value: typeof input.value === "string" ? input.value : input.textContent ?? "",
+            value:
+              typeof input.value === "string"
+                ? input.value
+                : (input.textContent ?? ""),
             visibleIndex: Math.max(0, sectionInputs.indexOf(input)),
-            wrapperText: normalize(wrapper?.textContent)
+            wrapperText: normalize(wrapper?.textContent),
           };
         };
-        const normalizedHints = (hints: string[]) => hints.map(normalize).filter(Boolean);
-        const sourceScore = (context: ReturnType<typeof contextFor>, hints: string[], weight: number) =>
+        const normalizedHints = (hints: string[]) =>
+          hints.map(normalize).filter(Boolean);
+        const sourceScore = (
+          context: ReturnType<typeof contextFor>,
+          hints: string[],
+          weight: number,
+        ) =>
           hints.some((hint) =>
             [
               context.labelText,
@@ -10377,8 +13663,8 @@ export class AutomationRuntimeService {
               context.title,
               context.placeholder,
               context.siblingText,
-              context.sectionText
-            ].some((source) => source.includes(hint))
+              context.sectionText,
+            ].some((source) => source.includes(hint)),
           )
             ? weight
             : 0;
@@ -10389,7 +13675,7 @@ export class AutomationRuntimeService {
           value: string | undefined,
           hints: string[],
           reject: RegExp,
-          boost: (context: ReturnType<typeof contextFor>) => number
+          boost: (context: ReturnType<typeof contextFor>) => number,
         ) => {
           if (!value) {
             return;
@@ -10409,7 +13695,7 @@ export class AutomationRuntimeService {
                 context.inputMode,
                 context.title,
                 context.placeholder,
-                context.siblingText
+                context.siblingText,
               ].join(" ");
               return !reject.test(rejectHaystack);
             })
@@ -10420,7 +13706,12 @@ export class AutomationRuntimeService {
                 sourceScore(context, hintList, 64) +
                 sourceScore(context, hintList, 44) +
                 boost(context);
-              if (context.type === "hidden" || context.type === "file" || context.type === "checkbox" || context.type === "radio") {
+              if (
+                context.type === "hidden" ||
+                context.type === "file" ||
+                context.type === "checkbox" ||
+                context.type === "radio"
+              ) {
                 score -= 200;
               }
               return { context, input, score };
@@ -10443,27 +13734,59 @@ export class AutomationRuntimeService {
             const maxLength = Number.parseInt(context.maxLength || "0", 10);
             const hasPhoneSizedLimit = maxLength >= 8 && maxLength <= 15;
             return (
-              (/tel|numeric|decimal|phone|mobile|cell|celular|telefone/.test(structural) ? 46 : 0) +
-              (context.passwordInputCount >= 2 && context.visibleIndex > context.passwordInputCount ? 18 : 0) +
+              (/tel|numeric|decimal|phone|mobile|cell|celular|telefone/.test(
+                structural,
+              )
+                ? 46
+                : 0) +
+              (context.passwordInputCount >= 2 &&
+              context.visibleIndex > context.passwordInputCount
+                ? 18
+                : 0) +
               (hasPhoneSizedLimit ? 8 : 0) +
-              (context.passwordInputCount >= 2 && context.visibleIndex > context.passwordInputCount && hasPhoneSizedLimit ? 30 : 0) -
-              (/email|cpf|document|documento|realname|real-name|nome/.test(structural) ? 70 : 0)
+              (context.passwordInputCount >= 2 &&
+              context.visibleIndex > context.passwordInputCount &&
+              hasPhoneSizedLimit
+                ? 30
+                : 0) -
+              (/email|cpf|document|documento|realname|real-name|nome/.test(
+                structural,
+              )
+                ? 70
+                : 0)
             );
-          }
+          },
         );
         chooseAndFill(
           "realName",
           payload.realName,
-          ["Introduza o seu nome real", "nome real", "nome completo", "full name", "real name", "realName"],
+          [
+            "Introduza o seu nome real",
+            "nome real",
+            "nome completo",
+            "full name",
+            "real name",
+            "realName",
+          ],
           /conta|account|usuario|username|apelido|nickname|celular|telefone|phone|cpf|documento/,
-          (context) => (/name|nome|realname|real-name/.test(`${context.identity} ${context.placeholder} ${context.autocomplete}`) ? 42 : 0)
+          (context) =>
+            /name|nome|realname|real-name/.test(
+              `${context.identity} ${context.placeholder} ${context.autocomplete}`,
+            )
+              ? 42
+              : 0,
         );
         chooseAndFill(
           "cpf",
           payload.cpf,
           ["CPF", "documento", "document number", "tax id"],
           /celular|telefone|phone|mobile|nome|name|senha|password/,
-          (context) => (/cpf|document|documento|tax/.test(`${context.identity} ${context.placeholder} ${context.autocomplete}`) ? 48 : 0)
+          (context) =>
+            /cpf|document|documento|tax/.test(
+              `${context.identity} ${context.placeholder} ${context.autocomplete}`,
+            )
+              ? 48
+              : 0,
         );
 
         return filled;
@@ -10471,7 +13794,10 @@ export class AutomationRuntimeService {
       .catch(() => ({ cpf: false, phone: false, realName: false }));
   }
 
-  private async fastAcceptRegistrationTerms(runId: string, page: Page): Promise<boolean> {
+  private async fastAcceptRegistrationTerms(
+    runId: string,
+    page: Page,
+  ): Promise<boolean> {
     this.ensureRunActive(runId);
     return page
       .evaluate(() => {
@@ -10483,8 +13809,14 @@ export class AutomationRuntimeService {
         };
         const runtimeWindow = globalThis as unknown as {
           Event: new (type: string, init?: { bubbles?: boolean }) => Event;
-          document: { querySelectorAll: (selector: string) => Iterable<RuntimeElement> };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string };
+          document: {
+            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
+          };
+          getComputedStyle: (element: RuntimeElement) => {
+            display: string;
+            opacity: string;
+            visibility: string;
+          };
           innerHeight: number;
           innerWidth: number;
         };
@@ -10503,21 +13835,30 @@ export class AutomationRuntimeService {
             rect.top < runtimeWindow.innerHeight
           );
         };
-        const checkbox = Array.from(runtimeWindow.document.querySelectorAll("input[type='checkbox']"))
-          .filter((input) => isVisible(input) && !input.checked)[0];
+        const checkbox = Array.from(
+          runtimeWindow.document.querySelectorAll("input[type='checkbox']"),
+        ).filter((input) => isVisible(input) && !input.checked)[0];
         if (!checkbox) {
           return false;
         }
         checkbox.click?.();
         checkbox.checked = true;
-        checkbox.dispatchEvent?.(new runtimeWindow.Event("input", { bubbles: true }));
-        checkbox.dispatchEvent?.(new runtimeWindow.Event("change", { bubbles: true }));
+        checkbox.dispatchEvent?.(
+          new runtimeWindow.Event("input", { bubbles: true }),
+        );
+        checkbox.dispatchEvent?.(
+          new runtimeWindow.Event("change", { bubbles: true }),
+        );
         return true;
       })
       .catch(() => false);
   }
 
-  private async fastClickControl(runId: string, page: Page, locator: Locator): Promise<void> {
+  private async fastClickControl(
+    runId: string,
+    page: Page,
+    locator: Locator,
+  ): Promise<void> {
     this.ensureRunActive(runId);
     try {
       await this.waitActionable(locator, { budgetMs: 2500, runId });
@@ -10525,7 +13866,7 @@ export class AutomationRuntimeService {
         .evaluate((element) => {
           element.scrollIntoView({
             block: "center",
-            inline: "center"
+            inline: "center",
           });
         })
         .catch(() => null);
@@ -10550,7 +13891,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     locator: Locator,
-    value: string
+    value: string,
   ): Promise<void> {
     this.ensureRunActive(runId);
     await this.focusFieldForTyping(runId, page, locator);
@@ -10568,9 +13909,13 @@ export class AutomationRuntimeService {
 
       let actual = await this.readFieldValue(locator);
       if (value.length > 0 && (actual === null || actual === "")) {
-        await locator.fill(value, { timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS }).catch((error) => {
-          directSetError ??= error;
-        });
+        await locator
+          .fill(value, {
+            timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS,
+          })
+          .catch((error) => {
+            directSetError ??= error;
+          });
         actual = await this.readFieldValue(locator);
       }
       if (value.length > 0 && (actual === null || actual === "")) {
@@ -10581,31 +13926,41 @@ export class AutomationRuntimeService {
         actual = await this.readFieldValue(locator);
       }
       if (value.length > 0 && (actual === null || actual === "")) {
-        const reason = directSetError instanceof Error ? `: ${directSetError.message}` : "";
-        throw new Error(`campo ficou vazio apos fallback de preenchimento${reason}`);
+        const reason =
+          directSetError instanceof Error ? `: ${directSetError.message}` : "";
+        throw new Error(
+          `campo ficou vazio apos fallback de preenchimento${reason}`,
+        );
       }
     });
   }
 
-  private async focusFieldForTyping(runId: string, page: Page, locator: Locator): Promise<void> {
+  private async focusFieldForTyping(
+    runId: string,
+    page: Page,
+    locator: Locator,
+  ): Promise<void> {
     this.ensureRunActive(runId);
     await this.waitActionable(locator, {
       budgetMs: AutomationRuntimeService.ACTIONABLE_BUDGET_MS,
-      runId
+      runId,
     });
     await locator
       .evaluate((element) => {
         type RuntimeElement = {
           focus?: (options?: { preventScroll?: boolean }) => void;
-          scrollIntoView?: (options?: { block?: string; inline?: string }) => void;
+          scrollIntoView?: (options?: {
+            block?: string;
+            inline?: string;
+          }) => void;
         };
         const target = element as unknown as RuntimeElement;
         target.scrollIntoView?.({
           block: "center",
-          inline: "center"
+          inline: "center",
         });
         target.focus?.({
-          preventScroll: false
+          preventScroll: false,
         });
       })
       .catch(() => null);
@@ -10617,7 +13972,9 @@ export class AutomationRuntimeService {
       await page.touchscreen.tap(x, y).catch(() => null);
     }
 
-    await locator.focus({ timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS }).catch(() => null);
+    await locator
+      .focus({ timeout: AutomationRuntimeService.ACTION_PROBE_BUDGET_MS })
+      .catch(() => null);
   }
 
   private async readFieldValue(locator: Locator): Promise<string | null> {
@@ -10628,19 +13985,35 @@ export class AutomationRuntimeService {
 
     return locator
       .evaluate((element) => {
-        const field = element as unknown as { textContent?: string | null; value?: unknown };
-        return typeof field.value === "string" ? field.value : field.textContent ?? null;
+        const field = element as unknown as {
+          textContent?: string | null;
+          value?: unknown;
+        };
+        return typeof field.value === "string"
+          ? field.value
+          : (field.textContent ?? null);
       })
       .catch(() => null);
   }
 
-  private async forceSetFieldValue(locator: Locator, value: string): Promise<void> {
+  private async forceSetFieldValue(
+    locator: Locator,
+    value: string,
+  ): Promise<void> {
     await locator.evaluate((element, nextValue) => {
       type RuntimeWindow = typeof globalThis & {
-        Event: new (type: string, init?: { bubbles?: boolean; cancelable?: boolean }) => Event;
+        Event: new (
+          type: string,
+          init?: { bubbles?: boolean; cancelable?: boolean },
+        ) => Event;
         InputEvent?: new (
           type: string,
-          init?: { bubbles?: boolean; cancelable?: boolean; data?: string; inputType?: string }
+          init?: {
+            bubbles?: boolean;
+            cancelable?: boolean;
+            data?: string;
+            inputType?: string;
+          },
         ) => Event;
       };
       type RuntimeElement = {
@@ -10663,9 +14036,10 @@ export class AutomationRuntimeService {
       target.focus?.({ preventScroll: false });
 
       const valueSetter = (
-        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target), "value") as
-          | { set?: (this: RuntimeElement, value: string) => void }
-          | undefined
+        Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(target),
+          "value",
+        ) as { set?: (this: RuntimeElement, value: string) => void } | undefined
       )?.set;
       if (valueSetter) {
         valueSetter.call(target, nextValue);
@@ -10675,7 +14049,10 @@ export class AutomationRuntimeService {
         target.textContent = nextValue;
       }
 
-      if (target.getAttribute("contenteditable") === "true" || target.getAttribute("role") === "textbox") {
+      if (
+        target.getAttribute("contenteditable") === "true" ||
+        target.getAttribute("role") === "textbox"
+      ) {
         target.textContent = nextValue;
       }
 
@@ -10684,14 +14061,23 @@ export class AutomationRuntimeService {
             bubbles: true,
             cancelable: true,
             data: nextValue,
-            inputType: "insertText"
+            inputType: "insertText",
           })
         : new runtimeWindow.Event("input", { bubbles: true, cancelable: true });
-      target.dispatchEvent(new runtimeWindow.Event("beforeinput", { bubbles: true, cancelable: true }));
+      target.dispatchEvent(
+        new runtimeWindow.Event("beforeinput", {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
       target.dispatchEvent(inputEvent);
       target.dispatchEvent(new runtimeWindow.Event("keyup", { bubbles: true }));
-      target.dispatchEvent(new runtimeWindow.Event("change", { bubbles: true }));
-      target.dispatchEvent(new runtimeWindow.Event("compositionend", { bubbles: true }));
+      target.dispatchEvent(
+        new runtimeWindow.Event("change", { bubbles: true }),
+      );
+      target.dispatchEvent(
+        new runtimeWindow.Event("compositionend", { bubbles: true }),
+      );
     }, value);
   }
 
@@ -10717,9 +14103,13 @@ export class AutomationRuntimeService {
           };
           const runtimeWindow = globalThis as unknown as {
             document: {
-              documentElement: { classList?: { contains: (token: string) => boolean } } | null;
+              documentElement: {
+                classList?: { contains: (token: string) => boolean };
+              } | null;
               getElementById: (id: string) => RuntimeLoaderElement | null;
-              querySelectorAll: (selector: string) => Iterable<RuntimeLoaderElement>;
+              querySelectorAll: (
+                selector: string,
+              ) => Iterable<RuntimeLoaderElement>;
             } | null;
             getComputedStyle: (element: RuntimeLoaderElement) => {
               display: string;
@@ -10731,7 +14121,8 @@ export class AutomationRuntimeService {
           const doc = runtimeWindow.document;
           if (!doc) return false;
           // (3) Barra de troca de rota (NProgress) — sinal autoritativo no <html>.
-          if (doc.documentElement?.classList?.contains("nprogress-busy")) return true;
+          if (doc.documentElement?.classList?.contains("nprogress-busy"))
+            return true;
           const showState = (element: RuntimeLoaderElement | null) => {
             if (!element) return undefined;
             const style = runtimeWindow.getComputedStyle(element);
@@ -10742,14 +14133,17 @@ export class AutomationRuntimeService {
             ) {
               return undefined;
             }
-            return { position: style.position, rect: element.getBoundingClientRect() };
+            return {
+              position: style.position,
+              rect: element.getBoundingClientRect(),
+            };
           };
           const nprogress = showState(doc.getElementById("nprogress"));
           if (nprogress && nprogress.rect.width > 0) return true;
           // (2) Splash de boot — overlay fixo/absoluto cobrindo a tela. O filtro de
           // posicao+tamanho evita confundir com icones/spinners pequenos da UI normal.
           for (const element of doc.querySelectorAll(
-            "#startLodingContent, [class*='global_loading' i], [class*='ui-loading' i]"
+            "#startLodingContent, [class*='global_loading' i], [class*='ui-loading' i]",
           )) {
             const shown = showState(element);
             if (!shown) continue;
@@ -10774,7 +14168,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     timeoutMs: number,
-    settleMs: number
+    settleMs: number,
   ): Promise<boolean> {
     const startedAt = Date.now();
     let clearSince: number | undefined;
@@ -10804,34 +14198,55 @@ export class AutomationRuntimeService {
   private async waitForPlatformLoadingToClear(
     runId: string,
     page: Page,
-    options?: { timeoutMs?: number; settleMs?: number; retryWithReload?: boolean }
+    options?: {
+      timeoutMs?: number;
+      settleMs?: number;
+      retryWithReload?: boolean;
+    },
   ): Promise<boolean> {
     const settleMs = options?.settleMs ?? 250;
     const retryWithReload = options?.retryWithReload ?? false;
     const timeoutMs = options?.timeoutMs ?? (retryWithReload ? 15000 : 25000);
 
-    const cleared = await this.pollPlatformLoadingClear(runId, page, timeoutMs, settleMs);
+    const cleared = await this.pollPlatformLoadingClear(
+      runId,
+      page,
+      timeoutMs,
+      settleMs,
+    );
     if (cleared || !retryWithReload) return cleared;
 
     // Travou no loading. Um reload costuma destravar a SPA; tentamos uma vez com budget curto.
     this.log(
       runId,
       "warning",
-      "Carregamento da plataforma travou; atualizando a pagina para tentar destravar."
+      "Carregamento da plataforma travou; atualizando a pagina para tentar destravar.",
     );
-    await page.reload({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
+    await page
+      .reload({ waitUntil: "domcontentloaded", timeout: 20000 })
+      .catch(() => null);
     return this.pollPlatformLoadingClear(runId, page, 12000, settleMs);
   }
 
   // Pagina utilizavel da plataforma (nao auxiliar/badge) e com o loading interno ja
   // resolvido num budget curto, SEM reload. Mesmos criterios de "usavel" que
   // resolveDepositFlowPage usa para reaproveitar a pagina atual.
-  private async isPlatformPageReady(runId: string, page: Page): Promise<boolean> {
+  private async isPlatformPageReady(
+    runId: string,
+    page: Page,
+  ): Promise<boolean> {
     if (page.isClosed()) {
       return false;
     }
-    const state = await this.readAutomationPageState(page).catch(() => undefined);
-    if (!state || state.auxiliary || state.viewportWidth <= 0 || state.viewportHeight <= 0) {
+    const state = await this.readAutomationPageState(page).catch(
+      () => undefined,
+    );
+    if (
+      !state ||
+      state.auxiliary ||
+      state.viewportWidth <= 0 ||
+      state.viewportHeight <= 0
+    ) {
       return false;
     }
     if (isDetachedDepositRouteState(state)) {
@@ -10850,30 +14265,41 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     profile: ProfileSummary,
-    startUrl: string
+    startUrl: string,
   ): Promise<void> {
-    const state = await this.readAutomationPageState(page).catch(() => undefined);
+    const state = await this.readAutomationPageState(page).catch(
+      () => undefined,
+    );
     if (state && isDetachedDepositRouteState(state)) {
       this.log(
         runId,
         "info",
-        `[${profile.name}] Rota de deposito solta detectada; voltando para a entrada da plataforma.`
+        `[${profile.name}] Rota de deposito solta detectada; voltando para a entrada da plataforma.`,
       );
     }
     if (await this.isPlatformPageReady(runId, page)) {
-      this.log(runId, "info", `[${profile.name}] Pagina ja carregada na plataforma; reaproveitando sem recarregar.`);
+      this.log(
+        runId,
+        "info",
+        `[${profile.name}] Pagina ja carregada na plataforma; reaproveitando sem recarregar.`,
+      );
       return;
     }
-    await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
-    await this.waitForPlatformLoadingToClear(runId, page, { retryWithReload: true });
+    await page
+      .goto(startUrl, { waitUntil: "domcontentloaded", timeout: 20000 })
+      .catch(() => null);
+    await this.waitForPlatformLoadingToClear(runId, page, {
+      retryWithReload: true,
+    });
   }
 
   // tempo real de prontidao do ponto que manda, nao um timeout fixo. Lanca se estourar.
   private async waitActionable(
     locator: Locator,
-    opts?: { runId?: string; budgetMs?: number }
+    opts?: { runId?: string; budgetMs?: number },
   ): Promise<void> {
-    const budgetMs = opts?.budgetMs ?? AutomationRuntimeService.ACTIONABLE_BUDGET_MS;
+    const budgetMs =
+      opts?.budgetMs ?? AutomationRuntimeService.ACTIONABLE_BUDGET_MS;
     if (opts?.runId) {
       this.ensureRunActive(opts.runId);
     }
@@ -10888,7 +14314,7 @@ export class AutomationRuntimeService {
         return;
       }
       await new Promise((resolve) =>
-        setTimeout(resolve, Math.min(150, Math.max(0, deadline - Date.now())))
+        setTimeout(resolve, Math.min(150, Math.max(0, deadline - Date.now()))),
       );
     }
   }
@@ -10900,7 +14326,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     action: (attempt: number) => Promise<T>,
-    attempts: number = AutomationRuntimeService.ACTION_ATTEMPTS
+    attempts: number = AutomationRuntimeService.ACTION_ATTEMPTS,
   ): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -10910,7 +14336,8 @@ export class AutomationRuntimeService {
       } catch (error) {
         lastError = error;
         if (attempt < attempts - 1) {
-          const backoff = AutomationRuntimeService.ACTION_BACKOFF_BASE_MS * 2 ** attempt;
+          const backoff =
+            AutomationRuntimeService.ACTION_BACKOFF_BASE_MS * 2 ** attempt;
           await this.waitForRunDelay(runId, page, backoff);
         }
       }
@@ -10918,10 +14345,16 @@ export class AutomationRuntimeService {
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
-  private async humanMouseClick(runId: string, page: Page, locator: Locator): Promise<void> {
+  private async humanMouseClick(
+    runId: string,
+    page: Page,
+    locator: Locator,
+  ): Promise<void> {
     this.ensureRunActive(runId);
     try {
-      await this.withActionRetry(runId, page, () => this.performHumanClick(runId, page, locator));
+      await this.withActionRetry(runId, page, () =>
+        this.performHumanClick(runId, page, locator),
+      );
     } catch {
       // Esgotou as tentativas mesmo apos esperar actionability real: ultimo recurso e
       // ativar o elemento diretamente (JS click), preservando o comportamento antigo de
@@ -10931,14 +14364,20 @@ export class AutomationRuntimeService {
     }
   }
 
-  private async performHumanClick(runId: string, page: Page, locator: Locator): Promise<void> {
+  private async performHumanClick(
+    runId: string,
+    page: Page,
+    locator: Locator,
+  ): Promise<void> {
     await this.waitActionable(locator, { runId });
-    await locator.evaluate((element) => {
-      element.scrollIntoView({
-        block: "center",
-        inline: "center"
-      });
-    }).catch(() => null);
+    await locator
+      .evaluate((element) => {
+        element.scrollIntoView({
+          block: "center",
+          inline: "center",
+        });
+      })
+      .catch(() => null);
     await this.humanPause(runId, page, 10, 30);
 
     const preferTouchTap = await this.prefersTouchTap(page);
@@ -10950,7 +14389,9 @@ export class AutomationRuntimeService {
       }
       // Sem caixa mesmo apos actionability: no desktop, clica pelo proprio locator
       // (faz scroll e espera acionavel ate o budget). Se falhar, o retry/fallback assume.
-      await locator.click({ timeout: AutomationRuntimeService.ACTIONABLE_BUDGET_MS });
+      await locator.click({
+        timeout: AutomationRuntimeService.ACTIONABLE_BUDGET_MS,
+      });
       return;
     }
 
@@ -10964,7 +14405,7 @@ export class AutomationRuntimeService {
         };
         return {
           height: runtimeWindow.innerHeight,
-          width: runtimeWindow.innerWidth
+          width: runtimeWindow.innerWidth,
         };
       })
       .catch(() => undefined);
@@ -10979,7 +14420,9 @@ export class AutomationRuntimeService {
       }
       // Fora da viewport: no desktop, clica pelo locator (Playwright faz scroll + espera acionavel).
       // Sem force: queremos a checagem real de actionability, nao um bypass. Falha -> retry.
-      await locator.click({ timeout: AutomationRuntimeService.ACTIONABLE_BUDGET_MS });
+      await locator.click({
+        timeout: AutomationRuntimeService.ACTIONABLE_BUDGET_MS,
+      });
       return;
     }
 
@@ -10988,12 +14431,16 @@ export class AutomationRuntimeService {
       return;
     }
 
-    await page.mouse.move(x + this.randomFloat(-4, 4), y + this.randomFloat(-3, 3), {
-      steps: this.randomInt(2, 4)
-    });
+    await page.mouse.move(
+      x + this.randomFloat(-4, 4),
+      y + this.randomFloat(-3, 3),
+      {
+        steps: this.randomInt(2, 4),
+      },
+    );
     await this.humanPause(runId, page, 8, 20);
     await page.mouse.click(x, y, {
-      delay: this.randomInt(18, 45)
+      delay: this.randomInt(18, 45),
     });
   }
 
@@ -11016,27 +14463,39 @@ export class AutomationRuntimeService {
       type RuntimeElement = {
         click?: () => void;
         focus?: (options?: { preventScroll?: boolean }) => void;
-        scrollIntoView?: (options?: { block?: string; inline?: string }) => void;
+        scrollIntoView?: (options?: {
+          block?: string;
+          inline?: string;
+        }) => void;
       };
       const target = element as unknown as RuntimeElement;
       target.scrollIntoView?.({
         block: "center",
-        inline: "center"
+        inline: "center",
       });
       target.focus?.({
-        preventScroll: false
+        preventScroll: false,
       });
       target.click?.();
     });
   }
 
-  private async humanPause(runId: string, page: Page, minMs: number, maxMs: number): Promise<void> {
+  private async humanPause(
+    runId: string,
+    page: Page,
+    minMs: number,
+    maxMs: number,
+  ): Promise<void> {
     this.ensureRunActive(runId);
     await this.waitForRunDelay(runId, page, this.randomInt(minMs, maxMs));
     this.ensureRunActive(runId);
   }
 
-  private async waitForRunDelay(runId: string, page: Page, ms: number): Promise<void> {
+  private async waitForRunDelay(
+    runId: string,
+    page: Page,
+    ms: number,
+  ): Promise<void> {
     const deadline = Date.now() + Math.max(0, ms);
     while (Date.now() < deadline) {
       this.ensureRunActive(runId);
@@ -11051,17 +14510,78 @@ export class AutomationRuntimeService {
 
   private generateRegistrationPhoneNumber(): string {
     const areaCodes = [
-      "11", "12", "13", "14", "15", "16", "17", "18", "19",
-      "21", "22", "24", "27", "28", "31", "32", "33", "34",
-      "35", "37", "38", "41", "42", "43", "44", "45", "46",
-      "47", "48", "49", "51", "53", "54", "55", "61", "62",
-      "63", "64", "65", "66", "67", "68", "69", "71", "73",
-      "74", "75", "77", "79", "81", "82", "83", "84", "85",
-      "86", "87", "88", "89", "91", "92", "93", "94", "95",
-      "96", "97", "98", "99"
+      "11",
+      "12",
+      "13",
+      "14",
+      "15",
+      "16",
+      "17",
+      "18",
+      "19",
+      "21",
+      "22",
+      "24",
+      "27",
+      "28",
+      "31",
+      "32",
+      "33",
+      "34",
+      "35",
+      "37",
+      "38",
+      "41",
+      "42",
+      "43",
+      "44",
+      "45",
+      "46",
+      "47",
+      "48",
+      "49",
+      "51",
+      "53",
+      "54",
+      "55",
+      "61",
+      "62",
+      "63",
+      "64",
+      "65",
+      "66",
+      "67",
+      "68",
+      "69",
+      "71",
+      "73",
+      "74",
+      "75",
+      "77",
+      "79",
+      "81",
+      "82",
+      "83",
+      "84",
+      "85",
+      "86",
+      "87",
+      "88",
+      "89",
+      "91",
+      "92",
+      "93",
+      "94",
+      "95",
+      "96",
+      "97",
+      "98",
+      "99",
     ];
     const areaCode = areaCodes[this.randomInt(0, areaCodes.length - 1)] ?? "11";
-    const subscriberDigits = Array.from({ length: 8 }, () => String(this.randomInt(0, 9))).join("");
+    const subscriberDigits = Array.from({ length: 8 }, () =>
+      String(this.randomInt(0, 9)),
+    ).join("");
     return `${areaCode}9${subscriberDigits}`;
   }
 
@@ -11087,7 +14607,7 @@ export class AutomationRuntimeService {
       "getByRole",
       "getByTestId",
       "getByText",
-      "getByTitle"
+      "getByTitle",
     ]);
 
     return new Proxy(page, {
@@ -11101,7 +14621,17 @@ export class AutomationRuntimeService {
           return target;
         }
 
-        if (["goto", "click", "dblclick", "fill", "type", "selectOption", "press"].includes(method)) {
+        if (
+          [
+            "goto",
+            "click",
+            "dblclick",
+            "fill",
+            "type",
+            "selectOption",
+            "press",
+          ].includes(method)
+        ) {
           return async (...args: unknown[]) => {
             this.ensureRunActive(runId);
             return this.callMethod(target, method, args);
@@ -11111,17 +14641,25 @@ export class AutomationRuntimeService {
         if (locatorFactories.has(method)) {
           return (...args: unknown[]) => {
             const locator = this.callMethod<Locator>(target, method, args);
-            return this.createLoggedLocator(runId, locator, this.describeLocatorFactory(method, args));
+            return this.createLoggedLocator(
+              runId,
+              locator,
+              this.describeLocatorFactory(method, args),
+            );
           };
         }
 
         const value = Reflect.get(target, prop, receiver);
         return typeof value === "function" ? value.bind(target) : value;
-      }
+      },
     }) as Page;
   }
 
-  private createLoggedLocator(runId: string, locator: Locator, description: string): Locator {
+  private createLoggedLocator(
+    runId: string,
+    locator: Locator,
+    description: string,
+  ): Locator {
     const locatorFactories = new Set([
       "filter",
       "first",
@@ -11134,14 +14672,26 @@ export class AutomationRuntimeService {
       "getByRole",
       "getByTestId",
       "getByText",
-      "getByTitle"
+      "getByTitle",
     ]);
 
     return new Proxy(locator, {
       get: (target, prop, receiver) => {
         const method = String(prop);
 
-        if (["click", "dblclick", "fill", "type", "check", "uncheck", "setChecked", "selectOption", "press"].includes(method)) {
+        if (
+          [
+            "click",
+            "dblclick",
+            "fill",
+            "type",
+            "check",
+            "uncheck",
+            "setChecked",
+            "selectOption",
+            "press",
+          ].includes(method)
+        ) {
           return async (...args: unknown[]) => {
             this.ensureRunActive(runId);
             return this.callMethod(target, method, args);
@@ -11152,18 +14702,28 @@ export class AutomationRuntimeService {
           return (...args: unknown[]) => {
             const nextLocator = this.callMethod<Locator>(target, method, args);
             const nextDescription =
-              method === "first" || method === "last" ? `${description} (${method})` : this.describeLocatorFactory(method, args);
-            return this.createLoggedLocator(runId, nextLocator, nextDescription);
+              method === "first" || method === "last"
+                ? `${description} (${method})`
+                : this.describeLocatorFactory(method, args);
+            return this.createLoggedLocator(
+              runId,
+              nextLocator,
+              nextDescription,
+            );
           };
         }
 
         const value = Reflect.get(target, prop, receiver);
         return typeof value === "function" ? value.bind(target) : value;
-      }
+      },
     }) as Locator;
   }
 
-  private callMethod<T = unknown>(target: unknown, method: string, args: unknown[]): T {
+  private callMethod<T = unknown>(
+    target: unknown,
+    method: string,
+    args: unknown[],
+  ): T {
     const value = (target as Record<string, unknown>)[method];
     if (typeof value !== "function") {
       throw new Error(`A ação ${method} não está disponível.`);
@@ -11175,7 +14735,9 @@ export class AutomationRuntimeService {
     if (method === "getByRole") {
       const role = this.describeAutomationTarget(args[0]);
       const options = args[1] as { name?: unknown } | undefined;
-      return options?.name ? `${role} "${this.describeAutomationTarget(options.name)}"` : role;
+      return options?.name
+        ? `${role} "${this.describeAutomationTarget(options.name)}"`
+        : role;
     }
 
     if (method.startsWith("getBy")) {
@@ -11217,7 +14779,7 @@ export class AutomationRuntimeService {
     const entry = {
       timestamp: new Date().toISOString(),
       level,
-      message
+      message,
     };
     this.database.appendRunLog(runId, entry);
     // Nao enviamos o run completo aqui: o renderer consome logs via snapshot, e
@@ -11226,8 +14788,8 @@ export class AutomationRuntimeService {
       type: "automation-log",
       payload: {
         runId,
-        entry
-      }
+        entry,
+      },
     });
   }
 }
