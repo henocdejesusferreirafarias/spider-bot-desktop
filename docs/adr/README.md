@@ -14,3 +14,4 @@ Convenção:
 | # | Título | Status |
 |---|--------|--------|
 | [0001](0001-kill-escopado-de-processo-do-navegador.md) | Kill escopado por `user-data-dir` ao invés de `taskkill /IM` global | Aceito |
+| [0002](0002-remover-deposito-por-navegacao-morto.md) | Depósito do bot é sempre por injeção de estado; remoção do fluxo por navegação | Aceito |
