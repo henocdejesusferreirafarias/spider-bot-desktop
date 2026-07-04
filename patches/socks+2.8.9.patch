@@ -1,0 +1,40 @@
+diff --git a/node_modules/socks/build/client/socksclient.js b/node_modules/socks/build/client/socksclient.js
+index 09b1f55..8d97655 100644
+--- a/node_modules/socks/build/client/socksclient.js
++++ b/node_modules/socks/build/client/socksclient.js
+@@ -257,9 +257,34 @@ class SocksClient extends events_1.EventEmitter {
+         // Listen for established event so we can re-emit any excess data received during handshakes.
+         this.prependOnceListener('established', (info) => {
+             setImmediate(() => {
++                // PATCH (spider-bot): a socket pode ter sido destruida/liberada antes
++                // deste setImmediate (ex.: proxy-chain encaminhando trafego sobre SOCKS5).
++                if (info.socket.destroyed) {
++                    return;
++                }
+                 if (this.receiveBuffer.length > 0) {
+                     const excessData = this.receiveBuffer.get(this.receiveBuffer.length);
+-                    info.socket.emit('data', excessData);
++                    // PATCH (spider-bot): o emit('data') sincrono e a forma confiavel de
++                    // entregar os bytes excedentes a um consumidor que ja esta lendo o socket
++                    // (ex.: o tunnel CONNECT/HTTPS do proxy-chain, que faz .pipe()). Trocar
++                    // por unshift() quebrava esse tunnel (entrega fora de ordem -> TLS falha ->
++                    // ERR_CONNECTION_CLOSED), porque o pipe ja esta em flowing mode aqui.
++                    //
++                    // O unico caso em que o emit estoura e o caminho de forward HTTP sobre
++                    // SOCKS5: o cliente HTTP do Node ja desanexou o parser do socket antes
++                    // deste setImmediate, e a entrega sincrona dispara assert ->
++                    // ERR_INTERNAL_ASSERTION (que, sem tratamento, derruba o processo inteiro).
++                    // Esses bytes pertencem a uma requisicao ja encerrada/abortada, entao
++                    // descarta-los nesse caso e o comportamento correto. Capturamos APENAS
++                    // essa assercao; qualquer outro erro continua propagando.
++                    try {
++                        info.socket.emit('data', excessData);
++                    }
++                    catch (err) {
++                        if (!err || err.code !== 'ERR_INTERNAL_ASSERTION') {
++                            throw err;
++                        }
++                    }
+                 }
+                 info.socket.resume();
+             });

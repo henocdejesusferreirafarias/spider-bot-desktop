@@ -1,0 +1,5 @@
+/target
+# Artefatos gerados pelo napi build (commitados apenas no pipeline de release):
+index.js
+index.d.ts
+*.node

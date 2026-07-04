@@ -1,0 +1,17 @@
+node_modules/
+dist-electron/
+dist-renderer/
+release/
+output/
+logs/
+.vite/
+.cache/
+coverage/
+*.log
+npm-debug.log*
+*.local
+.env
+.env.*
+!.env.example
+.gh-token
+.mcp.json

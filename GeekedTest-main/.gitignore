@@ -1,0 +1,14 @@
+.idea
+*.pyc
+*.har
+*.pt
+
+table
+
+rev.js
+rev2.js
+deobfuscated.js
+/reverse/gcaptcha4.js
+raw.js
+gcaptcha4_js.txt
+gcaptcha4_raw.js
