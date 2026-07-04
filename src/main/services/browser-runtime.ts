@@ -28,6 +28,7 @@ import {
   type Route
 } from "patchright";
 import { buildProxyUsername } from "./proxy-routing.js";
+import { forceKillProfileBrowser } from "./browser-process-kill.js";
 import { ProxyChainService, type ProxyTunnelFailure } from "./proxy-chain.js";
 import { resolveRuntimeWindowTargetsStrict } from "./runtime-window-selection.js";
 import { selectMobileDevice, type DeviceProfile } from "./device-catalog.js";
@@ -237,6 +238,9 @@ const buildFingerprintConsistencyConfig = (
 interface RuntimeHandle {
   profileId: string;
   context: BrowserContext;
+  // user-data-dir deste perfil (profile.storagePath). Unico por perfil; usado para
+  // escopar o kill de emergencia ao processo-arvore certo (ver browser-process-kill).
+  storagePath: string;
   primaryPage: Page;
   pageOrder: Page[];
   slotIndex: number;
@@ -1345,6 +1349,7 @@ export class BrowserRuntimeService {
     this.handles.set(profile.id, {
       profileId: profile.id,
       context,
+      storagePath: profile.storagePath,
       primaryPage,
       pageOrder: [primaryPage],
       slotIndex: placement.slotIndex,
@@ -1410,12 +1415,12 @@ export class BrowserRuntimeService {
       );
     } catch {}
 
-    // Timeout de 3 segundos para forçar encerramento se context.close() travar
+    // Timeout de 3 segundos para forçar encerramento se context.close() travar.
+    // O kill é escopado ao user-data-dir DESTE perfil — nunca aos demais.
     const closeWithTimeout = async () => {
       return new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
-          // Força encerramento usando taskkill no Windows
-          this.forceKillBrowserProcesses().catch(() => null);
+          forceKillProfileBrowser(handle.storagePath).catch(() => null);
           resolve();
         }, 3000);
 
@@ -1424,7 +1429,7 @@ export class BrowserRuntimeService {
           resolve();
         }).catch(() => {
           clearTimeout(timeout);
-          this.forceKillBrowserProcesses().catch(() => null);
+          forceKillProfileBrowser(handle.storagePath).catch(() => null);
           resolve();
         });
       });
@@ -1435,13 +1440,6 @@ export class BrowserRuntimeService {
     this.disableMirrorForUnavailableTargets("profile-stopped");
     this.latestAccountInfoFields.delete(profileId);
     this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
-  }
-
-  private async forceKillBrowserProcesses(): Promise<void> {
-    if (process.platform === "win32") {
-      await execFileAsync("taskkill", ["/F", "/IM", "chromium.exe", "/T"]).catch(() => null);
-      await execFileAsync("taskkill", ["/F", "/IM", "chrome.exe", "/T"]).catch(() => null);
-    }
   }
 
   async restartProfile(profile: ProfileSummary, settings: AppSettings): Promise<void> {
@@ -1866,10 +1864,11 @@ export class BrowserRuntimeService {
         );
       } catch {}
 
-      // Timeout de 3 segundos para forçar encerramento se necessário
+      // Timeout de 3 segundos para forçar encerramento se necessário. Kill
+      // escopado ao user-data-dir deste perfil (nunca aos demais / ao Chrome do usuário).
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
-          this.forceKillBrowserProcesses().catch(() => null);
+          forceKillProfileBrowser(handle.storagePath).catch(() => null);
           resolve();
         }, 3000);
 
@@ -1878,7 +1877,7 @@ export class BrowserRuntimeService {
           resolve();
         }).catch(() => {
           clearTimeout(timeout);
-          this.forceKillBrowserProcesses().catch(() => null);
+          forceKillProfileBrowser(handle.storagePath).catch(() => null);
           resolve();
         });
       });
