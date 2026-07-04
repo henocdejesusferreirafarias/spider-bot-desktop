@@ -1,4 +1,4 @@
-import type { Frame, Locator, Page } from "patchright";
+import type { Locator, Page } from "patchright";
 import { ACCOUNT_REGISTRATION_KIND } from "../../shared/contracts.js";
 import type {
   ActivityLevel,
@@ -46,8 +46,30 @@ import type { PlatformDescriptor, SpaHandle } from "./spa-navigation.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
+import {
+  PATCHRIGHT_MAIN_WORLD,
+  resolveContentFrame,
+  type BrowserRuntimeElement,
+  type BrowserRuntimeInputElement,
+  type BrowserRuntimeRect,
+  type BrowserRuntimeWindow
+} from "./automation-dom.js";
+import {
+  hasActiveSession,
+  isLoginFormVisible,
+  detectLoginErrorMessage,
+  detectRegistrationErrorMessage,
+  hasWithdrawalPasswordSetupSurface,
+  hasWithdrawalPasswordRequiredCallToAction,
+  hasWithdrawalAccountSurface,
+  hasWithdrawalRequestSurface,
+  hasExistingWithdrawalPasswordModal,
+  hasVisibleNumberKeyboard,
+  hasDepositSurface,
+  detectRegistrationUiFamily,
+  isDetachedDepositRouteState
+} from "./screen-detection.js";
 
-const PATCHRIGHT_MAIN_WORLD = false;
 const GEETEST_AUTO_SOLVE_ATTEMPTS = 5;
 
 export function isPlausibleQrImageDimensions(width: number, height: number): boolean {
@@ -111,58 +133,6 @@ interface ManualCaptchaOptions {
   solvedTimeoutMs?: number;
 }
 
-type BrowserRuntimeRect = {
-  bottom: number;
-  height: number;
-  left: number;
-  right: number;
-  top: number;
-  width: number;
-};
-
-type BrowserRuntimeElement = {
-  className?: string;
-  click?: () => void;
-  closest?: (selector: string) => BrowserRuntimeElement | null;
-  compareDocumentPosition?: (other: BrowserRuntimeElement) => number;
-  disabled?: boolean;
-  dispatchEvent?: (event: unknown) => boolean;
-  getAttribute?: (name: string) => string | null;
-  getBoundingClientRect: () => BrowserRuntimeRect;
-  id?: string;
-  innerText?: string;
-  name?: string;
-  placeholder?: string;
-  querySelector?: (selector: string) => BrowserRuntimeElement | null;
-  querySelectorAll?: (selector: string) => Iterable<BrowserRuntimeElement>;
-  readOnly?: boolean;
-  removeAttribute?: (name: string) => void;
-  setAttribute?: (name: string, value: string) => void;
-  textContent?: string | null;
-  type?: string;
-  value?: string;
-};
-
-type BrowserRuntimeInputElement = BrowserRuntimeElement & {
-  value: string;
-};
-
-type BrowserRuntimeWindow = {
-  Event?: new (type: string, init?: { bubbles?: boolean }) => unknown;
-  HTMLInputElement?: { prototype: object };
-  document: {
-    body?: BrowserRuntimeElement;
-    querySelectorAll: (selector: string) => Iterable<BrowserRuntimeElement>;
-  };
-  getComputedStyle: (element: BrowserRuntimeElement) => {
-    display: string;
-    opacity?: string;
-    visibility: string;
-    zIndex?: string;
-  };
-  innerHeight: number;
-  innerWidth: number;
-};
 
 interface GeetestBridgeResult {
   resolved: boolean;
@@ -1407,7 +1377,7 @@ export class AutomationRuntimeService {
     // pesado que aparecia ao iniciar a automacao mesmo com a conta ja logada (recem
     // usada em registro/deposito). hasActiveSession e a mesma checagem autoritativa
     // usada logo adiante, entao pula com seguranca.
-    if (await this.hasActiveSession(page).catch(() => false)) {
+    if (await hasActiveSession(page).catch(() => false)) {
       return;
     }
 
@@ -1417,7 +1387,7 @@ export class AutomationRuntimeService {
     await this.normalizeRegistrationEntryPage(runId, loggedPage, profile.name).catch(() => undefined);
     await loggedPage.waitForTimeout(400).catch(() => undefined);
 
-    if (await this.hasActiveSession(loggedPage)) {
+    if (await hasActiveSession(loggedPage)) {
       return;
     }
 
@@ -1425,7 +1395,7 @@ export class AutomationRuntimeService {
 
     await this.dismissInitialPopupsBeforeRegistration(runId, loggedPage, profile.name);
 
-    if (await this.hasActiveSession(loggedPage)) {
+    if (await hasActiveSession(loggedPage)) {
       return;
     }
 
@@ -1486,7 +1456,7 @@ export class AutomationRuntimeService {
       if (handledCaptcha) {
         const retrySucceeded = await this.waitForLoginSuccess(loggedPage, 15000);
         if (!retrySucceeded) {
-          const errorMsg = await this.detectLoginErrorMessage(loggedPage);
+          const errorMsg = await detectLoginErrorMessage(loggedPage);
           await this.dismissPlatformErrorDialog(loggedPage).catch(() => undefined);
           throw new Error(errorMsg || "login nao confirmou apos resolver captcha");
         }
@@ -1496,249 +1466,12 @@ export class AutomationRuntimeService {
     }
 
     if (!loginSucceeded) {
-      const errorMsg = await this.detectLoginErrorMessage(loggedPage);
+      const errorMsg = await detectLoginErrorMessage(loggedPage);
       await this.dismissPlatformErrorDialog(loggedPage).catch(() => undefined);
       throw new Error(errorMsg || "login nao confirmou apos o envio");
     }
 
     this.log(runId, "success", `[${profile.name}] Login automatico concluido.`);
-  }
-
-  private async hasActiveSession(page: Page): Promise<boolean> {
-    const primary = this.resolveContentFrame(page);
-    const candidates: Array<{ target: Page | Frame; allowWeakNoEntry: boolean }> = [
-      { target: primary, allowWeakNoEntry: true }
-    ];
-
-    for (const frame of page.frames()) {
-      if (frame === page.mainFrame() || (frame as unknown) === primary) {
-        continue;
-      }
-      candidates.push({ target: frame, allowWeakNoEntry: false });
-    }
-
-    if ((primary as unknown) !== page) {
-      candidates.push({ target: page, allowWeakNoEntry: false });
-    }
-
-    const states = await Promise.all(
-      candidates.map(({ target, allowWeakNoEntry }) =>
-        this.detectActiveSessionInFrame(target, allowWeakNoEntry)
-      )
-    );
-    return states.includes("active");
-  }
-
-  private async detectActiveSessionInFrame(
-    target: Page | Frame,
-    allowWeakNoEntry: boolean
-  ): Promise<"active" | "anonymous" | "unknown"> {
-    return target
-      .evaluate((allowWeak) => {
-        type RuntimeElement = {
-          className?: string;
-          getAttribute?: (name: string) => string | null;
-          getBoundingClientRect: () => {
-            bottom: number; height: number; left: number; right: number; top: number; width: number;
-          };
-          id?: string;
-          innerText?: string;
-          tagName?: string;
-          textContent?: string | null;
-          querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: {
-            body?: { innerText: string };
-            querySelectorAll: (selector: string) => Iterable<RuntimeElement>;
-          };
-          getComputedStyle: (element: RuntimeElement) => { display: string; opacity: string; visibility: string };
-          innerHeight: number;
-          innerWidth: number;
-          location: { pathname: string; search: string; hash: string };
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[̀-ͯ]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const attr = (el: RuntimeElement, name: string) => {
-          try {
-            return el.getAttribute?.(name) || "";
-          } catch {
-            return "";
-          }
-        };
-        const readAttrs = (el: RuntimeElement) =>
-          normalize([
-            el.id || "",
-            typeof el.className === "string" ? el.className : "",
-            attr(el, "id"),
-            attr(el, "class"),
-            attr(el, "aria-label"),
-            attr(el, "title"),
-            attr(el, "role"),
-            attr(el, "href"),
-            attr(el, "name"),
-            attr(el, "placeholder"),
-            attr(el, "data-testid"),
-            attr(el, "data-test")
-          ].join(" "));
-        const readSemantic = (el: RuntimeElement) =>
-          normalize([
-            el.textContent || el.innerText || "",
-            attr(el, "aria-label"),
-            attr(el, "title"),
-            attr(el, "role"),
-            attr(el, "href"),
-            attr(el, "name"),
-            attr(el, "placeholder"),
-            attr(el, "data-testid"),
-            attr(el, "data-test")
-          ].join(" "));
-        const isVisible = (el: RuntimeElement) => {
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 18 || rect.height < 8 || rect.bottom <= 0 || rect.right <= 0) return false;
-          if (rect.top >= runtimeWindow.innerHeight || rect.left >= runtimeWindow.innerWidth) return false;
-          const style = runtimeWindow.getComputedStyle(el);
-          return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") > 0.01;
-        };
-        const injectedOverlaySelector =
-          "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
-        let rawBodyText = runtimeWindow.document.body?.innerText || "";
-        for (const overlay of Array.from(runtimeWindow.document.querySelectorAll(injectedOverlaySelector))) {
-          const overlayText = overlay.textContent || "";
-          if (overlayText) {
-            rawBodyText = rawBodyText.split(overlayText).join(" ");
-          }
-        }
-        const bodyText = normalize(rawBodyText);
-        const isLoadingOnly = /carregando|loading|aguarde|please wait|skeleton/.test(bodyText) && bodyText.length < 80;
-        const path = normalize(
-          `${runtimeWindow.location.pathname} ${runtimeWindow.location.search} ${runtimeWindow.location.hash}`
-        );
-        const hasLoginDialog = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            ".ui-overlay .ui-popup,.ui-overlay .ui-dialog,[class*='login' i][class*='dialog' i],[class*='login' i][class*='popup' i]"
-          )
-        ).some((el) => {
-          if (!isVisible(el)) return false;
-          const inputs = Array.from(el.querySelectorAll?.("input") ?? []);
-          const hasPassword = inputs.some((i) => (i.getAttribute?.("type") || "").toLowerCase() === "password");
-          if (!hasPassword) return false;
-          const text = normalize(el.textContent);
-          return /login|entrar|senha|password|iniciar sess/.test(text);
-        });
-        if (hasLoginDialog) return "anonymous";
-        const loginEntryKeywords = /\blogin\b|\bentrar\b|\biniciar sess|\blog in\b|\bsign in\b/;
-        const registerEntryKeywords = /\bregistro\b|\bregistrar\b|\bcadastro\b|\bcadastrar\b|\bregister\b|\bsign up\b|\bsignup\b/;
-        const allClickable = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            "button,a,[role='button'],[role='tab'],input[type='button'],input[type='submit']," +
-            "span[id*='login' i],span[class*='login' i],span[id*='register' i],span[class*='register' i]," +
-            "div[role='button'],[id*='login' i],[class*='login' i],[id*='signin' i],[class*='signin' i]," +
-            "[id*='regist' i],[class*='regist' i],[class*='cadastro' i],[id*='signup' i],[class*='signup' i]"
-          )
-        ).filter(isVisible);
-        const isInteractiveEntry = (el: RuntimeElement) => {
-          const tag = normalize(el.tagName);
-          const attrs = readAttrs(el);
-          return /^(a|button|input)$/.test(tag) || /\b(button|tab)\b|btn|nav|item|login|signin|regist|register|signup|cadastro/.test(attrs);
-        };
-        const hasLoginEntry = allClickable.some((el) => {
-          if (!isInteractiveEntry(el)) return false;
-          const elText = readSemantic(el);
-          const haystack = `${elText} ${readAttrs(el)}`;
-          return (elText.length < 36 || /login|signin|entrar/.test(readAttrs(el))) && loginEntryKeywords.test(haystack);
-        });
-        const hasRegisterEntry = allClickable.some((el) => {
-          if (!isInteractiveEntry(el)) return false;
-          const elText = readSemantic(el);
-          const haystack = `${elText} ${readAttrs(el)}`;
-          return (elText.length < 36 || /regist|register|signup|cadastro/.test(readAttrs(el))) && registerEntryKeywords.test(haystack);
-        });
-        const sessionSignals = new Set<string>();
-        const collectSessionSignals = (semantic: string, interactive: boolean) => {
-          if (/\bsaldo\b|\bbalance\b/.test(semantic)) sessionSignals.add("balance");
-          if (/depositar|deposito|recarga|recharge/.test(semantic)) sessionSignals.add("deposit");
-          if (/saque|withdraw|retirada/.test(semantic)) sessionSignals.add("withdraw");
-          if (/carteira|wallet/.test(semantic)) sessionSignals.add("wallet");
-          if (/minha conta|meu perfil|\bperfil\b|\bprofile\b|\bmine\b/.test(semantic)) sessionSignals.add("profile");
-          if (interactive && /^(eu|me)$/.test(semantic)) sessionSignals.add("profile");
-          if (/\bsair\b|\blogout\b|sign out/.test(semantic)) sessionSignals.add("logout");
-        };
-        collectSessionSignals(bodyText, false);
-        for (const el of allClickable) {
-          if (!isInteractiveEntry(el)) continue;
-          const semantic = readSemantic(el);
-          if (loginEntryKeywords.test(semantic) || registerEntryKeywords.test(semantic)) continue;
-          collectSessionSignals(`${semantic} ${readAttrs(el)}`, true);
-        }
-        const isLoggedRoute = /home\/mine|\/mine(?:\/|$)|\/profile(?:\/|$)|\/account(?:\/|$)|\/usercenter|\/personalcenter|\/membercenter|\/wallet(?:\/|$)/.test(path);
-        const hasLoggedAffordance = sessionSignals.size >= 1;
-        const strongLoggedAffordance = sessionSignals.size >= 2;
-        const isHomeLandingWithoutSession =
-          /^\/$|^\/home\/?$|^\/index/.test(runtimeWindow.location.pathname) &&
-          (/registro|registrar|cadastro|sign up|signup|register/.test(bodyText) || hasLoginEntry || hasRegisterEntry) &&
-          !hasLoggedAffordance;
-        if (isHomeLandingWithoutSession) return "anonymous";
-        if (hasLoginEntry && hasRegisterEntry) return "anonymous";
-        if (!isLoadingOnly && strongLoggedAffordance) return "active";
-        if (!isLoadingOnly && isLoggedRoute && !hasLoginEntry && !hasRegisterEntry) return "active";
-        if (!isLoadingOnly && !hasLoginEntry && !hasRegisterEntry && hasLoggedAffordance) return "active";
-        if (!isLoadingOnly && allowWeak && !hasLoginEntry && !hasRegisterEntry && bodyText.length > 60) return "active";
-        if (hasLoginEntry) return "anonymous";
-        return "unknown";
-      }, allowWeakNoEntry, PATCHRIGHT_MAIN_WORLD)
-      .catch(() => "unknown");
-  }
-
-  private async isLoginFormVisible(page: Page): Promise<boolean> {
-    const frame = this.resolveContentFrame(page);
-    return frame
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<{
-            getBoundingClientRect: () => { bottom: number; height: number; right: number; top: number; width: number };
-            getAttribute?: (name: string) => string | null;
-            textContent?: string | null;
-          }> };
-          getComputedStyle: (element: unknown) => { display: string; visibility: string; opacity: string };
-          innerHeight: number;
-          innerWidth: number;
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-        type RuntimeElement = {
-          getBoundingClientRect: () => { bottom: number; height: number; right: number; top: number; width: number };
-          getAttribute?: (name: string) => string | null;
-          textContent?: string | null;
-          querySelectorAll?: (selector: string) => Iterable<RuntimeElement>;
-        };
-        const isVisible = (el: RuntimeElement) => {
-          const style = runtimeWindow.getComputedStyle(el);
-          const rect = el.getBoundingClientRect();
-          return style.display !== "none" && style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 && rect.width > 30 && rect.height > 30;
-        };
-        const dialogSelector =
-          ".ui-overlay .ui-popup,.ui-overlay .ui-dialog,[class*='login' i][class*='dialog' i]," +
-          "[class*='login' i][class*='popup' i],[class*='_login_' i],.login_content,.m_sign_in," +
-          ".sign_in_body,.form_box,form[class*='login' i]";
-        for (const el of runtimeWindow.document.querySelectorAll(dialogSelector)) {
-          if (!isVisible(el as RuntimeElement)) continue;
-          const text = normalize((el as RuntimeElement).textContent);
-          const inputs = Array.from((el as RuntimeElement).querySelectorAll?.("input") ?? []);
-          const passwordInputs = inputs.filter((i) => normalize(i.getAttribute?.("type")) === "password");
-          if (passwordInputs.length === 1 && /login|entrar|senha|password/.test(text)) {
-            return true;
-          }
-        }
-        return false;
-      })
-      .catch(() => false);
   }
 
   private async ensureLoginDialogOpen(
@@ -1749,21 +1482,21 @@ export class AutomationRuntimeService {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       this.ensureRunActive(runId);
 
-      if (await this.hasActiveSession(page)) {
+      if (await hasActiveSession(page)) {
         return "active-session";
       }
 
-      if (await this.isLoginFormVisible(page)) {
+      if (await isLoginFormVisible(page)) {
         return "form";
       }
 
       await this.dismissInitialPopupsBeforeRegistration(runId, page, profileName);
 
-      if (await this.hasActiveSession(page)) {
+      if (await hasActiveSession(page)) {
         return "active-session";
       }
 
-      if (await this.isLoginFormVisible(page)) {
+      if (await isLoginFormVisible(page)) {
         return "form";
       }
 
@@ -1775,11 +1508,11 @@ export class AutomationRuntimeService {
 
       await page.waitForTimeout(800);
 
-      if (await this.hasActiveSession(page)) {
+      if (await hasActiveSession(page)) {
         return "active-session";
       }
 
-      if (await this.isLoginFormVisible(page)) {
+      if (await isLoginFormVisible(page)) {
         return "form";
       }
 
@@ -1792,7 +1525,7 @@ export class AutomationRuntimeService {
   private async clickLoginEntryPoint(runId: string, page: Page): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `login-entry-${Date.now()}-${this.randomInt(1000, 9999)}`;
-    const label = await this.resolveContentFrame(page)
+    const label = await resolveContentFrame(page)
       .evaluate((token) => {
         type RuntimeElement = {
           closest?: (selector: string) => RuntimeElement | null;
@@ -1901,7 +1634,7 @@ export class AutomationRuntimeService {
       this.ensureRunActive(runId);
 
       const targetToken = `login-submit-${Date.now()}-${this.randomInt(1000, 9999)}`;
-      const match = await this.resolveContentFrame(page)
+      const match = await resolveContentFrame(page)
         .evaluate((token) => {
           type RuntimeElement = {
             closest?: (selector: string) => RuntimeElement | null;
@@ -2027,95 +1760,19 @@ export class AutomationRuntimeService {
   private async waitForLoginSuccess(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (await this.hasActiveSession(page)) return true;
-      if (!(await this.isLoginFormVisible(page))) {
+      if (await hasActiveSession(page)) return true;
+      if (!(await isLoginFormVisible(page))) {
         await page.waitForTimeout(600);
-        if (await this.hasActiveSession(page)) return true;
-        if (!(await this.isLoginFormVisible(page))) return true;
+        if (await hasActiveSession(page)) return true;
+        if (!(await isLoginFormVisible(page))) return true;
       }
       await page.waitForTimeout(400);
     }
-    return this.hasActiveSession(page);
-  }
-
-  private async detectLoginErrorMessage(page: Page): Promise<string | undefined> {
-    return this.detectPlatformErrorDialog(page);
-  }
-
-  private async detectRegistrationErrorMessage(page: Page): Promise<string | undefined> {
-    const dialogError = await this.detectPlatformErrorDialog(page);
-    if (dialogError) return dialogError;
-
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<{
-            getBoundingClientRect: () => { width: number; height: number };
-            textContent?: string | null;
-          }> };
-          getComputedStyle: (element: unknown) => { display: string; visibility: string; opacity: string };
-        };
-        const normalize = (v: string | null | undefined) =>
-          (v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-        // W1 inline: "Conta de membro já existente" (seção _texts_ com sugestões)
-        for (const el of runtimeWindow.document.querySelectorAll("[class*='_texts_'],[class*='explain-text'],[class*='explain_text']")) {
-          const style = runtimeWindow.getComputedStyle(el);
-          if (style.display === "none") continue;
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 10 || rect.height < 5) continue;
-          const text = normalize(el.textContent);
-          if (text && /exist|ja exist|already|membro.*exist|conta.*exist/.test(text)) {
-            return text;
-          }
-        }
-        // W1 inline: validation errors (formato da conta, senha fraca, etc.)
-        for (const el of runtimeWindow.document.querySelectorAll(".lobby-form-item__explain-text__error,[class*='error'][class*='explain']")) {
-          const style = runtimeWindow.getComputedStyle(el);
-          if (style.display === "none") continue;
-          const rect = el.getBoundingClientRect();
-          if (rect.width < 10 || rect.height < 5) continue;
-          const text = normalize(el.textContent);
-          if (text && text.length > 3 && text.length < 200) {
-            return text;
-          }
-        }
-        return undefined;
-      })
-      .catch(() => undefined);
-  }
-
-  private async detectPlatformErrorDialog(page: Page): Promise<string | undefined> {
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        type RuntimeOverlay = {
-          getAttribute: (name: string) => string | null;
-          querySelector: (selector: string) => { textContent?: string | null } | null;
-        };
-        const runtimeWindow = globalThis as unknown as {
-          document: { querySelectorAll: (selector: string) => Iterable<RuntimeOverlay> };
-          getComputedStyle: (element: unknown) => { display: string; zIndex: string };
-        };
-        const normalize = (v: string | null | undefined) =>
-          (v || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
-        // W1 "Lembrete" dialog: .ui-overlay (z > 2001) contendo .ui-dialog com .ui-dialog__message
-        for (const overlay of runtimeWindow.document.querySelectorAll(".ui-overlay")) {
-          const style = runtimeWindow.getComputedStyle(overlay);
-          if (style.display === "none") continue;
-          const z = parseInt(style.zIndex || "0");
-          if (z <= 2001) continue;
-          if (overlay.getAttribute("data-hidden") === "1") continue;
-          const msg = overlay.querySelector(".ui-dialog__message");
-          if (!msg) continue;
-          const text = normalize(msg.textContent);
-          if (text && text.length > 3) return text;
-        }
-        return undefined;
-      })
-      .catch(() => undefined);
+    return hasActiveSession(page);
   }
 
   private async dismissPlatformErrorDialog(page: Page): Promise<boolean> {
-    return this.resolveContentFrame(page)
+    return resolveContentFrame(page)
       .evaluate(() => {
         type RuntimeOverlay = {
           getAttribute: (name: string) => string | null;
@@ -2249,7 +1906,7 @@ export class AutomationRuntimeService {
         }
 
         if (!registered) {
-          const platformError = await this.detectRegistrationErrorMessage(page);
+          const platformError = await detectRegistrationErrorMessage(page);
           if (platformError) {
             await this.dismissPlatformErrorDialog(page).catch(() => undefined);
           }
@@ -2398,7 +2055,7 @@ export class AutomationRuntimeService {
   ): Promise<PlatformDescriptor | undefined> {
     await this.browserRuntime.setPageAutoClosePopups(page, false).catch(() => undefined);
 
-    let spa = this.resolveContentFrame(page);
+    let spa = resolveContentFrame(page);
     let routerReady = false;
     const probeDeadline = Date.now() + 5000;
     while (Date.now() < probeDeadline) {
@@ -2412,7 +2069,7 @@ export class AutomationRuntimeService {
 
     if (!routerReady) {
       await this.ensurePlatformHomeLoaded(runId, page, profile, startUrl);
-      spa = this.resolveContentFrame(page);
+      spa = resolveContentFrame(page);
       const bootDeadline = Date.now() + 10000;
       while (Date.now() < bootDeadline) {
         this.ensureRunActive(runId);
@@ -2469,8 +2126,8 @@ export class AutomationRuntimeService {
     const descriptor = await this.openWithdrawalViaRoute(runId, withdrawalPage, profile, startUrl);
 
     if (
-      (await this.hasWithdrawalPasswordSetupSurface(withdrawalPage)) ||
-      (await this.hasWithdrawalPasswordRequiredCallToAction(withdrawalPage))
+      (await hasWithdrawalPasswordSetupSurface(withdrawalPage)) ||
+      (await hasWithdrawalPasswordRequiredCallToAction(withdrawalPage))
     ) {
       throw new Error("A senha de saque precisa ser configurada manualmente antes de usar esta acao.");
     }
@@ -2522,7 +2179,7 @@ export class AutomationRuntimeService {
 
     while (Date.now() - startedAt < timeoutMs) {
       this.ensureRunActive(runId);
-      const state = await this.resolveContentFrame(page)
+      const state = await resolveContentFrame(page)
         .evaluate(() => {
           type RuntimeVue = {
             $children?: RuntimeVue[];
@@ -2646,7 +2303,7 @@ export class AutomationRuntimeService {
 
     while (Date.now() - startedAt < 3500) {
       this.ensureRunActive(runId);
-      const result = await this.resolveContentFrame(page)
+      const result = await resolveContentFrame(page)
         .evaluate(() => {
           type RuntimeVue = {
             $children?: RuntimeVue[];
@@ -2714,7 +2371,7 @@ export class AutomationRuntimeService {
     _profileName: string
   ): Promise<boolean> {
     this.ensureRunActive(runId);
-    const filled = await this.resolveContentFrame(page)
+    const filled = await resolveContentFrame(page)
       .evaluate((password) => {
         type RuntimeVue = {
           $children?: RuntimeVue[];
@@ -2786,7 +2443,7 @@ export class AutomationRuntimeService {
 
   private async clickWithdrawalAllButton(runId: string, page: Page, _profileName: string): Promise<void> {
     this.ensureRunActive(runId);
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
 
     const clicked = await frame
       .evaluate(() => {
@@ -2842,7 +2499,7 @@ export class AutomationRuntimeService {
     profileName: string
   ): Promise<void> {
     this.ensureRunActive(runId);
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
 
     const passwordFieldLocator = frame.locator(".ui-password-input").first();
     const fieldCount = await frame.locator(".ui-password-input").count().catch(() => 0);
@@ -2985,7 +2642,7 @@ export class AutomationRuntimeService {
       }
       diag(`5-add pix modal: ${hasPixModal}`);
       if (!hasPixModal) {
-        const bodyText = await this.resolveContentFrame(pixPage).evaluate(() => {
+        const bodyText = await resolveContentFrame(pixPage).evaluate(() => {
           return (globalThis as unknown as { document?: { body?: { innerText?: string } } }).document?.body?.innerText?.slice(0, 200) || "";
         }).catch(() => "");
         diag(`5-page text: ${bodyText}`);
@@ -2998,7 +2655,7 @@ export class AutomationRuntimeService {
       diag("7-filling pix form");
       await this.fillPixPhoneAccountForm(runId, pixPage, pixPhone, cpf, realName);
       diag("7-form filled");
-      const submitted = await programmaticPixUiAction(this.resolveContentFrame(pixPage), "submit");
+      const submitted = await programmaticPixUiAction(resolveContentFrame(pixPage), "submit");
       diag(`8-submitted: ok=${submitted.ok} via=${submitted.diag ?? submitted.reason ?? "-"}`);
       if (!submitted.ok) {
         throw new Error(`formulario PIX nao submeteu programaticamente (${submitted.reason ?? "motivo desconhecido"})`);
@@ -3060,7 +2717,7 @@ export class AutomationRuntimeService {
     // precisamos recarregar a home (o reload pesa muito, sobretudo em PC fraco).
     // So carregamos a home como FALLBACK raro, quando a SPA/router ainda nao esta
     // montada nesta pagina (ex.: pagina em estado nao-SPA).
-    const spa = this.resolveContentFrame(pixPage);
+    const spa = resolveContentFrame(pixPage);
     // router.push e navegacao client-side: funciona de QUALQUER rota, sem recarregar
     // (o reload pesa muito em PC fraco). Esperamos o router montar (poll curto) antes
     // de decidir recarregar — assim evitamos o refresh no caso comum em que a SPA ja
@@ -3125,7 +2782,7 @@ export class AutomationRuntimeService {
     }
     diag("tela de saque visivel");
 
-    if (await this.hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
+    if (await hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
       diag("tela de saque ainda pede adicionar senha; repetindo setup pela rota");
       await this.defineWithdrawalPasswordViaRoute(runId, profile, pixPage, spa, descriptor);
       await routerPush(spa, withdrawalTarget);
@@ -3134,7 +2791,7 @@ export class AutomationRuntimeService {
       if (!(await this.waitForWithdrawalAccountSurface(pixPage, 6000))) {
         throw new Error(`tela de saque nao voltou apos definir senha (${await describeSpaState(spa)})`);
       }
-      if (await this.hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
+      if (await hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
         throw new Error("plataforma ainda pede adicionar senha de saque apos o setup programatico");
       }
     }
@@ -3161,7 +2818,7 @@ export class AutomationRuntimeService {
       // ENTRAR PRIMEIRO para que ele jamais seja sequestrado pela deteccao de CRIAR (que ja
       // deu falso-positivo: o campo de senha inline da tela de saque + o do modal somavam 2
       // e `fillWithdrawalPasswordSetup` achava 1 campo e falhava).
-      if (await this.hasExistingWithdrawalPasswordModal(pixPage)) {
+      if (await hasExistingWithdrawalPasswordModal(pixPage)) {
         diag(`prompt de senha: ENTRAR (iter ${iteration})`);
         let withdrawalPassword = this.database.getProfile(profile.id).account?.withdrawalPassword;
         if (!withdrawalPassword) {
@@ -3175,12 +2832,12 @@ export class AutomationRuntimeService {
         await this.fillExistingWithdrawalPasswordModal(runId, pixPage, withdrawalPassword);
         // espera CONDICIONAL o modal ENTRAR fechar, em vez de um waitForTimeout fixo
         const modalDeadline = Date.now() + 4000;
-        while (Date.now() < modalDeadline && (await this.hasExistingWithdrawalPasswordModal(pixPage))) {
+        while (Date.now() < modalDeadline && (await hasExistingWithdrawalPasswordModal(pixPage))) {
           await pixPage.waitForTimeout(80).catch(() => undefined);
         }
         continue;
       }
-      if (await this.hasWithdrawalPasswordSetupSurface(pixPage)) {
+      if (await hasWithdrawalPasswordSetupSurface(pixPage)) {
         diag(`prompt de senha: DEFINIR (iter ${iteration})`);
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
         void this.browserRuntime.refreshAccountInfoForProfile(profile.id, this.database.getProfile(profile.id));
@@ -3221,7 +2878,7 @@ export class AutomationRuntimeService {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       this.ensureRunActive(runId);
-      if (await this.hasWithdrawalPasswordSetupSurface(pixPage)) {
+      if (await hasWithdrawalPasswordSetupSurface(pixPage)) {
         appeared = true;
         break;
       }
@@ -3247,7 +2904,7 @@ export class AutomationRuntimeService {
     diag(`senha definida; setup fechou=${setupClosed}; rota apos definir=${await describeSpaState(spa)}`);
     // Fotografa o texto da tela apos a definicao: revela erro de validacao,
     // "senhas nao conferem", toast de sucesso, ou se continuamos no form de senha.
-    const postDefineText = await this.resolveContentFrame(pixPage)
+    const postDefineText = await resolveContentFrame(pixPage)
       .evaluate(() => {
         const w = globalThis as unknown as { document?: { body?: { innerText?: string } } };
         return (w.document?.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 300);
@@ -3262,7 +2919,7 @@ export class AutomationRuntimeService {
   private async openPixReceivingAccountTab(runId: string, page: Page, profile: ProfileSummary): Promise<void> {
     const diag = (...args: unknown[]) => { console.log(`[PIX-DIAG] ${args.join(" ")}`); };
     this.ensureRunActive(runId);
-    const spa = this.resolveContentFrame(page);
+    const spa = resolveContentFrame(page);
     const receiving = await programmaticPixUiAction(spa, "openReceivingAccount");
     diag(`3-receiving state: ok=${receiving.ok} ${receiving.diag ?? receiving.reason ?? ""}`);
     if (!receiving.ok) {
@@ -3289,117 +2946,16 @@ export class AutomationRuntimeService {
     }
   }
 
-  private async hasWithdrawalPasswordSetupSurface(page: Page): Promise<boolean> {
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: BrowserRuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            rect.width > 8 &&
-            rect.height > 8
-          );
-        };
-        // O form de CRIAR e o modal de ENTRAR vivem ambos num dialog/popup/overlay. Conta
-        // os PIN-grids DENTRO do dialog ativo: CRIAR tem 2 (nova + confirmar), ENTRAR tem 1.
-        // Isso distingue as telas SEM depender da copy e evita o falso-positivo com o campo
-        // de senha INLINE da propria tela de saque (que somava 2 no documento todo e fazia o
-        // modal de ENTRAR ser tratado como CRIAR -> fillWithdrawalPasswordSetup achava 1
-        // campo e falhava com "campos para criar senha de saque nao encontrados").
-        const inDialog = (element: BrowserRuntimeElement) =>
-          Boolean(
-            (element as unknown as { closest?: (s: string) => unknown }).closest?.(
-              "[class*='dialog' i],[class*='popup' i],[class*='overlay' i],[class*='modal' i],[role='dialog'],.ui-overlay"
-            )
-          );
-        const dialogFields = Array.from(
-          runtimeWindow.document.querySelectorAll(".ui-password-input,[class*='password-input' i]")
-        ).filter((el) => isVisible(el) && inDialog(el));
-        const text = normalize(runtimeWindow.document.body?.innerText || "");
-        // Guard: o modal de ENTRAR senha existente ("Inserir PIN", "Esqueceu a senha",
-        // "introduza a senha") NUNCA e a tela de criar -- mesmo que algo conte 2 campos.
-        const looksLikeEnterModal =
-          /inserir (?:senha|pin)|esqueceu a senha|introduza a senha/.test(text);
-        if (looksLikeEnterModal) {
-          return false;
-        }
-        // Sinal ESTRUTURAL: 2+ PIN-grids no MESMO dialog = form de criar.
-        if (dialogFields.length >= 2) {
-          return true;
-        }
-        // Sinal TEXTUAL (fallback p/ setup em ROTA/pagina cheia, sem dialog): verbo de
-        // criacao perto de "senha" (sem "adicionar", que aparece por toda a UI de saque).
-        return (
-          /senha de saque/.test(text) &&
-          /(definir|defina|cadastr|criar|crie|configurar|configure)\b(?:\s+\w+){0,2}\s+senha/.test(text)
-        );
-      })
-      .catch(() => false);
-  }
-
   private async waitForWithdrawalPasswordSetupToClose(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (!(await this.hasWithdrawalPasswordSetupSurface(page))) {
+      if (!(await hasWithdrawalPasswordSetupSurface(page))) {
         return true;
       }
       await page.waitForTimeout(220).catch(() => null);
     }
 
-    return !(await this.hasWithdrawalPasswordSetupSurface(page));
-  }
-
-  private async hasWithdrawalPasswordRequiredCallToAction(page: Page): Promise<boolean> {
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: BrowserRuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            Number(style.opacity || "1") > 0.01 &&
-            rect.width > 8 &&
-            rect.height > 8 &&
-            rect.right > 0 &&
-            rect.bottom > 0 &&
-            rect.left < runtimeWindow.innerWidth &&
-            rect.top < runtimeWindow.innerHeight
-          );
-        };
-        const controls = Array.from(
-          runtimeWindow.document.querySelectorAll("button,[role='button'],a,.ui-button,.ui-cell,div,span,li")
-        );
-        return controls.some((element) => {
-          if (!isVisible(element)) {
-            return false;
-          }
-          const text = normalize(element.textContent);
-          if (!text || text.length > 90) {
-            return false;
-          }
-          return /adicionar|cadastrar|definir|configurar/.test(text) && /senha/.test(text) && /saque/.test(text);
-        });
-      })
-      .catch(() => false);
+    return !(await hasWithdrawalPasswordSetupSurface(page));
   }
 
   // Espera CONDICIONAL pos-router.push: retorna assim que QUALQUER coisa acionavel da
@@ -3409,7 +2965,7 @@ export class AutomationRuntimeService {
   // demorava mais que o tempo chutado.
   private async waitForWithdrawalOrPasswordSignal(page: Page, timeoutMs: number): Promise<void> {
     const startedAt = Date.now();
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
     while (Date.now() - startedAt < timeoutMs) {
       // Um UNICO evaluate por tick com UMA leitura de innerText compartilhada pelos sinais.
       // Antes eram ate 4 evaluates/tick (3 deles liam body.innerText -> 1 reflow cada). Isto
@@ -3447,184 +3003,31 @@ export class AutomationRuntimeService {
   private async waitForWithdrawalAccountSurface(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (await this.hasWithdrawalAccountSurface(page)) {
+      if (await hasWithdrawalAccountSurface(page)) {
         return true;
       }
       await page.waitForTimeout(220).catch(() => null);
     }
 
-    return this.hasWithdrawalAccountSurface(page);
-  }
-
-  private async hasWithdrawalAccountSurface(page: Page): Promise<boolean> {
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const text = normalize(runtimeWindow.document.body?.innerText || "");
-        return /solicitar saque|conta para recebimento|registro de saques/.test(text) && /pix|adicionar conta para saque|valor do saque/.test(text);
-      })
-      .catch(() => false);
+    return hasWithdrawalAccountSurface(page);
   }
 
   private async waitForWithdrawalRequestSurface(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (await this.hasWithdrawalRequestSurface(page)) {
+      if (await hasWithdrawalRequestSurface(page)) {
         return true;
       }
       await page.waitForTimeout(220).catch(() => null);
     }
 
-    return this.hasWithdrawalRequestSurface(page);
-  }
-
-  private async hasWithdrawalRequestSurface(page: Page): Promise<boolean> {
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow & {
-          location: { pathname: string; search: string };
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: BrowserRuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return (
-            rect.width > 8 &&
-            rect.height > 8 &&
-            rect.bottom > 0 &&
-            rect.right > 0 &&
-            rect.top < runtimeWindow.innerHeight &&
-            style.display !== "none" &&
-            style.visibility !== "hidden"
-          );
-        };
-        const bodyText = normalize(runtimeWindow.document.body?.innerText || "");
-        const route = normalize(`${runtimeWindow.location.pathname} ${runtimeWindow.location.search}`);
-        const withdrawalRoots = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            "#withdrawal,[class*='withdraw' i],[id*='withdraw' i],[class*='saque' i],[id*='saque' i],[class*='retirada' i],[id*='retirada' i]"
-          )
-        ).filter(isVisible);
-        const root = withdrawalRoots[0] ?? runtimeWindow.document.body;
-        const amountInputs = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            "[data-item-name='amount'] input,input[placeholder*='minimo' i],input[placeholder*='minimum' i],input[placeholder*='valor' i],input[placeholder*='retirada' i],input[placeholder*='saque' i],input[name*='amount' i],input[name*='withdraw' i],input[name*='money' i]"
-          )
-        ).concat(Array.from(root?.querySelectorAll?.("input,textarea") ?? []))
-          .filter((element, index, list) => list.indexOf(element) === index)
-          .filter((element) => {
-            const input = element as BrowserRuntimeInputElement;
-            const text = normalize(
-              [
-                input.getAttribute?.("type"),
-                input.getAttribute?.("placeholder"),
-                input.getAttribute?.("name"),
-                input.getAttribute?.("id"),
-                input.getAttribute?.("class")
-              ].join(" ")
-            );
-            return !/password|senha|hidden|checkbox|radio|file/.test(text);
-          });
-        const passwordControls = Array.from(
-          runtimeWindow.document.querySelectorAll(
-            "[data-item-name='passwd'],.ui-password-input,.ui-password-input__security,.van-password-input,.passwordInput,input[maxlength='6'],input[type='password']"
-          )
-        );
-        const activeTabText = normalize(
-          Array.from(runtimeWindow.document.querySelectorAll(".van-tab--active,[aria-selected='true'],[class*='active' i]"))
-            .map((element) => (element as BrowserRuntimeElement).textContent || "")
-            .join(" ")
-        );
-        const hasAmountCopy =
-          /solicitar saque|solicitacao de saque|withdrawal request|quantia da retirada|valor do saque|valor de retirada|withdrawal amount|retirada/.test(
-            bodyText
-          );
-        const hasPasswordCopy = /senha de saque|withdrawal password|verificar senha|senha para saque/.test(bodyText);
-        const hasConfirmCopy = /confirmar retirada|confirmar saque|confirm withdrawal/.test(bodyText);
-        const hasAllControl = /(^|\s)(tudo|tudos|todos|all)(\s|$)/.test(bodyText);
-        const requestTabActive =
-          !activeTabText ||
-          /(^|\s)saque(\s|$)|solicitar saque/.test(activeTabText) ||
-          (hasConfirmCopy && hasAmountCopy && hasPasswordCopy);
-        const hasManualControls =
-          hasPasswordCopy &&
-          hasConfirmCopy &&
-          (hasAllControl || /valor de retirada|valor do saque|quantia da retirada|withdrawal amount/.test(bodyText));
-
-        return (
-          /withdraw|saque/.test(route) &&
-          requestTabActive &&
-          hasAmountCopy &&
-          hasManualControls &&
-          amountInputs.some(isVisible) &&
-          passwordControls.some(isVisible)
-        );
-      })
-      .catch(() => false);
-  }
-
-  private async hasExistingWithdrawalPasswordModal(page: Page): Promise<boolean> {
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const isVisible = (element: BrowserRuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            rect.width > 8 &&
-            rect.height > 8
-          );
-        };
-        // Sinal ESTRUTURAL (robusto entre plataformas, sem depender da copy): o gate de
-        // confirmar a senha de saque e um dialog com EXATAMENTE 1 PIN-grid visivel
-        // (.ui-password-input). O form de CRIAR senha tem 2 (nova + confirmar) e e tratado
-        // por hasWithdrawalPasswordSetupSurface; o modal "Adicionar PIX" nao tem PIN-grid.
-        // Confirmado em runtime na GameCancer: .ui-password-input dentro de .ui-dialog.
-        const inDialog = (element: BrowserRuntimeElement) =>
-          Boolean(
-            (element as unknown as { closest?: (s: string) => unknown }).closest?.(
-              "[class*='dialog' i],[class*='popup' i],[class*='overlay' i],[class*='modal' i],[role='dialog'],.ui-overlay"
-            )
-          );
-        const dialogFields = Array.from(
-          runtimeWindow.document.querySelectorAll(".ui-password-input,[class*='password-input' i]")
-        ).filter((el) => isVisible(el) && inDialog(el));
-        if (dialogFields.length === 1) {
-          return true;
-        }
-        // Fallback TEXTUAL (compat): "inserir senha/pin" + "senha de saque" + "proximo".
-        const text = normalize(runtimeWindow.document.body?.innerText || "");
-        return /inserir (?:senha|pin)/.test(text) && /senha de saque/.test(text) && /proximo/.test(text);
-      })
-      .catch(() => false);
+    return hasWithdrawalRequestSurface(page);
   }
 
   private async waitForAddPixModal(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const found = await this.resolveContentFrame(page)
+      const found = await resolveContentFrame(page)
         .evaluate(() => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
           return /adicionar pix/i.test(runtimeWindow.document.body?.innerText || "");
@@ -3636,7 +3039,7 @@ export class AutomationRuntimeService {
       await page.waitForTimeout(220).catch(() => null);
     }
 
-    return this.resolveContentFrame(page)
+    return resolveContentFrame(page)
       .evaluate(() => {
         const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
         return /adicionar pix/i.test(runtimeWindow.document.body?.innerText || "");
@@ -3647,7 +3050,7 @@ export class AutomationRuntimeService {
   private async waitForPixRegistrationSaved(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const saved = await this.resolveContentFrame(page)
+      const saved = await resolveContentFrame(page)
         .evaluate(() => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
           const normalize = (value: string | null | undefined) =>
@@ -3678,7 +3081,7 @@ export class AutomationRuntimeService {
     page: Page,
     withdrawalPassword: string
   ): Promise<void> {
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
 
     const vanFields = frame.locator(".van-field__control");
     const vanCount = await vanFields.count().catch(() => 0);
@@ -3829,7 +3232,7 @@ export class AutomationRuntimeService {
       }
 
       await page.waitForTimeout(180).catch(() => null);
-      if (!(await this.hasVisibleNumberKeyboard(page))) {
+      if (!(await hasVisibleNumberKeyboard(page))) {
         const rootBox = await locator.boundingBox().catch(() => null);
         if (rootBox) {
           await page.touchscreen
@@ -3866,7 +3269,7 @@ export class AutomationRuntimeService {
     await this.openPasswordGridKeyboard(runId, page, locator);
     await this.waitForVisibleNumberKeyboard(page, 2500);
 
-    if (!(await this.hasVisibleNumberKeyboard(page))) {
+    if (!(await hasVisibleNumberKeyboard(page))) {
       throw new Error("teclado numerico virtual nao apareceu apos clicar no campo de senha");
     }
 
@@ -3893,7 +3296,7 @@ export class AutomationRuntimeService {
       diag(`${tag} digit=${digit} idx=${di} beforeDots=${beforeDots}`);
       let accepted = false;
       for (let attempt = 0; attempt < 3 && !accepted; attempt += 1) {
-        if (!(await this.hasVisibleNumberKeyboard(page))) {
+        if (!(await hasVisibleNumberKeyboard(page))) {
           diag(`${tag} keyboard hidden, re-clicking`);
           await this.openPasswordGridKeyboard(runId, page, locator);
           await this.waitForVisibleNumberKeyboard(page, 600);
@@ -3956,7 +3359,7 @@ export class AutomationRuntimeService {
     await this.openPasswordGridKeyboard(runId, page, fieldLocator).catch(() => null);
     await page.waitForTimeout(200).catch(() => null);
 
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
     const dump = await frame
       .evaluate(() => {
         /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -4166,7 +3569,7 @@ export class AutomationRuntimeService {
 
   private async fillWithdrawalPasswordSetup(runId: string, page: Page, withdrawalPassword: string): Promise<void> {
     const diag = (...args: unknown[]) => { const msg = `[PASS-DIAG] ${args.join(" ")}`; console.log(msg); };
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
 
     const vanFields = frame.locator(".van-field__control");
     const vanCount = await vanFields.count().catch(() => 0);
@@ -4304,37 +3707,13 @@ export class AutomationRuntimeService {
   private async waitForVisibleNumberKeyboard(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (await this.hasVisibleNumberKeyboard(page)) {
+      if (await hasVisibleNumberKeyboard(page)) {
         return true;
       }
       await page.waitForTimeout(80).catch(() => null);
     }
 
-    return this.hasVisibleNumberKeyboard(page);
-  }
-
-  private async hasVisibleNumberKeyboard(page: Page): Promise<boolean> {
-    const frame = this.resolveContentFrame(page);
-    return frame
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-        const isKeyboardOrKey = (element: BrowserRuntimeElement) => {
-          const rect = element.getBoundingClientRect();
-          const style = runtimeWindow.getComputedStyle(element);
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            rect.width > 20 &&
-            rect.height > 20
-          );
-        };
-        return Array.from(
-          runtimeWindow.document.querySelectorAll(
-            ".ui-number-keyboard,.ui-number-keyboard-key,.van-number-keyboard,.van-key,[class*='number-keyboard' i],[class*='numberKeyboard' i],[class*='keyboard-key' i],[class*='keyboard_key' i]"
-          )
-        ).some(isKeyboardOrKey);
-      })
-      .catch(() => false);
+    return hasVisibleNumberKeyboard(page);
   }
 
   private async clickNumberKeyboardDigit(runId: string, page: Page, digit: string, useTap = false): Promise<boolean> {
@@ -4352,7 +3731,7 @@ export class AutomationRuntimeService {
     useTap = false
   ): Promise<boolean> {
     this.ensureRunActive(runId);
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
 
     // CAMINHO PRIMARIO (robusto em PC fraco): acha a tecla e dispara o clique IN-PAGE
     // (sequencia pointer/mouse/touch/click) no MAIN world. Confirmado funcionando na
@@ -4605,7 +3984,7 @@ export class AutomationRuntimeService {
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
     return this.withPopupPageGuard(page, () =>
-      this.resolveContentFrame(page).evaluate(
+      resolveContentFrame(page).evaluate(
         ({ includeSource, includeFlags, excludeSource, excludeFlags }) => {
           const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
           const includePattern = new RegExp(includeSource, includeFlags);
@@ -4687,7 +4066,7 @@ export class AutomationRuntimeService {
     exclude?: RegExp
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
     const target = await frame
       .evaluate(
         ({ includeSource, includeFlags, excludeSource, excludeFlags }) => {
@@ -4794,7 +4173,7 @@ export class AutomationRuntimeService {
   private async selectPhonePixType(runId: string, page: Page): Promise<void> {
     const diag = (...args: unknown[]) => { console.log(`[PIX-DIAG] ${args.join(" ")}`); };
     this.ensureRunActive(runId);
-    const result = await programmaticPixUiAction(this.resolveContentFrame(page), "selectPhone");
+    const result = await programmaticPixUiAction(resolveContentFrame(page), "selectPhone");
     diag(`selectPhone-state: ok=${result.ok} ${result.diag ?? result.reason ?? ""}`);
     if (!result.ok) {
       throw new Error(`tipo PHONE nao foi aplicado no estado Vue (${result.reason ?? "motivo desconhecido"})`);
@@ -4806,7 +4185,7 @@ export class AutomationRuntimeService {
     const diag = (...args: unknown[]) => { console.log(`[PIX-DIAG] ${args.join(" ")}`); };
 
     const pixModalOpen = () =>
-      this.resolveContentFrame(page)
+      resolveContentFrame(page)
         .evaluate(() => {
           const text = ((globalThis as unknown as { document?: { body?: { innerText?: string } } }).document?.body?.innerText || "");
           return /adicionar\s+pix/i.test(text);
@@ -4815,7 +4194,7 @@ export class AutomationRuntimeService {
 
     diag(`fillForm-modal open: ${await pixModalOpen()}`);
 
-    const tryFill = () => this.resolveContentFrame(page)
+    const tryFill = () => resolveContentFrame(page)
       .evaluate(({ pixPhone, cpfValue, realNameValue }) => {
         const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
         const normalize = (value: string | null | undefined) =>
@@ -6391,7 +5770,7 @@ export class AutomationRuntimeService {
   }
 
   private async describeDepositSpaCapabilities(page: Page): Promise<string | undefined> {
-    const snapshot = await this.resolveContentFrame(page)
+    const snapshot = await resolveContentFrame(page)
       .evaluate(() => {
         type RuntimeRecord = Record<PropertyKey, unknown>;
         type RuntimeElement = {
@@ -6562,7 +5941,7 @@ export class AutomationRuntimeService {
 
   private async tryOpenDepositViaSpaCommand(runId: string, page: Page, _profileName: string): Promise<boolean> {
     this.ensureRunActive(runId);
-    const result = await this.resolveContentFrame(page)
+    const result = await resolveContentFrame(page)
       .evaluate(async () => {
         type RuntimeRecord = Record<PropertyKey, unknown>;
         type RuntimeElement = {
@@ -6769,7 +6148,7 @@ export class AutomationRuntimeService {
     depositAmount: string
   ): Promise<void> {
     this.ensureRunActive(runId);
-    const spa = this.resolveContentFrame(page);
+    const spa = resolveContentFrame(page);
 
     // Deposito por INJECAO verificada no estado da SPA (Pinia store ou componente Wallet
     // no Vuex). RISCO ZERO de "QR falso": `programmaticDeposit` so retorna ok se a ordem for
@@ -6876,7 +6255,7 @@ export class AutomationRuntimeService {
   // Tenta direto primeiro (QR pode ja estar visivel) e, se nao encontrar,
   // observa mudancas no DOM por ate deadline ms.
   private async extractQrCode(_runId: string, page: Page, deadline: number, _profileName: string): Promise<string | null> {
-    const result = await this.resolveContentFrame(page).evaluate((deadlineMs) => {
+    const result = await resolveContentFrame(page).evaluate((deadlineMs) => {
       type RuntimeElement = {
         toDataURL?: (type?: string) => string;
         src?: string;
@@ -7071,7 +6450,7 @@ export class AutomationRuntimeService {
   // QR renderizado como <table>, <svg> sem xmlns). Retorna data URL ou null.
   private async screenshotQrElement(runId: string, page: Page, profileName: string): Promise<string | null> {
     try {
-      const frame = this.resolveContentFrame(page);
+      const frame = resolveContentFrame(page);
       const handle = await frame.evaluateHandle(() => {
         const QR_SELECTORS = [
           "#qrcode1 canvas", "#qrcode1 img", "#qrcode1 svg", "#qrcode1 table",
@@ -7293,7 +6672,7 @@ export class AutomationRuntimeService {
     const amountText = this.formatDepositAmount(depositAmount);
 
     // Usa o frame de conteudo onde o QR code esta (importante para plataformas com iframe)
-    const contentFrame = this.resolveContentFrame(page);
+    const contentFrame = resolveContentFrame(page);
 
     return contentFrame.evaluate(
         async (payload) => {
@@ -7441,7 +6820,7 @@ export class AutomationRuntimeService {
   // Assinatura do QR atual na pagina (tag + tamanho/posicao + dica de conteudo) ou null
   // se nao houver QR. Muda quando um novo deposito gera outro QR. Ignora nosso overlay.
   private async detectQrSignature(page: Page): Promise<string | null> {
-    return this.resolveContentFrame(page)
+    return resolveContentFrame(page)
       .evaluate((selector) => {
         const rawCandidates = Array.from(document.querySelectorAll(selector)) as Element[];
         const candidates = rawCandidates.flatMap((candidate) => {
@@ -7495,7 +6874,7 @@ export class AutomationRuntimeService {
   // Le o valor (R$) exibido na propria pagina do deposito (texto mais proeminente e
   // proximo do QR). Faz o overlay refletir o deposito ATUAL (e nao um valor antigo).
   private async readDepositAmountFromPage(page: Page): Promise<string | null> {
-    return this.resolveContentFrame(page)
+    return resolveContentFrame(page)
       .evaluate((selector) => {
         const re = /R\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?/;
         const qrRect = (Array.from(document.querySelectorAll(selector)) as Element[])
@@ -7541,7 +6920,7 @@ export class AutomationRuntimeService {
 
   // Remove o overlay do QR (e o botao "Mostrar QR") da pagina.
   private async dismissQrOverlay(page: Page): Promise<void> {
-    await this.resolveContentFrame(page)
+    await resolveContentFrame(page)
       .evaluate(() => {
         document.getElementById("predator-deposit-qr-overlay")?.remove();
         document.getElementById("predator-deposit-qr-reopen")?.remove();
@@ -7639,7 +7018,7 @@ export class AutomationRuntimeService {
   }
 
   async selectPreferredDepositChannel(page: Page): Promise<string | undefined> {
-    return this.resolveContentFrame(page)
+    return resolveContentFrame(page)
       .evaluate(() => {
         type RuntimeElement = {
           click?: () => void;
@@ -7739,7 +7118,7 @@ export class AutomationRuntimeService {
   async waitForDepositAmountApplied(page: Page, amount: string, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const applied = await this.resolveContentFrame(page)
+      const applied = await resolveContentFrame(page)
         .evaluate((expectedAmount) => {
           type RuntimeElement = {
             closest?: (selector: string) => RuntimeElement | null;
@@ -7874,7 +7253,7 @@ export class AutomationRuntimeService {
   async clickDepositAmountPreset(runId: string, page: Page, amount: string): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `deposit-preset-${Date.now()}-${this.randomInt(1000, 9999)}`;
-    const label = await this.resolveContentFrame(page)
+    const label = await resolveContentFrame(page)
       .evaluate(({ depositAmount, targetToken }) => {
         type RuntimeElement = {
           closest?: (selector: string) => RuntimeElement | null;
@@ -8046,7 +7425,7 @@ export class AutomationRuntimeService {
       return undefined;
     }
 
-    const target = this.resolveContentFrame(page).locator(`[data-predator-deposit-preset-target="${targetToken}"]`).first();
+    const target = resolveContentFrame(page).locator(`[data-predator-deposit-preset-target="${targetToken}"]`).first();
     await this.withPopupPageGuard(page, async () => {
       await this.fastClickControl(runId, page, target).catch(async () => {
         await target.click({ timeout: 1200, force: true }).catch(async () => {
@@ -8069,7 +7448,7 @@ export class AutomationRuntimeService {
     depositAmount: string
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
-    const result = await this.resolveContentFrame(page)
+    const result = await resolveContentFrame(page)
       .evaluate((amountToApply) => {
         type RuntimeRecord = Record<PropertyKey, unknown>;
         type RuntimeElement = {
@@ -8285,7 +7664,7 @@ export class AutomationRuntimeService {
   async fillDepositAmountWithVisualKeypad(runId: string, page: Page, amount: string): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `deposit-keypad-${Date.now()}-${this.randomInt(1000, 9999)}`;
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
     const focused = await frame
       .evaluate(({ targetToken }) => {
         type RuntimeElement = {
@@ -8606,7 +7985,7 @@ export class AutomationRuntimeService {
 
   async fillDepositAmountField(runId: string, page: Page, amount: string): Promise<string | undefined> {
     const targetToken = `deposit-${Date.now()}-${this.randomInt(1000, 9999)}`;
-    const fieldResult = await this.resolveContentFrame(page)
+    const fieldResult = await resolveContentFrame(page)
       .evaluate(({ depositAmount, targetToken }) => {
         type RuntimeElement = {
           closest?: (selector: string) => RuntimeElement | null;
@@ -8865,7 +8244,7 @@ export class AutomationRuntimeService {
       return undefined;
     }
 
-    const markedField = this.resolveContentFrame(page).locator(`[data-predator-deposit-amount-target="${targetToken}"]`).first();
+    const markedField = resolveContentFrame(page).locator(`[data-predator-deposit-amount-target="${targetToken}"]`).first();
     if (fieldResult.confirmed) {
       await markedField.evaluate((element) => element.removeAttribute("data-predator-deposit-amount-target")).catch(() => undefined);
       return fieldLabel;
@@ -8954,7 +8333,7 @@ export class AutomationRuntimeService {
     _profileName: string
   ): Promise<string | undefined> {
     this.ensureRunActive(runId);
-    const result = await this.resolveContentFrame(page)
+    const result = await resolveContentFrame(page)
       .evaluate(async () => {
         type RuntimeRecord = Record<PropertyKey, unknown>;
         type RuntimeElement = {
@@ -9163,7 +8542,7 @@ export class AutomationRuntimeService {
   async clickDepositSubmitButton(runId: string, page: Page): Promise<string | undefined> {
     this.ensureRunActive(runId);
     const targetToken = `deposit-submit-${Date.now()}-${this.randomInt(1000, 9999)}`;
-    const label = await this.resolveContentFrame(page)
+    const label = await resolveContentFrame(page)
       .evaluate((token) => {
         type RuntimeElement = {
           click?: () => void;
@@ -9317,7 +8696,7 @@ export class AutomationRuntimeService {
       return undefined;
     }
 
-    const target = this.resolveContentFrame(page).locator(`[data-predator-deposit-submit-target="${targetToken}"]`).first();
+    const target = resolveContentFrame(page).locator(`[data-predator-deposit-submit-target="${targetToken}"]`).first();
     const clicked = await this.withPopupPageGuard(page, async () => {
       if (await this.fastClickControl(runId, page, target).then(() => true).catch(() => false)) {
         return true;
@@ -9343,7 +8722,7 @@ export class AutomationRuntimeService {
   private async waitForDepositQrCode(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const found = await this.resolveContentFrame(page)
+      const found = await resolveContentFrame(page)
         .evaluate(() => {
           type RuntimeElement = {
             closest?: (selector: string) => RuntimeElement | null;
@@ -9506,7 +8885,7 @@ export class AutomationRuntimeService {
         break;
       }
       const dismissed = await this.withPopupPageGuard(page, () =>
-        this.resolveContentFrame(page)
+        resolveContentFrame(page)
           .evaluate(() => {
             type RuntimeElement = {
               click?: () => void;
@@ -9881,136 +9260,16 @@ export class AutomationRuntimeService {
     }
   }
 
-  private async hasDepositSurface(page: Page): Promise<boolean> {
-    return this.resolveContentFrame(page)
-      .evaluate(() => {
-        const runtimeWindow = globalThis as unknown as {
-          document: {
-            body: { innerText: string };
-            querySelectorAll: (selector: string) => Iterable<{
-              getAttribute?: (name: string) => string | null;
-              getBoundingClientRect: () => { bottom: number; height: number; right: number; top: number; width: number };
-              innerText?: string;
-              querySelector?: (selector: string) => unknown;
-              textContent?: string | null;
-            }>;
-          };
-          innerHeight: number;
-          location: { pathname: string; search: string };
-        };
-        const normalize = (value: string | null | undefined) =>
-          (value || "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        // O overlay "Dados da Conta" que injetamos no body adiciona "SENHA LOGIN"/"SENHA SAQUE"
-        // ao innerText; sem remover, o guard hasRegistrationPrompt (registro+login+senha) dispara
-        // e o deposito ABERTO e reportado como "modal nao abriu". Subtraimos o texto dos overlays.
-        const injectedOverlaySelector =
-          "#spider-acct-info,#predator-splash-overlay,#predator-deposit-qr-overlay,#predator-deposit-qr-reopen";
-        let rawBodyText = runtimeWindow.document.body.innerText || "";
-        for (const overlay of Array.from(runtimeWindow.document.querySelectorAll(injectedOverlaySelector))) {
-          const overlayText = overlay.innerText || "";
-          if (overlayText) {
-            rawBodyText = rawBodyText.split(overlayText).join(" ");
-          }
-        }
-        const bodyText = normalize(rawBodyText);
-        const hasRegistrationPrompt =
-          /suporta apenas conta|fazer login|registro vinculativo/.test(bodyText) ||
-          (/registro/.test(bodyText) && /login/.test(bodyText) && /senha/.test(bodyText));
-
-        const isVisible = (element: { getBoundingClientRect: () => { bottom: number; height: number; right: number; top: number; width: number } }) => {
-          const rect = element.getBoundingClientRect();
-          return rect.width > 10 && rect.height > 10 && rect.bottom > 0 && rect.right > 0 && rect.top < runtimeWindow.innerHeight;
-        };
-        const paymentFieldSelector =
-          "input[placeholder*='valor' i],input[placeholder*='amount' i],input[placeholder*='pix' i],input[name*='amount' i],input[id*='amount' i],input[class*='amount' i],input[class*='recharge' i],input[class*='deposit' i],input[data-valid*='amount' i],textarea[placeholder*='valor' i],textarea[placeholder*='amount' i],[contenteditable='true'][class*='amount' i],[role='textbox'][class*='amount' i],[class*='pay-channel' i],[class*='recharge-channel' i],[class*='deposit-channel' i]";
-        const qrResultSelector =
-          "#qrcode1 canvas,#qrcode1 img,#qrcode1 svg,#qrcode1 table,.codeimg canvas,.codeimg img,.codeimg svg,[class*='qrcode' i],[id*='qrcode' i],[class*='qr-code' i],[id*='qr-code' i],canvas[class*='qr' i],img[class*='qr' i],img[src*='qr' i],svg[class*='qr' i]";
-        const popupRootSelector =
-          ".ui-popup,.ui-dialog,.van-popup,.van-dialog,[role='dialog'],[aria-modal='true'],.modal,.popup";
-        const strongDepositContainerSelector =
-          "[class*='recharge' i],[id*='recharge' i],[class*='deposit' i],[id*='deposit' i],[class*='cashier' i],[id*='cashier' i],[class*='wallet' i],[id*='wallet' i]";
-        const roots = Array.from(
-          runtimeWindow.document.querySelectorAll(`${popupRootSelector},${strongDepositContainerSelector}`)
-        ).filter(isVisible);
-        const path = normalize(`${runtimeWindow.location.pathname} ${runtimeWindow.location.search}`);
-        const isRechargeRoute = /home\/recharge|rechargecurrent|deposit|m_recharge|wallet|recharge/.test(path);
-
-        const isDepositContainer = (root: {
-          getAttribute?: (name: string) => string | null;
-          querySelector?: (selector: string) => unknown;
-          querySelectorAll?: (selector: string) => Iterable<{
-            getBoundingClientRect: () => { bottom: number; height: number; right: number; top: number; width: number };
-          }>;
-          textContent?: string | null;
-        }) => {
-          const marker = normalize(
-            [
-              root.getAttribute?.("id"),
-              root.getAttribute?.("class"),
-              root.getAttribute?.("aria-label"),
-              root.getAttribute?.("title")
-            ].join(" ")
-          );
-          const text = normalize(root.textContent);
-          const combined = `${marker} ${text}`;
-          const hasStrongDepositMarker =
-            /(^|\s|_|-|\/)(deposit|deposito|recharge|recarga|cashier|wallet|carteira|m_recharge)(\s|_|-|\/|$)|walletshow|payway|submittable/.test(
-              marker
-            );
-          const hasActionableField = Array.from(root.querySelectorAll?.(paymentFieldSelector) ?? []).some(isVisible);
-          const hasQrResult = Array.from(root.querySelectorAll?.(qrResultSelector) ?? []).some(isVisible);
-          if (hasActionableField || hasQrResult) {
-            return (
-              hasStrongDepositMarker ||
-              /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet|pix|brl-pix/.test(combined)
-            );
-          }
-
-          return (
-            hasStrongDepositMarker &&
-            /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/.test(combined) &&
-            /pix|valor|amount|canal|channel|pagamento|payment|metodo|method|qrcode|qr code|brl-pix|deposite agora|deposit now/.test(
-              text
-            )
-          );
-        };
-
-        if (hasRegistrationPrompt) {
-          return false;
-        }
-
-        if (roots.some(isDepositContainer)) {
-          return true;
-        }
-
-        const visiblePaymentField = Array.from(runtimeWindow.document.querySelectorAll(paymentFieldSelector)).some(isVisible);
-        const visibleQrResult = Array.from(runtimeWindow.document.querySelectorAll(qrResultSelector)).some(isVisible);
-        const hasDepositBody =
-          /deposito|depositar|recarga|recarregar|recharge|cashier|carteira|wallet/.test(bodyText) &&
-          /pix|valor|amount|canal|channel|pagamento|payment|metodo|method|qrcode|qr code|brl-pix|deposite agora|deposit now/.test(
-            bodyText
-          );
-
-        return visibleQrResult || (visiblePaymentField && (isRechargeRoute || hasDepositBody)) || (isRechargeRoute && hasDepositBody);
-      })
-      .catch(() => false);
-  }
-
   private async waitForDepositSurface(page: Page, timeoutMs: number): Promise<boolean> {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      if (await this.hasDepositSurface(page)) {
+      if (await hasDepositSurface(page)) {
         return true;
       }
       await page.waitForTimeout(180);
     }
 
-    return this.hasDepositSurface(page);
+    return hasDepositSurface(page);
   }
 
   // Diagnostico do campo de valor do deposito: serve para distinguir "campo nao renderizou"
@@ -10018,7 +9277,7 @@ export class AutomationRuntimeService {
   // rejeitou". Reporta viewport, se achou um root de deposito, e os inputs/presets visiveis
   // com seus atributos e dimensoes. Mesmo formato compacto do describeProfileEntryPointState.
   async describeDepositFieldState(page: Page): Promise<string | undefined> {
-    const frame = this.resolveContentFrame(page);
+    const frame = resolveContentFrame(page);
     const snapshot = await frame
       .evaluate(() => {
         type RuntimeElement = {
@@ -10286,38 +9545,6 @@ export class AutomationRuntimeService {
 
     return label;
   }
-
-  private resolveContentFrame(page: Page): Page | Frame {
-    const frames = page.frames();
-    const childFrames = frames.filter((f) => f !== page.mainFrame());
-
-    if (childFrames.length === 0) {
-      return page;
-    }
-
-    const readFrameTarget = (frame: Frame) => {
-      const url = (() => { try { return frame.url(); } catch { return ""; } })();
-      const name = (() => { try { return frame.name(); } catch { return ""; } })();
-      return `${url} ${name}`;
-    };
-
-    const isBlankFrame = (target: string) => /^about:(blank|srcdoc)(\s|$)/.test(target);
-    const appFrame = childFrames.find((frame) => {
-      const target = readFrameTarget(frame);
-      return !isBlankFrame(target) && /h5_iframe|isredirect=1|\/home\/|\/home\b|game/i.test(target);
-    });
-    if (appFrame) {
-      return appFrame;
-    }
-
-    const contentFrame = childFrames.find((frame) => {
-      const target = readFrameTarget(frame);
-      return !isBlankFrame(target) && !/captcha|recaptcha|hcaptcha|turnstile|geetest|gcaptcha/i.test(target);
-    });
-
-    return contentFrame ?? page;
-  }
-
   private async normalizeRegistrationEntryPage(_runId: string, page: Page, profileName: string): Promise<void> {
     const iframeSource = await page
       .evaluate(() => {
@@ -10347,48 +9574,10 @@ export class AutomationRuntimeService {
       }
     }
 
-    const uiFamily = await this.detectRegistrationUiFamily(page);
+    const uiFamily = await detectRegistrationUiFamily(page);
     if (uiFamily) {
       console.log(`[${profileName}] Adaptador de cadastro detectado: ${uiFamily}.`);
     }
-  }
-
-  private async detectRegistrationUiFamily(page: Page): Promise<string | undefined> {
-    const signals = await page
-      .evaluate(() => {
-        type RuntimeElement = unknown;
-        const runtimeWindow = globalThis as unknown as {
-          document: {
-            documentElement: { innerHTML: string };
-            querySelector: (selector: string) => RuntimeElement | null;
-          };
-        };
-        const html = runtimeWindow.document.documentElement.innerHTML.toLowerCase().slice(0, 250000);
-        return {
-          hasLegacyVue: /\/home\/js\/app\.|\/webapi\/client\/|\/invite\/index|activitylist/.test(html),
-          hasModernSubmit: Boolean(runtimeWindow.document.querySelector("#insideRegisterSubmitClick")),
-          hasVant: /van-popup|van-tabs|van-field|van-tab/.test(html)
-        };
-      })
-      .catch(() => undefined);
-
-    if (!signals) {
-      return undefined;
-    }
-
-    if (signals.hasModernSubmit) {
-      return "whitelabel moderno";
-    }
-
-    if (signals.hasLegacyVue && signals.hasVant) {
-      return "vue/vant legado";
-    }
-
-    if (signals.hasVant) {
-      return "vant generico";
-    }
-
-    return "generico";
   }
 
   private async ensureRegistrationDialogOpen(runId: string, page: Page, profileName: string): Promise<void> {
@@ -10750,7 +9939,7 @@ export class AutomationRuntimeService {
     for (let pass = 0; pass < 8; pass += 1) {
       this.ensureRunActive(runId);
       const result = await this.withPopupPageGuard(page, () =>
-        this.resolveContentFrame(page)
+        resolveContentFrame(page)
         .evaluate(() => {
           type DismissPopupResult = {
             dismissed: number;
@@ -12109,31 +11298,10 @@ export class AutomationRuntimeService {
     if (!state || state.auxiliary || state.viewportWidth <= 0 || state.viewportHeight <= 0) {
       return false;
     }
-    if (this.isDetachedDepositRouteState(state)) {
+    if (isDetachedDepositRouteState(state)) {
       return false;
     }
     return this.pollPlatformLoadingClear(runId, page, 2500, 250);
-  }
-
-  private isDetachedDepositRouteState(state: { body: string; url: string }): boolean {
-    let path = "";
-    try {
-      const parsed = new URL(state.url);
-      path = `${parsed.pathname}${parsed.search}${parsed.hash}`.toLowerCase();
-    } catch {
-      path = state.url.toLowerCase();
-    }
-
-    const isDetachedRechargePath = /(^|\/)(m_recharge|firstrecharge)(\/|\?|#|$)/i.test(path);
-    if (!isDetachedRechargePath) {
-      return false;
-    }
-
-    const hasUsableDepositContent =
-      /deposito|depositar|recarga|recarregar|recharge|pix|valor|amount|canal|channel|pagamento|payment|metodo|method|qrcode|qr code/.test(
-        state.body
-      );
-    return state.body.length < 120 || !hasUsableDepositContent;
   }
 
   // Garante a home carregada no inicio de um fluxo manual (saque/PIX/deposito). Esses fluxos
@@ -12149,7 +11317,7 @@ export class AutomationRuntimeService {
     startUrl: string
   ): Promise<void> {
     const state = await this.readAutomationPageState(page).catch(() => undefined);
-    if (state && this.isDetachedDepositRouteState(state)) {
+    if (state && isDetachedDepositRouteState(state)) {
       this.log(
         runId,
         "info",

@@ -33,7 +33,13 @@ export class UpdateService {
 
   constructor(private readonly options: UpdateServiceOptions) {
     this.enabled = options.enabled;
-    this.updater = options.updater ?? getDefaultUpdater();
+    // Quando as atualizacoes estao desabilitadas (dev nao empacotado), NAO
+    // construimos o updater real: acessar electronUpdater.autoUpdater constroi
+    // um AppUpdater avidamente, e o construtor valida app.getVersion() -- que em
+    // dev retorna "0.0" e lanca ERR_UPDATER_INVALID_VERSION, matando o bootstrap
+    // e deixando a janela preta. Desabilitado, o updater nunca e usado (os
+    // metodos publicos dao early-return em !enabled), entao um no-op basta.
+    this.updater = options.updater ?? (this.enabled ? getDefaultUpdater() : createNoopUpdater());
     this.status = this.enabled
       ? {
           phase: "idle",
@@ -177,6 +183,19 @@ export class UpdateService {
 
 function getDefaultUpdater(): UpdaterLike {
   return (electronUpdater as { autoUpdater: UpdaterLike }).autoUpdater;
+}
+
+// Updater inerte usado quando as atualizacoes automaticas estao desabilitadas.
+// Evita instanciar o electron-updater (e sua validacao de versao) em dev.
+function createNoopUpdater(): UpdaterLike {
+  const updater: UpdaterLike = {
+    autoDownload: false,
+    autoInstallOnAppQuit: false,
+    checkForUpdates: async () => undefined,
+    quitAndInstall: () => undefined,
+    on: () => updater
+  };
+  return updater;
 }
 
 export function shouldEnableAutoUpdates(isPackaged: boolean): boolean {
