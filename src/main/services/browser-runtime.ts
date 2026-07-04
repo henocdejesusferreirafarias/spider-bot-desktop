@@ -33,6 +33,13 @@ import { ProxyChainService, type ProxyTunnelFailure } from "./proxy-chain.js";
 import { resolveRuntimeWindowTargetsStrict } from "./runtime-window-selection.js";
 import { selectMobileDevice, type DeviceProfile } from "./device-catalog.js";
 import {
+  bundleMatchesEngine,
+  isKnownGameFrameUrl,
+  knownGameFramePatternSources,
+  patchGameSpeedScript,
+  resolveProviderByScriptUrl
+} from "./provider-timing.js";
+import {
   detectPlatformDescriptor,
   getCurrentRoute,
   hasSpaRouter,
@@ -5742,7 +5749,25 @@ export class BrowserRuntimeService {
     return `
 (() => {
   const pgGameOnly = ${JSON.stringify(Boolean(options.pgGameOnly))};
-  const isEmbeddedPgGame = () => {
+  // Padroes de frame de jogo conhecidos (do registry de provedores). O speed so
+  // ativa dentro de um iframe de jogo reconhecido — evita interferir em timers de
+  // login/cadastro/deposito/saque.
+  const gameFramePatterns = ${JSON.stringify(knownGameFramePatternSources())}.map((s) => {
+    try { return new RegExp(s, "i"); } catch (e) { return null; }
+  }).filter(Boolean);
+  const isKnownGameFrame = () => {
+    try {
+      if (window.top === window) return false;
+      const path = window.location.pathname || "";
+      const href = window.location.href || "";
+      return gameFramePatterns.some((re) => re.test(path) || re.test(href));
+    } catch (e) {
+      return false;
+    }
+  };
+  // Frame de jogo PG/Cocos especificamente: so a guarda de loading/interstitial
+  // do Cocos (abaixo) depende disto; outros provedores nao sao gated por ela.
+  const isPgCocosFrame = () => {
     try {
       if (window.top === window) return false;
       return /\\/\\d+\\/index\\.html$/i.test(window.location.pathname || "");
@@ -5750,7 +5775,7 @@ export class BrowserRuntimeService {
       return false;
     }
   };
-  if (pgGameOnly && !isEmbeddedPgGame()) return;
+  if (pgGameOnly && !isKnownGameFrame()) return;
   const existingFullControls = () => {
     try {
       return Boolean(window.__predatorMWFull) ||
@@ -5781,7 +5806,7 @@ export class BrowserRuntimeService {
     try { currentRoot.setAttribute(name, value); return true; } catch (e) { return false; }
   };
   const isPgLoadingOrInterstitial = () => {
-    if (!isEmbeddedPgGame()) return false;
+    if (!isPgCocosFrame()) return false;
     try {
       if (window.__predatorPgSpeedUnlocked) return false;
       const text = String(document.body && document.body.innerText || "");
@@ -6058,7 +6083,7 @@ export class BrowserRuntimeService {
         await this.setRuntimeControlAttr(target, "data-rtc-speed", String(speedRate));
         // Speed hack so em frames de jogos: evita interferir com timers de
         // login/cadastro/deposito/saque (anti-bot, animacoes, polling de QR).
-        const isPgGameTarget = this.isPgGameFrameUrl(target.url());
+        const isPgGameTarget = isKnownGameFrameUrl(target.url());
         if (isPgGameTarget && speedRate > 1) {
           await this.installRuntimeControlsMainWorld(target, speedRate);
         }
@@ -6187,17 +6212,8 @@ export class BrowserRuntimeService {
       .catch(() => false);
   }
 
-  private isPgGameFrameUrl(value: string): boolean {
-    try {
-      const parsed = new URL(value);
-      return /\/\d+\/index\.html$/i.test(parsed.pathname);
-    } catch {
-      return /\/\d+\/index\.html(?:$|[?#])/i.test(value);
-    }
-  }
-
   private hasPgGameFrame(page: Page): boolean {
-    return page.frames().some((frame) => this.isPgGameFrameUrl(frame.url()));
+    return page.frames().some((frame) => isKnownGameFrameUrl(frame.url()));
   }
 
   private isSessionDeadError(error: unknown): boolean {
@@ -6389,24 +6405,27 @@ export class BrowserRuntimeService {
       const request = route.request();
       const url = request.url();
 
-      // 1. Patch de speed em scripts de jogos PG/Cocos
-      if (this.isPotentialPgGameScript(url)) {
+      // 1. Patch de speed no bundle do engine do jogo (por provedor). So
+      // provedores com estrategia de patch de bundle (ex.: PG/Cocos) definem
+      // scriptMatch e sao resolvidos aqui; provedores generic-timers aceleram
+      // via overrides de timer no frame, sem tocar no bundle.
+      const speedProvider = resolveProviderByScriptUrl(url);
+      if (speedProvider) {
         try {
           const response = await route.fetch();
           const body = await response.text();
           const speedRate = this.contextSpeedRates.get(context) ?? this.defaultSpeedRate;
-          const candidate = this.describePgGameSpeedCandidate(body);
-          if (candidate.hasInterestingToken) {
+          if (bundleMatchesEngine(body, speedProvider)) {
             appendInputDiagnostic({
               kind: "pg-game-speed-script-candidate",
               url: sanitizeDiagnosticUrl(url),
               resourceType: request.resourceType(),
               frameUrl: sanitizeDiagnosticUrl(request.frame().url()),
               bodyLength: body.length,
-              ...candidate
+              provider: speedProvider.id
             });
           }
-          const patchedBody = this.patchPgGameSpeedScript(body, speedRate);
+          const patchedBody = patchGameSpeedScript(body, speedRate, speedProvider);
           if (patchedBody !== body) {
             const headers: Record<string, string> = {
               ...response.headers(),
@@ -6456,73 +6475,6 @@ export class BrowserRuntimeService {
   }
 
 
-
-  private isPotentialPgGameScript(url: string): boolean {
-    try {
-      const parsed = new URL(url);
-      if (!/\.js$/i.test(parsed.pathname)) {
-        return false;
-      }
-      // Dois formatos de entrega do bundle do motor PG/Cocos:
-      //  - CDN classico de assets: hostname comeca com "static." (ex.: static.pgsoft...).
-      //  - Pack do jogo servido sob /<gameId>/...js, que e como o iframe do jogo
-      //    (ex.: https://m.<aleatorio>.com/1543462/index.html) carrega o bundle Cocos.
-      //    O host rotaciona, entao filtramos pelo segmento numerico da pasta do jogo,
-      //    nao pelo hostname. Sem isto a rota nunca alcanca o bundle e o patch de
-      //    _timeScale (speed) jamais e aplicado.
-      return /(^|\.)static\./i.test(parsed.hostname) || /^\/\d+\//.test(parsed.pathname);
-    } catch {
-      return /\.js(?:$|[?#])/i.test(url) && (/static\./i.test(url) || /\/\d+\//.test(url));
-    }
-  }
-
-  private describePgGameSpeedCandidate(body: string): {
-    hasInterestingToken: boolean;
-    hasTimeScale: boolean;
-    hasDirector: boolean;
-    hasRequestAnimationFrame: boolean;
-    hasTimescaleAssignment: boolean;
-  } {
-    const hasTimeScale = body.includes("_timeScale");
-    const hasDirector = /(?:cc\[[\"']Director[\"']\]|[\"']Director[\"'])/.test(body);
-    const hasRequestAnimationFrame = body.includes("requestAnimationFrame");
-    const hasTimescaleAssignment =
-      /this\["_timeScale"\]\s*=\s*1/.test(body) ||
-      /this\['_timeScale'\]\s*=\s*1/.test(body) ||
-      /this\._timeScale\s*=\s*1/.test(body);
-
-    return {
-      hasInterestingToken: hasTimeScale || hasDirector || hasRequestAnimationFrame,
-      hasTimeScale,
-      hasDirector,
-      hasRequestAnimationFrame,
-      hasTimescaleAssignment
-    };
-  }
-
-  private patchPgGameSpeedScript(body: string, rate: number): string {
-    const speedRate = this.clampNumber(rate, 1, 25);
-    if (
-      !body.includes("_timeScale") ||
-      !body.includes("requestAnimationFrame") ||
-      !/(?:cc\[[\"']Director[\"']\]|[\"']Director[\"'])/.test(body)
-    ) {
-      return body;
-    }
-
-    const gameSpeedGetter =
-      `Object.defineProperty(this,"_timeScale",{configurable:true,get:function(){try{var d=globalThis.document;if(!d||!d.body)return 1;var text=String(d.body.innerText||"");var loading=/A\\s*carregar|A\\s*iniciar\\s*sess[aã]o|INICIAR|Retorno\\s+para\\s+o\\s+Jogador|Internet\\s+est[aá]\\s+lenta|lig[aá]?[cç][aã]o\\s+[àa]\\s+Internet\\s+est[aá]\\s+lenta|Aparentemente|Atualizar|Aguardar|Jogos\\s+PG\\s+Oficiais|Ignorar|Aceitar|verifica|Desative\\s+p[aá]ginas\\s+inativas/i.test(text);if(loading||!d.querySelector("#GameCanvas,canvas.gameCanvas,canvas"))return 1;var root=d.documentElement;var v=root&&(root.getAttribute("data-rtc-speed")||root.getAttribute("data-pg-speed-rate"));if(!v&&globalThis.localStorage)v=globalThis.localStorage.getItem("__pg_speed_rate");var n=Number(v);return Math.max(1,Math.min(25,Number.isFinite(n)?n:${JSON.stringify(speedRate)}))}catch(e){return 1}},set:function(v){try{this.__predatorOriginalTimeScale=v}catch(e){}}})`;
-    const patched = body
-      .replace(/this\["_timeScale"\]\s*=\s*1/g, gameSpeedGetter)
-      .replace(/this\['_timeScale'\]\s*=\s*1/g, gameSpeedGetter)
-      .replace(/this\._timeScale\s*=\s*1/g, gameSpeedGetter);
-
-    if (patched === body) {
-      return body;
-    }
-
-    return patched;
-  }
 
   private buildFingerprintConsistencyScript(config: FingerprintConsistencyConfig): string {
     return `
