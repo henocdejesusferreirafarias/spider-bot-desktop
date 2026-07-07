@@ -3,7 +3,8 @@ import test from "node:test";
 import type { Page } from "patchright";
 import {
   programmaticDeposit,
-  programmaticPixUiAction
+  programmaticPixUiAction,
+  waitForSpaRouter
 } from "../src/main/services/spa-navigation.js";
 
 type VuexDepositHarness = {
@@ -514,4 +515,43 @@ test("PIX registration submits its form without pressing the confirm button", as
 
   assert.equal(result.ok, true);
   assert.equal(submitCalls, 1);
+});
+
+// waitForSpaRouter substitui os loops de probe inline (waitForTimeout fixo) por uma
+// espera condicional no router acessivel. hasSpaRouter roda `spa.evaluate(fn, undefined,
+// MAIN_WORLD)` e retorna Boolean(findRouter()); aqui fingimos apenas o retorno do evaluate.
+
+test("waitForSpaRouter: retorna true assim que o router fica acessivel", async () => {
+  let calls = 0;
+  const spa = {
+    // Router aparece so na 3a checagem: exercita o loop de polling.
+    evaluate: async () => {
+      calls += 1;
+      return calls >= 3;
+    }
+  } as unknown as Page;
+
+  const ready = await waitForSpaRouter(spa, 2000, 1);
+  assert.equal(ready, true);
+  assert.ok(calls >= 3);
+});
+
+test("waitForSpaRouter: retorna a checagem final (false) ao esgotar o teto, sem lancar", async () => {
+  const spa = {
+    evaluate: async () => false
+  } as unknown as Page;
+
+  const ready = await waitForSpaRouter(spa, 30, 1);
+  assert.equal(ready, false);
+});
+
+test("waitForSpaRouter: evaluate que rejeita e tratado como router ausente (guard do catch)", async () => {
+  const spa = {
+    evaluate: async () => {
+      throw new Error("frame detached");
+    }
+  } as unknown as Page;
+
+  const ready = await waitForSpaRouter(spa, 30, 1);
+  assert.equal(ready, false);
 });

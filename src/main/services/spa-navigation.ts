@@ -260,6 +260,22 @@ export async function hasSpaRouter(spa: SpaHandle): Promise<boolean> {
     .catch(() => false);
 }
 
+// Aguarda (no Node, sem sleeps fixos no browser) o router da SPA ficar acessivel.
+// Substitui os loops de probe inline que repetiam waitForTimeout fixos; o teto so
+// como rede de seguranca. Retorna a checagem final ao esgotar o tempo (nao lanca).
+export async function waitForSpaRouter(
+  spa: SpaHandle,
+  timeoutMs: number,
+  pollMs = 200
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await hasSpaRouter(spa)) return true;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return hasSpaRouter(spa);
+}
+
 export async function getCurrentRoute(spa: SpaHandle): Promise<RouteInfo | null> {
   return spa
     .evaluate(() => {

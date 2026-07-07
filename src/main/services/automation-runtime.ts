@@ -36,6 +36,7 @@ import {
   detectPlatformDescriptor,
   describeSpaState,
   hasSpaRouter,
+  waitForSpaRouter,
   programmaticDeposit,
   programmaticPixUiAction,
   resolvePlatformDescriptor,
@@ -63,7 +64,6 @@ import {
   hasWithdrawalPasswordRequiredCallToAction,
   hasExistingWithdrawalPasswordModal,
   hasVisibleNumberKeyboard,
-  hasDepositSurface,
   detectRegistrationUiFamily,
   isDetachedDepositRouteState,
 } from "./screen-detection.js";
@@ -76,6 +76,8 @@ import {
   waitForAddPixModal,
   waitForPixRegistrationSaved,
   waitForVisibleNumberKeyboard,
+  waitForDepositSurface,
+  waitForProfileSurface,
 } from "./screen-waits.js";
 import {
   extractQrCode,
@@ -2647,7 +2649,7 @@ export class AutomationRuntimeService {
         depositPage,
         profile.name,
       ).catch(() => undefined);
-      await depositPage.waitForTimeout(700).catch(() => undefined);
+      await waitForProfileSurface(depositPage, 6000).catch(() => false);
 
       this.ensureRunActive(runId);
       await this.fillDepositAmountAndGenerateQr(
@@ -2689,29 +2691,16 @@ export class AutomationRuntimeService {
       .catch(() => undefined);
 
     let spa = resolveContentFrame(page);
-    let routerReady = false;
-    const probeDeadline = Date.now() + 5000;
-    while (Date.now() < probeDeadline) {
-      this.ensureRunActive(runId);
-      if (await hasSpaRouter(spa)) {
-        routerReady = true;
-        break;
-      }
-      await page.waitForTimeout(200).catch(() => undefined);
-    }
+    this.ensureRunActive(runId);
+    let routerReady = await waitForSpaRouter(spa, 5000);
+    this.ensureRunActive(runId);
 
     if (!routerReady) {
       await this.ensurePlatformHomeLoaded(runId, page, profile, startUrl);
       spa = resolveContentFrame(page);
-      const bootDeadline = Date.now() + 10000;
-      while (Date.now() < bootDeadline) {
-        this.ensureRunActive(runId);
-        if (await hasSpaRouter(spa)) {
-          routerReady = true;
-          break;
-        }
-        await page.waitForTimeout(200).catch(() => undefined);
-      }
+      this.ensureRunActive(runId);
+      routerReady = await waitForSpaRouter(spa, 10000);
+      this.ensureRunActive(runId);
     }
 
     if (!routerReady) {
@@ -2752,7 +2741,7 @@ export class AutomationRuntimeService {
         5000,
       );
     } else {
-      await page.waitForTimeout(800).catch(() => undefined);
+      await waitForWithdrawalOrPasswordSignal(page, 8000);
     }
     return descriptor;
   }
@@ -2788,7 +2777,7 @@ export class AutomationRuntimeService {
       withdrawalPage,
       profile.name,
     ).catch(() => undefined);
-    await withdrawalPage.waitForTimeout(700).catch(() => undefined);
+    await waitForProfileSurface(withdrawalPage, 6000).catch(() => false);
 
     this.ensureRunActive(runId);
     const descriptor = await this.openWithdrawalViaRoute(
@@ -5753,7 +5742,7 @@ export class AutomationRuntimeService {
       recoveryPage,
       profile.name,
     ).catch(() => undefined);
-    await recoveryPage.waitForTimeout(900).catch(() => undefined);
+    await waitForProfileSurface(recoveryPage, 6000).catch(() => false);
     this.persistRedirectedPlatformUrl(runId, profile, recoveryPage.url());
     return recoveryPage;
   }
@@ -7824,7 +7813,7 @@ export class AutomationRuntimeService {
       .catch(() => undefined);
 
     if (result?.label) {
-      await page.waitForTimeout(450).catch(() => undefined);
+      await waitForDepositSurface(page, 4500).catch(() => false);
       return true;
     }
     return false;
@@ -7854,7 +7843,7 @@ export class AutomationRuntimeService {
         profileName,
       );
       if (opened) {
-        await this.waitForDepositSurface(page, 4500).catch(() => false);
+        await waitForDepositSurface(page, 4500).catch(() => false);
         result = await programmaticDeposit(spa, depositAmount, 20000);
       }
     }
@@ -11614,21 +11603,6 @@ export class AutomationRuntimeService {
       }
       await page.waitForTimeout(140);
     }
-  }
-
-  private async waitForDepositSurface(
-    page: Page,
-    timeoutMs: number,
-  ): Promise<boolean> {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-      if (await hasDepositSurface(page)) {
-        return true;
-      }
-      await page.waitForTimeout(180);
-    }
-
-    return hasDepositSurface(page);
   }
 
   // Diagnostico do campo de valor do deposito: serve para distinguir "campo nao renderizou"
