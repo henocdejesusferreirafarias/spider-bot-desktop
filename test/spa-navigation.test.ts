@@ -375,6 +375,7 @@ test("PIX PHONE type is written through the Vue model update handler", async () 
   };
   const selectElement = { __vueParentComponent: selectComponent };
   const modalRoot = {
+    closest: () => modalRoot,
     getBoundingClientRect: () => ({ height: 400, width: 300 }),
     querySelectorAll: () => [selectElement],
     textContent: "Adicionar PIX"
@@ -428,7 +429,7 @@ test("PIX PHONE type opens the production selector and chooses PHONE through tou
     textContent: "CPF"
   };
   const modalRoot = {
-    closest: () => null,
+    closest: () => modalRoot,
     getBoundingClientRect: () => ({ height: 400, width: 300 }),
     querySelector: (selector: string) =>
       selector === ".ui-popover__wrapper" ? currentType : null,
@@ -473,7 +474,7 @@ test("PIX registration dispatches a synthetic click on the live confirm button",
     textContent: "Confirmar"
   };
   const modalRoot = {
-    closest: () => null,
+    closest: () => modalRoot,
     getBoundingClientRect: () => ({ height: 400, width: 300 }),
     querySelector: (selector: string) =>
       selector === "#bindWithdrawAccountNextClick" ? button : null,
@@ -500,7 +501,7 @@ test("PIX registration submits its form without pressing the confirm button", as
     }
   };
   const modalRoot = {
-    closest: () => null,
+    closest: () => modalRoot,
     getBoundingClientRect: () => ({ height: 400, width: 300 }),
     querySelector: (selector: string) => selector === "form" ? form : null,
     querySelectorAll: () => [],

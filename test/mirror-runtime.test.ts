@@ -8,6 +8,7 @@ const { BrowserRuntimeService, projectMirrorFrameCoordinates } = await import(
 const { AutomationRuntimeService, isPlausibleQrImageDimensions } = await import(
   "../src/main/services/automation-runtime.js"
 );
+const { extractQrCode } = await import("../src/main/services/qr-dom.js");
 
 type MirrorRuntimeHarness = {
   applyMirrorStateToAllPages(enabled: boolean, strict: boolean): Promise<void>;
@@ -111,10 +112,7 @@ test("QR screenshot validation accepts squares and rejects viewport captures", (
 });
 
 test("QR extraction uses intrinsic canvas pixels instead of its responsive CSS size", () => {
-  const prototype = AutomationRuntimeService.prototype as unknown as {
-    extractQrCode: () => Promise<string | null>;
-  };
-  const source = prototype.extractQrCode.toString();
+  const source = extractQrCode.toString();
 
   assert.match(source, /hasQrContrast\(canvas,\s*canvas\.width,\s*canvas\.height\)/);
   assert.match(source, /probe\.width\s*=\s*64/);

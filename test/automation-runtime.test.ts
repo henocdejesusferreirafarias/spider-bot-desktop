@@ -49,6 +49,15 @@ type DepositRuntimeHarness = {
   ): Promise<void>;
 };
 
+type RegistrationRuntimeHarness = RuntimeHarness & {
+  fastAcceptRegistrationTerms(runId: string, page: Page): Promise<boolean>;
+  fastFillRegistrationOptionalFields(
+    runId: string,
+    page: Page,
+    values: { cpf?: string; phoneNumber?: string; realName?: string }
+  ): Promise<{ cpf: boolean; phone: boolean; realName: boolean }>;
+};
+
 function createRuntime(accountPhoneNumber = "", browserRuntime: Record<string, unknown> = {}) {
   const persisted: string[] = [];
   const database = {
@@ -68,7 +77,7 @@ function createRuntime(accountPhoneNumber = "", browserRuntime: Record<string, u
   );
   return {
     persisted,
-    runtime: runtime as unknown as RuntimeHarness & DepositRuntimeHarness & Record<string, unknown>
+    runtime: runtime as unknown as RegistrationRuntimeHarness & DepositRuntimeHarness & Record<string, unknown>
   };
 }
 
@@ -90,27 +99,17 @@ function createPageWithoutCheckbox(): Page {
 
 test("registration completion fills visible empty phone, name and CPF fields", async () => {
   const { runtime } = createRuntime();
-  const typedValues: Array<{ field: string; value: string }> = [];
-  runtime.getVisibleInputByHints = async (
-    _runId: string,
-    _page: Page,
-    fieldName: string
-  ) => ({
-    fieldName,
-    inputValue: async () => ""
-  }) as unknown as Locator;
+  const filledValues: Array<{ field: string; value: string }> = [];
   runtime.generateRegistrationPhoneNumber = () => "11987654321";
-  runtime.humanTypeField = async (
-    _runId: string,
-    _page: Page,
-    locator: Locator,
-    value: string
-  ) => {
-    typedValues.push({
-      field: (locator as unknown as { fieldName: string }).fieldName,
-      value
-    });
+  runtime.fastFillRegistrationOptionalFields = async (_runId, _page, values) => {
+    filledValues.push(
+      { field: "celular do cadastro", value: values.phoneNumber ?? "" },
+      { field: "nome real do cadastro", value: values.realName ?? "" },
+      { field: "CPF do cadastro", value: values.cpf ?? "" }
+    );
+    return { cpf: true, phone: true, realName: true };
   };
+  runtime.fastAcceptRegistrationTerms = async () => false;
   runtime.log = () => undefined;
   const context: RemoteExecutionContext = {};
 
@@ -121,7 +120,7 @@ test("registration completion fills visible empty phone, name and CPF fields", a
     context
   );
 
-  assert.deepEqual(typedValues, [
+  assert.deepEqual(filledValues, [
     { field: "celular do cadastro", value: "11987654321" },
     { field: "nome real do cadastro", value: "Maria de Teste" },
     { field: "CPF do cadastro", value: "12345678909" }
@@ -131,13 +130,12 @@ test("registration completion fills visible empty phone, name and CPF fields", a
 
 test("registration completion preserves fields that already have values", async () => {
   const { runtime } = createRuntime();
-  let typed = false;
-  runtime.getVisibleInputByHints = async () => ({
-    inputValue: async () => "(11) 99999-9999"
-  }) as Locator;
-  runtime.humanTypeField = async () => {
-    typed = true;
+  let filled = false;
+  runtime.fastFillRegistrationOptionalFields = async () => {
+    filled = true;
+    return { cpf: false, phone: false, realName: false };
   };
+  runtime.fastAcceptRegistrationTerms = async () => false;
 
   await runtime.completeRegistrationFields(
     "run-1",
@@ -146,7 +144,7 @@ test("registration completion preserves fields that already have values", async 
     {}
   );
 
-  assert.equal(typed, false);
+  assert.equal(filled, true);
 });
 
 test("remote registration submit uses the semantic form control locator", async () => {
@@ -193,6 +191,7 @@ test("remote registration submit uses the semantic form control locator", async 
 
 test("manual deposit starts directly from the loaded SPA without opening Profile", async () => {
   const page = {
+    isClosed: () => true,
     waitForLoadState: async () => undefined,
     waitForTimeout: async () => undefined
   } as unknown as Page;
@@ -233,6 +232,7 @@ test("manual deposit starts directly from the loaded SPA without opening Profile
 
 test("post-registration deposit with an amount bypasses Profile navigation", async () => {
   const page = {
+    isClosed: () => true,
     waitForTimeout: async () => undefined
   } as unknown as Page;
   const browserRuntime = {
