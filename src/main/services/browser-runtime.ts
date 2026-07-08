@@ -1007,6 +1007,11 @@ export class BrowserRuntimeService {
   private readonly mirrorReplayMarkedPages = new WeakSet<Page>();
   private readonly mirrorReplayClearTimers = new WeakMap<Page, ReturnType<typeof setTimeout>>();
   private readonly mirrorTouchActive = new WeakMap<Page, boolean>();
+  // Instante (epoch ms) ate o qual um replay do espelho ainda esta ativo NESTA pagina.
+  // O watchdog de emulacao de toque consulta isto para adiar o tick apenas durante a
+  // rajada de replay (evitando Emulation.* concorrente com Input.*/Runtime.* do espelho),
+  // sem precisar pausar a emulacao por toda a sessao do espelho.
+  private readonly mirrorReplayActiveUntil = new WeakMap<Page, number>();
   private readonly contextSpeedRates = new WeakMap<BrowserContext, number>();
   private readonly launchingSlotIndexes = new Set<number>();
   private readonly activeSplashes = new Map<string, string>();
@@ -2233,6 +2238,7 @@ export class BrowserRuntimeService {
         // para reconverter ratio->px corretamente no proximo replay.
         this.mirrorViewportCache.delete(page);
         this.mirrorTouchActive.delete(page);
+        this.mirrorReplayActiveUntil.delete(page);
         this.clearMirrorReplayMarker(page);
         // Forca re-registro do script de captura no proximo refreshRuntimeState.
         // Em navegacoes cross-process a sessao CDP morre; ao limpar o estado
@@ -5065,6 +5071,13 @@ export class BrowserRuntimeService {
     );
   }
 
+  // True enquanto uma rajada de replay do espelho ainda esta ativa nesta pagina.
+  // Usado pelo watchdog de emulacao de toque para adiar Emulation.* sem sobrepor ao
+  // trafego CDP do espelho (Input.*/Runtime.*) na mesma pagina.
+  private isMirrorReplayActive(page: Page): boolean {
+    return (this.mirrorReplayActiveUntil.get(page) ?? 0) > Date.now();
+  }
+
   // Registra (uma vez por pagina) o script de captura no MUNDO PRINCIPAL via CDP
   // Page.addScriptToEvaluateOnNewDocument: re-injetado automaticamente a cada
   // navegacao, sem trabalho do Node por navegacao nem evaluate por evento. O estado
@@ -5494,10 +5507,11 @@ export class BrowserRuntimeService {
     if (page.isClosed()) {
       return;
     }
-    this.mirrorReplayBlockedUntil.set(
-      targetProfileId,
-      Date.now() + BrowserRuntimeService.MIRROR_REPLAY_CLEAR_DELAY_MS
-    );
+    const replayWindowEnd = Date.now() + BrowserRuntimeService.MIRROR_REPLAY_CLEAR_DELAY_MS;
+    this.mirrorReplayBlockedUntil.set(targetProfileId, replayWindowEnd);
+    // Sinaliza (por pagina) que ha um replay em andamento, para o watchdog de toque
+    // adiar sua reaplicacao de Emulation.* enquanto o espelho dispara Input.*/Runtime.*.
+    this.mirrorReplayActiveUntil.set(page, replayWindowEnd);
     const session = await this.getMirrorSession(page);
     if (!session) {
       if (loggable) {
@@ -6329,12 +6343,17 @@ export class BrowserRuntimeService {
   // após certas operações CDP (page.click via automação).
   // Sem isso, a "bolinha" some e os teclados de senha / jogos param de funcionar.
   //
-  // IMPORTANTE: PAUSAMOS o watchdog enquanto o mirror está ativo. A atividade CDP
-  // constante (Emulation.* a cada 1.5s) interfere com as sessões do mirror via
-  // stealth do Patchright, causando intermitência. Durante o mirror:
-  //   - A janela fonte mantém a bolinha naturalmente (tem foco do SO)
-  //   - Os targets recebem touch via Input.dispatchTouchEvent direto (não precisam
-  //     da tradução mouse-to-touch)
+  // COEXISTÊNCIA COM O ESPELHO: a emulação de toque precisa continuar VIVA enquanto o
+  // mirror está ativo — depósito/saque (page.touchscreen.tap, via prefersTouchTap) e os
+  // frames de jogo dependem de `ontouchstart`/`maxTouchPoints` e da ponte mouse→touch,
+  // que o stealth do Patchright reverte após atividade CDP. Pausar o watchdog por toda a
+  // sessão do mirror deixava essa reversão sem reparo e quebrava os fluxos mobile.
+  //
+  // Em vez de pausar, ADIAMOS o tick apenas enquanto há um replay do espelho em andamento
+  // NESTA página (isMirrorReplayActive): assim Emulation.* nunca roda concorrente com o
+  // Input.*/Runtime.* do espelho na mesma página — que era a fonte da intermitência —
+  // e a emulação é reaplicada nas janelas dessa rajada. A janela-fonte não recebe replay,
+  // então seu watchdog roda normalmente e o toque nela permanece intacto.
   private startTouchEmulationWatchdog(page: Page, mobileLike: boolean): void {
     if (!mobileLike || page.isClosed()) return;
     if (this.touchEmulationWatchdogs.has(page)) return;
@@ -6345,8 +6364,10 @@ export class BrowserRuntimeService {
         this.touchEmulationWatchdogs.delete(page);
         return;
       }
-      // Skip se o mirror está ativo (evita interferência CDP).
-      if (!this.mirrorEnabled) {
+      // Adia o tick apenas durante uma rajada de replay do espelho nesta página (evita
+      // Emulation.* concorrente com o Input.*/Runtime.* do espelho). Fora da rajada — e
+      // sempre com o espelho desligado — reaplica normalmente, mantendo o toque vivo.
+      if (!this.isMirrorReplayActive(page)) {
         // Limpa o estado cacheado para forçar updateGameTouchEmulation a re-enviar.
         this.gameTouchEmulationState.delete(page);
         await this.updateGameTouchEmulation(page, mobileLike).catch(() => undefined);

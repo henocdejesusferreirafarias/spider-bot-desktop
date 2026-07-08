@@ -103,6 +103,31 @@ test("mirror capture script does not exclude child frames", () => {
   assert.match(script, /__predatorMirrorEvent/);
 });
 
+test("touch emulation watchdog stays alive while mirror is on (only defers during active replay)", () => {
+  const prototype = BrowserRuntimeService.prototype as unknown as {
+    startTouchEmulationWatchdog: () => void;
+  };
+  const source = prototype.startTouchEmulationWatchdog.toString();
+
+  // Nao pode mais pausar a emulacao de toque por toda a sessao do espelho: isso
+  // quebrava deposito/saque (touch sintetico) e frames de jogo.
+  assert.doesNotMatch(source, /!this\.mirrorEnabled/);
+  // Deve apenas adiar o tick durante uma rajada de replay ativa NESTA pagina.
+  assert.match(source, /isMirrorReplayActive/);
+});
+
+test("mirror replay marks the per-page active window consumed by the touch watchdog", () => {
+  const prototype = BrowserRuntimeService.prototype as unknown as {
+    dispatchMirrorEventToPage: () => Promise<void>;
+    isMirrorReplayActive: () => boolean;
+  };
+  const dispatchSource = prototype.dispatchMirrorEventToPage.toString();
+  const activeSource = prototype.isMirrorReplayActive.toString();
+
+  assert.match(dispatchSource, /mirrorReplayActiveUntil\.set/);
+  assert.match(activeSource, /mirrorReplayActiveUntil\.get/);
+});
+
 test("QR screenshot validation accepts squares and rejects viewport captures", () => {
   assert.equal(isPlausibleQrImageDimensions(270, 270), true);
   assert.equal(isPlausibleQrImageDimensions(320, 320), true);
