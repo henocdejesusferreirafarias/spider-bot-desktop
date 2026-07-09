@@ -39,6 +39,12 @@ import {
   patchGameSpeedScript,
   resolveProviderByScriptUrl
 } from "./provider-timing.js";
+import { AsyncSemaphore, resolveMaxConcurrentLaunches } from "./async-semaphore.js";
+import {
+  decideGameLoadRecovery,
+  GAME_CANVAS_SELECTOR,
+  GAME_LOADER_PATTERN
+} from "./game-load.js";
 import {
   detectPlatformDescriptor,
   getCurrentRoute,
@@ -1035,6 +1041,15 @@ export class BrowserRuntimeService {
   private latestAccountInfoFields = new Map<string, Array<{ label: string; value: string }>>();
   private defaultSpeedRate = 1;
 
+  // Escalonador do lancamento em massa: no maximo N navegadores subindo ao mesmo
+  // tempo. Abrir todas as janelas headed (GPU/WebGL) de uma vez satura CPU/GPU e
+  // faz jogos "travarem carregando"; com o semaforo elas sobem em ondas.
+  private readonly launchSemaphore = new AsyncSemaphore(resolveMaxConcurrentLaunches());
+
+  // Frames de jogo cuja carga ja esta sendo monitorada (evita monitores duplicados
+  // por navegacao/evento). Chaveado por Frame; entradas somem quando o frame e GC'd.
+  private readonly gameFrameLoadMonitors = new WeakSet<object>();
+
   constructor(private readonly notify: RuntimeNotifier) {
     appendInputDiagnostic({
       kind: "diagnostic-session-start",
@@ -1183,6 +1198,20 @@ export class BrowserRuntimeService {
       args
     } satisfies BrowserLaunchOptions;
 
+    // Escalona o lancamento pesado (launch + boot da SPA): so N janelas sobem ao
+    // mesmo tempo. As demais esperam aqui em fila, evitando o pico de CPU/GPU que
+    // faz os jogos travarem carregando. Liberado assim que a navegacao inicial
+    // termina (o resto e bookkeeping barato) e em qualquer caminho de erro.
+    const releaseLaunchSlot = await this.launchSemaphore.acquire();
+    let launchSlotReleased = false;
+    const releaseLaunchSlotOnce = () => {
+      if (launchSlotReleased) {
+        return;
+      }
+      launchSlotReleased = true;
+      releaseLaunchSlot();
+    };
+
     let context: BrowserContext | undefined;
     let lastLaunchError: unknown;
 
@@ -1221,6 +1250,7 @@ export class BrowserRuntimeService {
     }
 
     if (!context) {
+      releaseLaunchSlotOnce();
       this.launchingSlotIndexes.delete(placement.slotIndex);
       await launchProxy.proxyChain?.stop().catch(() => undefined);
       const detail = lastLaunchError instanceof Error ? lastLaunchError.message : String(lastLaunchError);
@@ -1308,6 +1338,9 @@ export class BrowserRuntimeService {
         waitUntil: "domcontentloaded"
       }).catch(() => null);
     }
+    // Boot pesado concluido: libera o slot para a proxima janela subir. O que
+    // resta (badges, handlers, registro do handle) e barato e nao contende GPU.
+    releaseLaunchSlotOnce();
     const visibleIp = await this.resolveVisibleIp(primaryPage, launchProxy.ipLabel);
     await this.updateContextBadges(profile.id, context, placement, visibleIp);
     await this.applySpeedToPage(primaryPage, this.defaultSpeedRate);
@@ -1376,6 +1409,7 @@ export class BrowserRuntimeService {
     });
     this.launchingSlotIndexes.delete(placement.slotIndex);
     } catch (error) {
+      releaseLaunchSlotOnce();
       this.launchingSlotIndexes.delete(placement.slotIndex);
       await launchProxy.proxyChain?.stop().catch(() => undefined);
       await context.close().catch(() => null);
@@ -2242,6 +2276,130 @@ export class BrowserRuntimeService {
         this.mirrorCaptureEnabledState.delete(page);
       }
     });
+
+    // Recuperacao de carga de jogo: quando um frame de jogo conhecido navega,
+    // monitora se o canvas renderiza. Sob muitas janelas a saturacao trava o
+    // loader do engine; aqui recarregamos o frame preso (bounded) e logamos o
+    // motivo em vez de falhar calado. So age em frames de jogo reconhecidos --
+    // nunca em telas de login/cadastro/deposito.
+    page.on("framenavigated", (frame) => {
+      if (!isKnownGameFrameUrl(frame.url())) {
+        return;
+      }
+      void this.monitorGameFrameLoad(profileId, page, frame);
+    });
+  }
+
+  // Loop de recuperacao de carga de um frame de jogo. Faz polling do sinal
+  // estrutural (canvas presente + loader do engine) e decide via
+  // decideGameLoadRecovery: espera enquanto e carga normal, recarrega o frame
+  // preso (ate maxReloadAttempts) e desiste com motivo logado. So recarrega
+  // estados presos (canvas ausente / loader travado) -- nunca um jogo em
+  // andamento (canvas presente e sem loader = ready).
+  private async monitorGameFrameLoad(
+    profileId: string,
+    page: Page,
+    frame: Frame
+  ): Promise<void> {
+    if (this.gameFrameLoadMonitors.has(frame)) {
+      return;
+    }
+    this.gameFrameLoadMonitors.add(frame);
+    const pollMs = 1500;
+    const options = { stuckAfterMs: 12000, maxReloadAttempts: 2 };
+    let attempts = 0;
+    let startedAt = Date.now();
+    try {
+      while (!page.isClosed() && !frame.isDetached()) {
+        // Usuario saiu do jogo (voltou ao lobby): encerra o monitor.
+        if (!isKnownGameFrameUrl(frame.url())) {
+          return;
+        }
+        const probe = await frame
+          .evaluate(
+            ({ selector, loaderSource }) => {
+              const runtimeDoc = (
+                globalThis as unknown as {
+                  document?: {
+                    querySelector: (value: string) => unknown;
+                    body?: { innerText?: string };
+                  };
+                }
+              ).document;
+              const canvasPresent = Boolean(runtimeDoc?.querySelector(selector));
+              const text = String(runtimeDoc?.body?.innerText || "");
+              let loaderVisible = false;
+              try {
+                loaderVisible = new RegExp(loaderSource, "i").test(text);
+              } catch {
+                loaderVisible = false;
+              }
+              return { canvasPresent, loaderVisible };
+            },
+            { selector: GAME_CANVAS_SELECTOR, loaderSource: GAME_LOADER_PATTERN.source }
+          )
+          .catch(() => null);
+
+        // Frame em navegacao/destacado neste tick: trata como ainda-nao-pronto.
+        const signal = probe ?? { canvasPresent: false, loaderVisible: false };
+        const decision = decideGameLoadRecovery(
+          { ...signal, elapsedMs: Date.now() - startedAt, attempts },
+          options
+        );
+
+        if (decision.action === "ready") {
+          appendInputDiagnostic({
+            kind: "game-load-ready",
+            profileId,
+            frameUrl: sanitizeDiagnosticUrl(frame.url()),
+            attempts
+          });
+          return;
+        }
+        if (decision.action === "giveup") {
+          appendInputDiagnostic({
+            kind: "game-load-giveup",
+            profileId,
+            frameUrl: sanitizeDiagnosticUrl(frame.url()),
+            reason: decision.reason,
+            attempts
+          });
+          this.notify(profileId, "active", `⚠️ Jogo nao carregou: ${decision.reason}.`);
+          return;
+        }
+        if (decision.action === "reload") {
+          attempts += 1;
+          appendInputDiagnostic({
+            kind: "game-load-reload",
+            profileId,
+            frameUrl: sanitizeDiagnosticUrl(frame.url()),
+            reason: decision.reason,
+            attempt: attempts
+          });
+          this.notify(profileId, "active", `🔄 Recarregando jogo (tentativa ${attempts}): ${decision.reason}.`);
+          if (frame === page.mainFrame()) {
+            await page
+              .reload({ waitUntil: "domcontentloaded", timeout: 30000 })
+              .catch(() => null);
+          } else {
+            await frame
+              .evaluate(() => {
+                try {
+                  (globalThis as unknown as { location: { reload: () => void } }).location.reload();
+                } catch {
+                  // frame pode ter sido destacado no meio da recarga
+                }
+              })
+              .catch(() => null);
+          }
+          startedAt = Date.now();
+        }
+
+        await page.waitForTimeout(pollMs).catch(() => null);
+      }
+    } finally {
+      this.gameFrameLoadMonitors.delete(frame);
+    }
   }
 
   private markRuntimePageActive(
