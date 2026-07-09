@@ -24,16 +24,23 @@ export class IconClassifier {
     return this.session;
   }
   async classify(rgba: Uint8Array, w: number, h: number): Promise<ClassifyResult> {
-    const gray = toGray(decodeToMat(rgba, w, h));
+    const input = decodeToMat(rgba, w, h);
+    const gray = toGray(input);
+    input.delete();
     const r = resize(gray, 64, 64, 'INTER_AREA');
-    const arr = new Float32Array(64 * 64);
-    for (let i = 0; i < 4096; i++) arr[i] = (r.data[i]! / 255 - 0.456) / 0.224;
-    const t = new ort.Tensor('float32', arr, [1, 1, 64, 64]);
-    const out = await (await this.ensure()).run({ input1: t });
-    const idx = Number((out['63'] as ort.Tensor).data[0]);
-    const score = Number((out['output'] as ort.Tensor).data[0]);
-    gray.delete(); r.delete();
-    return { label: CHARSET[idx]!, score };
+    try {
+      const arr = new Float32Array(64 * 64);
+      for (let i = 0; i < 4096; i++) arr[i] = (r.data[i]! / 255 - 0.456) / 0.224;
+      const t = new ort.Tensor('float32', arr, [1, 1, 64, 64]);
+      const out = await (await this.ensure()).run({ input1: t });
+      const idx = Number((out['63'] as ort.Tensor).data[0]);
+      const outData = (out['output'] as ort.Tensor).data as Float32Array;
+      const score = outData.length === 1 ? Number(outData[0]) : Number(outData[idx]!);
+      return { label: CHARSET[idx]!, score };
+    } finally {
+      gray.delete();
+      r.delete();
+    }
   }
 }
 function decodeToMat(rgba: Uint8Array, w: number, h: number): Mat {
