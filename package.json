@@ -18,6 +18,7 @@
     "build:main": "tsc -p tsconfig.electron.json",
     "captcha:gate1": "tsx scripts/captcha-gate1.mjs",
     "label": "tsx scripts/captcha-label-server-cli.mjs",
+    "train:nine-match": "python scripts/captcha-train-nine-match.py",
     "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish never",
     "publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish always",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
