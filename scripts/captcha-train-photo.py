@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -141,6 +142,8 @@ def export_onnx(model: nn.Module, output: Path, device: torch.device):
 
 @torch.inference_mode()
 def verify_onnx_parity(model: nn.Module, onnx_path: Path, samples: list[Sample], transform, device: torch.device):
+    if len(samples) < 50:
+        raise ValueError(f"need at least 50 held-out test samples for ONNX parity; got {len(samples)}")
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     chosen = samples[:50]
     for sample in chosen:
@@ -206,13 +209,27 @@ def main() -> int:
     print(f"heldout_top1={test_acc:.4f}")
     if test_acc < 0.90:
         raise SystemExit("held-out top1 below 0.90; collect/review more data before exporting")
-    export_onnx(model, Path(args.out_model), device)
-    Path(args.out_classes).write_text(json.dumps({
-        "charset": classes,
-        "input": {"width": 64, "height": 64, "channels": 3, "mean": MEAN, "std": STD, "resize": "bilinear"},
-        "source": "Plan 2c MobileNetV3-Small ImageNet fine-tune",
-    }, indent=2), encoding="utf-8")
-    verify_onnx_parity(model, Path(args.out_model), test, transforms_for_eval(), device)
+    out_model = Path(args.out_model)
+    out_classes = Path(args.out_classes)
+    out_model.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f"{out_model.stem}.",
+        suffix=f".tmp{out_model.suffix}",
+        dir=out_model.parent,
+        delete=False,
+    ) as tmp_file:
+        temp_model = Path(tmp_file.name)
+    try:
+        export_onnx(model, temp_model, device)
+        verify_onnx_parity(model, temp_model, test, transforms_for_eval(), device)
+        temp_model.replace(out_model)
+        out_classes.write_text(json.dumps({
+            "charset": classes,
+            "input": {"width": 64, "height": 64, "channels": 3, "mean": MEAN, "std": STD, "resize": "bilinear"},
+            "source": "Plan 2c MobileNetV3-Small ImageNet fine-tune",
+        }, indent=2), encoding="utf-8")
+    finally:
+        temp_model.unlink(missing_ok=True)
     return 0
 
 
