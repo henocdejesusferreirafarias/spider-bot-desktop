@@ -65,6 +65,7 @@ import {
   hasExistingWithdrawalPasswordModal,
   hasVisibleNumberKeyboard,
   detectRegistrationUiFamily,
+  decideRegistrationCompletion,
   isDetachedDepositRouteState,
 } from "./screen-detection.js";
 import {
@@ -2591,12 +2592,22 @@ export class AutomationRuntimeService {
             appearanceTimeoutMs: 2500,
           },
         );
-        let registered = await accountInput
-          .waitFor({ state: "hidden", timeout: handledCaptcha ? 15000 : 25000 })
-          .then(() => true)
-          .catch(() => false);
+        // Confirmacao por SINAL ESTRUTURAL (nao por espera fixa nem pelo simples
+        // "campo de conta sumiu"): so consideramos cadastrada quando a tela de
+        // cadastro realmente saiu (campos de conta/senha ausentes) E a sessao
+        // logada apareceu -- ou, sem sessao explicita, o formulario ficou ausente
+        // de forma estavel. Erro da plataforma encerra na hora.
+        let outcome = await this.confirmRegistrationCompleted(runId, page, {
+          timeoutMs: handledCaptcha ? 15000 : 25000,
+        });
 
-        if (!registered && !handledCaptcha) {
+        // O captcha pode so ter aparecido AGORA (PC lento): tenta trata-lo e
+        // reconfirma. Nao reesperamos quando ja houve erro definitivo da plataforma.
+        if (
+          !outcome.registered &&
+          outcome.via !== "erro-plataforma" &&
+          !handledCaptcha
+        ) {
           handledCaptcha = await this.waitForManualCaptchaIfPresent(
             runId,
             page,
@@ -2607,15 +2618,15 @@ export class AutomationRuntimeService {
             },
           );
           if (handledCaptcha) {
-            registered = await accountInput
-              .waitFor({ state: "hidden", timeout: 15000 })
-              .then(() => true)
-              .catch(() => false);
+            outcome = await this.confirmRegistrationCompleted(runId, page, {
+              timeoutMs: 15000,
+            });
           }
         }
 
         if (
-          !registered &&
+          !outcome.registered &&
+          outcome.via !== "erro-plataforma" &&
           handledCaptcha &&
           (await submitButton.isVisible().catch(() => false))
         ) {
@@ -2629,21 +2640,30 @@ export class AutomationRuntimeService {
               appearanceTimeoutMs: 1800,
             },
           );
-          registered = await accountInput
-            .waitFor({ state: "hidden", timeout: 20000 })
-            .then(() => true)
-            .catch(() => false);
+          outcome = await this.confirmRegistrationCompleted(runId, page, {
+            timeoutMs: 20000,
+          });
         }
 
-        if (!registered) {
-          const platformError = await detectRegistrationErrorMessage(page);
-          if (platformError) {
+        if (!outcome.registered) {
+          const reason = outcome.reason || "cadastro nao confirmou apos o envio";
+          // Loga QUAL sinal nao chegou em vez de falhar silenciosamente.
+          this.log(
+            runId,
+            "warning",
+            `[${profile.name}] Cadastro nao confirmado (${outcome.via}): ${reason}`,
+          );
+          if (outcome.via === "erro-plataforma") {
             await this.dismissPlatformErrorDialog(page).catch(() => undefined);
           }
-          throw new Error(
-            platformError || "cadastro nao confirmou apos o envio",
-          );
+          throw new Error(reason);
         }
+
+        this.log(
+          runId,
+          "info",
+          `[${profile.name}] Cadastro confirmado por sinal estrutural (${outcome.via}).`,
+        );
 
         if (registrationContext.registrationPhoneNumber) {
           this.database.updateProfileAccountPhoneNumber(
@@ -2678,7 +2698,13 @@ export class AutomationRuntimeService {
           });
         }
         return;
-      } catch {
+      } catch (error) {
+        // Preserva o motivo REAL ja apurado por confirmRegistrationCompleted (qual
+        // sinal estrutural nao chegou / erro da plataforma) em vez de re-derivar um
+        // motivo generico do texto da pagina. So caimos no scan do corpo quando o
+        // erro nao carrega mensagem util.
+        const thrownReason =
+          error instanceof Error && error.message ? error.message.trim() : "";
         const pageText = await loggedPage
           .locator("body")
           .innerText()
@@ -2696,7 +2722,8 @@ export class AutomationRuntimeService {
           pageText.toLowerCase().includes(snippet.toLowerCase()),
         );
         const reason =
-          knownErrors ??
+          thrownReason ||
+          knownErrors ||
           "Nao foi possivel confirmar o sucesso do cadastro apos o envio do formulario.";
 
         this.database.updateProfileAccountStatus(
@@ -2717,6 +2744,77 @@ export class AutomationRuntimeService {
         this.geetestSolver?.releaseWarmSession();
       }
     }
+  }
+
+  // Confirma a conclusao do cadastro por SINAL ESTRUTURAL, endurecendo o antigo
+  // "assumir cadastrada quando o campo de conta some" -- que dava falso-positivo
+  // em lote/PC lento (a tela re-renderizava e o campo sumia sem o cadastro ter
+  // concluido, marcando a conta como registrada no vazio). Aqui fazemos polling
+  // dos sinais reais e so confirmamos quando o estado esperado aparece:
+  //  - erro da plataforma -> falha imediata com o motivo;
+  //  - campos de conta/senha ainda presentes -> a tela de cadastro nao saiu (pendente);
+  //  - sessao logada visivel -> cadastrada (sinal forte);
+  //  - formulario ausente de forma ESTAVEL, sem erro -> cadastrada (fallback).
+  // No timeout, retorna o motivo dizendo QUAL sinal nao chegou (nunca falha calado).
+  private async confirmRegistrationCompleted(
+    runId: string,
+    page: Page,
+    options: { timeoutMs: number },
+  ): Promise<{ registered: boolean; via: string; reason?: string }> {
+    const startedAt = Date.now();
+    let consecutiveFormAbsences = 0;
+
+    while (Date.now() - startedAt < options.timeoutMs) {
+      this.ensureRunActive(runId);
+
+      const platformError = await detectRegistrationErrorMessage(page).catch(
+        () => undefined,
+      );
+      const registrationFormPresent =
+        (await this.countVisibleRegistrationPasswordInputs(page)) >= 2;
+      consecutiveFormAbsences = registrationFormPresent
+        ? 0
+        : consecutiveFormAbsences + 1;
+      // So pagamos o custo do scan de sessao (varre todos os frames) quando o
+      // formulario ja saiu e nao ha erro -- o caso comum "ainda carregando"
+      // resolve barato com a contagem de campos.
+      const activeSession =
+        !registrationFormPresent && !platformError
+          ? await hasActiveSession(page)
+          : false;
+
+      const decision = decideRegistrationCompletion({
+        platformError: platformError || undefined,
+        registrationFormPresent,
+        activeSession,
+        consecutiveFormAbsences,
+      });
+
+      if (decision.status === "registered") {
+        return { registered: true, via: decision.via };
+      }
+      if (decision.status === "failed") {
+        return {
+          registered: false,
+          via: decision.via,
+          reason: decision.reason,
+        };
+      }
+
+      await page.waitForTimeout(350).catch(() => null);
+    }
+
+    // Teto esgotado: reporta QUAL sinal estrutural nao chegou.
+    const stillPresent =
+      (await this.countVisibleRegistrationPasswordInputs(page).catch(() => 0)) >=
+      2;
+    return {
+      registered: false,
+      via: stillPresent ? "timeout-formulario-presente" : "timeout-sem-sessao",
+      reason: stillPresent
+        ? "cadastro nao confirmou: os campos de conta/senha continuam visiveis apos o envio (a tela de cadastro nao saiu)"
+        : "cadastro nao confirmou: a tela pos-cadastro nao carregou (sem sessao ativa e sem mensagem de erro apos o envio)",
+    };
   }
 
   private async executeManualDeposit(
