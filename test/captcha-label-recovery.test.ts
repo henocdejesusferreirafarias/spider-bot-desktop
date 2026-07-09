@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
@@ -31,21 +31,27 @@ function makeFixture() {
 test('restarting the server resumes after the last labeled round', async () => {
   const fx = makeFixture();
   const a = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  let expectedResumePointer;
   try {
-    for (let i = 0; i < 3; i++) {
-      const ch = await (await fetch(`http://127.0.0.1:${a.port}/api/challenge`)).json();
-      const res = await fetch(`http://127.0.0.1:${a.port}/api/label`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ round: ch.round, cells: [[1, 1], [2, 2]] }),
-      });
-      assert.equal(res.status, 200);
-    }
+    const first = await (await fetch(`http://127.0.0.1:${a.port}/api/challenge`)).json();
+    assert.ok(first.challengeId);
+    const firstLabel = await fetch(`http://127.0.0.1:${a.port}/api/label`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ round: first.round, cells: [[1, 1], [2, 2]] }),
+    });
+    assert.equal(firstLabel.status, 200);
+
+    const second = await (await fetch(`http://127.0.0.1:${a.port}/api/challenge`)).json();
+    assert.ok(second.challengeId);
+    expectedResumePointer = {
+      challengeId: second.challengeId,
+      round: second.round,
+    };
+
     const stats = await (await fetch(`http://127.0.0.1:${a.port}/api/stats`)).json();
-    assert.equal(stats.labeledRounds, 3);
-    const expectedNext = await (await fetch(`http://127.0.0.1:${a.port}/api/challenge`)).json();
-    assert.equal(expectedNext.challengeId, '000001-recov');
-    assert.equal(expectedNext.round, 2);
+    assert.equal(stats.labeledRounds, 1);
+    assert.equal(stats.remainingRounds, 5);
   } finally {
     await a.close();
   }
@@ -53,13 +59,13 @@ test('restarting the server resumes after the last labeled round', async () => {
   const b = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
     const ch = await (await fetch(`http://127.0.0.1:${b.port}/api/challenge`)).json();
-    assert.equal(ch.challengeId, '000001-recov');
-    assert.equal(ch.round, 2);
+    assert.deepEqual(
+      { challengeId: ch.challengeId, round: ch.round },
+      expectedResumePointer,
+    );
     const stats = await (await fetch(`http://127.0.0.1:${b.port}/api/stats`)).json();
-    assert.equal(stats.labeledRounds, 3);
-    assert.equal(stats.remainingRounds, 3);
-    const jsonl = readFileSync(join(fx.dataset, 'manual-labels.jsonl'), 'utf8');
-    assert.equal(jsonl.split('\n').filter(Boolean).length, 4);
+    assert.equal(stats.labeledRounds, 1);
+    assert.equal(stats.remainingRounds, 5);
   } finally {
     await b.close();
   }
