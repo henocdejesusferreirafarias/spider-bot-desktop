@@ -56,13 +56,32 @@ test('disagreement between rounds creates a dispute', () => {
   assert.deepEqual(q.getDisputes()[0]?.round2Cells, [[1, 2], [2, 1], [3, 3]]);
 });
 
-test('resolveDispute removes the dispute from the queue', () => {
+test('resolveDispute accepts round1 and synchronizes both stored rounds', () => {
   const q = new LabelingQueue(['z'], 1);
-  q.recordLabel('z', 1, [[1, 1]]);
-  q.recordLabel('z', 2, [[2, 2]]);
+  const round1Cells = [[1, 1]];
+  const round2Cells = [[2, 2]];
+  q.recordLabel('z', 1, round1Cells);
+  q.recordLabel('z', 2, round2Cells);
   assert.equal(q.getStats().disputeCount, 1);
   q.resolveDispute('z', 'round1');
   assert.equal(q.getStats().disputeCount, 0);
+  const result = q.recordLabel('z', 2, round2Cells);
+  assert.equal(result.isNewDispute, true);
+  assert.equal(q.getStats().disputeCount, 1);
+});
+
+test('resolveDispute accepts round2 and synchronizes both stored rounds', () => {
+  const q = new LabelingQueue(['z'], 1);
+  const round1Cells = [[1, 1]];
+  const round2Cells = [[2, 2]];
+  q.recordLabel('z', 1, round1Cells);
+  q.recordLabel('z', 2, round2Cells);
+  assert.equal(q.getStats().disputeCount, 1);
+  q.resolveDispute('z', 'round2');
+  assert.equal(q.getStats().disputeCount, 0);
+  const result = q.recordLabel('z', 1, round1Cells);
+  assert.equal(result.isNewDispute, true);
+  assert.equal(q.getStats().disputeCount, 1);
 });
 
 test('loadLabeledKeys restores progress so next() resumes after the last labeled index', () => {

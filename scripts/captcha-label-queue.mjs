@@ -141,10 +141,16 @@ export class LabelingQueue {
   }
 
   resolveDispute(challengeId, choice, cells) {
-    if (!this.disputes.has(challengeId)) {
+    const dispute = this.disputes.get(challengeId);
+    if (!dispute) {
       return;
     }
-    if (choice === 'relabel') {
+    if (choice === 'round1' || choice === 'round2') {
+      const resolvedCells = choice === 'round1' ? dispute.round1Cells : dispute.round2Cells;
+      const cloned = cloneCells(resolvedCells);
+      this.rounds.set(this._key(challengeId, 1), cloned);
+      this.rounds.set(this._key(challengeId, 2), cloneCells(cloned));
+    } else if (choice === 'relabel') {
       if (!cells) {
         throw new TypeError('relabel requires cells');
       }
