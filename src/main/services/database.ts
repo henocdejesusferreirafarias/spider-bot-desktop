@@ -2190,6 +2190,22 @@ export class PredatorDatabase {
     this.db.prepare("DELETE FROM pix_phone_keys WHERE id = ?").run(pixKeyId);
   }
 
+  // Consome uma chave reservada APOS a confirmacao real do cadastro: em vez de apagar a
+  // linha (perdendo o rastro), marca status='used' e grava perfil/conta/quando. Assim o
+  // suporte consegue auditar qual chave foi para qual perfil. So transita de 'reserved'
+  // (o WHERE garante idempotencia e evita consumir uma chave ja liberada/usada).
+  markPixPhoneKeyUsed(
+    pixKeyId: string,
+    opts: { profileId: string; accountId?: string }
+  ): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE pix_phone_keys
+      SET status = 'used', used_profile_id = ?, used_account_id = ?, used_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'reserved'
+    `).run(opts.profileId, opts.accountId ?? null, now, now, pixKeyId);
+  }
+
   updatePixPhoneKeyPhoneNumber(pixKeyId: string, input: string): PixPhoneKeyRecord {
     const phoneNumber = normalizePixPhoneNumber(input);
     if (!isAcceptedPixPhoneNumber(phoneNumber)) {
