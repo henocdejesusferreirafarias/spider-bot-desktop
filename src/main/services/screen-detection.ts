@@ -848,6 +848,61 @@ export async function detectRegistrationUiFamily(page: Page): Promise<string | u
   return "generico";
 }
 
+// Sinais estruturais lidos da tela apos o envio do formulario de cadastro. Sao
+// coletados por checagens de tela (contagem de campos de conta/senha, sessao
+// ativa, mensagem de erro) e alimentam a decisao pura abaixo.
+export type RegistrationCompletionSignal = {
+  // Mensagem de erro da plataforma (ex.: "conta ja existe", "senha fraca"), se houver.
+  platformError?: string;
+  // O formulario de cadastro AINDA esta na tela? Sinal ESTRUTURAL: presenca dos
+  // campos de conta/senha (>= 2 campos tipo-senha visiveis). Enquanto true, NAO
+  // deixamos de estar na tela de cadastro -- logo nao ha o que confirmar ainda.
+  registrationFormPresent: boolean;
+  // Uma sessao logada ja aparece na tela (saldo/deposito/saque/sair)? Confirmacao
+  // FORTE de que o cadastro concluiu (nas plataformas W1 o cadastro auto-loga).
+  activeSession: boolean;
+  // Quantas checagens consecutivas o formulario ficou AUSENTE. Descarta o
+  // re-render transitorio (some e volta) exigindo estabilidade antes de aceitar
+  // o encerramento do formulario como conclusao (quando nao ha sessao explicita).
+  consecutiveFormAbsences: number;
+};
+
+export type RegistrationCompletionDecision =
+  | { status: "registered"; via: "sessao-ativa" | "formulario-encerrado" }
+  | { status: "failed"; via: "erro-plataforma"; reason: string }
+  | { status: "pending" };
+
+// Decisao PURA de conclusao do cadastro a partir de sinais estruturais (nao de
+// espera fixa). Endurece o antigo "assumir cadastrada quando o campo de conta
+// some": aqui so confirmamos quando o estado REAL aparece.
+//
+// Ordem de prioridade:
+//  1. erro explicito da plataforma -> falhou (definitivo; nao ha o que reesperar);
+//  2. formulario ainda presente (campos de conta/senha) -> pendente (tela nao saiu);
+//  3. sessao ativa -> cadastrada (sinal forte);
+//  4. formulario ausente de forma ESTAVEL (>= minFormAbsences checagens) e sem
+//     erro -> cadastrada (fallback p/ plataformas que nao auto-logam).
+// Qualquer outro caso e "pending": seguimos no polling ate o teto do waiter.
+export function decideRegistrationCompletion(
+  signal: RegistrationCompletionSignal,
+  options?: { minFormAbsences?: number }
+): RegistrationCompletionDecision {
+  if (signal.platformError) {
+    return { status: "failed", via: "erro-plataforma", reason: signal.platformError };
+  }
+  if (signal.registrationFormPresent) {
+    return { status: "pending" };
+  }
+  if (signal.activeSession) {
+    return { status: "registered", via: "sessao-ativa" };
+  }
+  const minFormAbsences = options?.minFormAbsences ?? 3;
+  if (signal.consecutiveFormAbsences >= minFormAbsences) {
+    return { status: "registered", via: "formulario-encerrado" };
+  }
+  return { status: "pending" };
+}
+
 export function isDetachedDepositRouteState(state: { body: string; url: string }): boolean {
   let path = "";
   try {
