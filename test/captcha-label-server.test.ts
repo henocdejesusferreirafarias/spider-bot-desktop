@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
@@ -54,6 +54,11 @@ function auditEntries(dataset: string) {
   const file = join(dataset, 'manual-labels.jsonl');
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+function expireStateLock(dataset: string) {
+  const expired = new Date(Date.now() - 10_000);
+  utimesSync(join(dataset, 'label-state.json'), expired, expired);
 }
 
 test('GET /api/challenge returns the first challenge with 9 cells', async () => {
@@ -158,6 +163,7 @@ test('restart rehydrates unresolved disputes without emitting a duplicate final'
     await srv.close();
   }
 
+  expireStateLock(fx.dataset);
   srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
     const disputes = await (await fetch(`http://127.0.0.1:${srv.port}/api/disputes`)).json();
@@ -176,6 +182,7 @@ test('restart rehydrates unresolved disputes without emitting a duplicate final'
     await srv.close();
   }
 
+  expireStateLock(fx.dataset);
   srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
     assert.deepEqual(await (await fetch(`http://127.0.0.1:${srv.port}/api/disputes`)).json(), []);
@@ -201,6 +208,7 @@ test('restart rehydrates skipped rounds and does not create a final from the rem
     await srv.close();
   }
 
+  expireStateLock(fx.dataset);
   srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
     const remaining = await currentChallenge(srv.port);
@@ -211,6 +219,55 @@ test('restart rehydrates skipped rounds and does not create a final from the rem
     assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 0);
   } finally {
     await srv.close();
+  }
+});
+
+test('restart repairs exactly one missing automatic final for matching completed rounds', async () => {
+  const fx = makeFixture(1);
+  const labelsFile = join(fx.dataset, 'manual-labels.jsonl');
+  const cells = [[1, 1], [2, 2]];
+  writeFileSync(labelsFile, [
+    JSON.stringify({ kind: 'round', challengeId: '000000-test', round: 1, cells }),
+    JSON.stringify({ kind: 'round', challengeId: '000000-test', round: 2, cells }),
+    '',
+  ].join('\n'));
+
+  let srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    assert.deepEqual(await currentChallenge(srv.port), { done: true });
+    const finals = auditEntries(fx.dataset).filter((entry) => entry.kind === 'final');
+    assert.equal(finals.length, 1);
+    assert.deepEqual(finals[0].cells, cells);
+    assert.equal(finals[0].fromDispute, false);
+  } finally {
+    await srv.close();
+  }
+
+  srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('second server rejects its first write during another server lock window', async () => {
+  const fx = makeFixture(1);
+  const first = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  let second;
+  try {
+    const firstChallenge = await currentChallenge(first.port);
+    assert.equal((await saveLabel(first.port, firstChallenge.round, [[1, 1], [2, 2]])).status, 200);
+
+    second = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+    const secondChallenge = await currentChallenge(second.port);
+    const response = await saveLabel(second.port, secondChallenge.round, [[1, 1], [2, 2]]);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { saved: false, error: 'state file is locked by another writer' });
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'round').length, 1);
+  } finally {
+    if (second) await second.close();
+    await first.close();
   }
 });
 

@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { decodeRgba, splitGridCells } from './captcha-nine-dataset-utils.mjs';
@@ -242,6 +242,58 @@ function isAuditCells(value) {
   ));
 }
 
+function cellsKey(cells) {
+  return cells.map(([row, col]) => `${row}:${col}`).sort().join(',');
+}
+
+function missingAutomaticFinals(entries, challengeIds) {
+  const roundsByChallenge = new Map();
+  const finalized = new Set();
+
+  for (const entry of entries) {
+    if (!challengeIds.has(entry.challengeId)) continue;
+    if (entry.kind === 'final') {
+      finalized.add(entry.challengeId);
+      continue;
+    }
+    if (entry.kind !== 'round' && entry.kind !== 'skipped') continue;
+    if (entry.round !== 1 && entry.round !== 2) continue;
+
+    let rounds = roundsByChallenge.get(entry.challengeId);
+    if (!rounds) {
+      rounds = new Map();
+      roundsByChallenge.set(entry.challengeId, rounds);
+    }
+    if (entry.kind === 'skipped') {
+      rounds.delete(entry.round);
+    } else if (isAuditCells(entry.cells)) {
+      rounds.set(entry.round, entry.cells);
+    }
+  }
+
+  const repairs = [];
+  for (const [challengeId, rounds] of roundsByChallenge) {
+    if (finalized.has(challengeId)) continue;
+    const round1 = rounds.get(1);
+    const round2 = rounds.get(2);
+    if (!round1 || !round2 || cellsKey(round1) !== cellsKey(round2)) continue;
+    repairs.push({
+      kind: 'final',
+      challengeId,
+      cells: round2,
+      fromDispute: false,
+      disputeResolution: null,
+      labeledAt: new Date().toISOString(),
+    });
+  }
+  return repairs;
+}
+
+function appendAuditEntries(writer, entries) {
+  if (entries.length === 0) return;
+  appendFileSync(writer.file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''));
+}
+
 function replayAudit(queue, entries, challengeIds) {
   for (const entry of entries) {
     if (!challengeIds.has(entry.challengeId)) continue;
@@ -310,10 +362,14 @@ export async function startLabelServer(opts = {}) {
   const stateFile = new StateFile(join(datasetDir, 'label-state.json'), { lockWindowMs: 5000 });
   const challengeIds = new Set(challenges.map((challenge) => challenge.id));
   const auditEntries = readAuditEntries(labelsWriter.file);
+  const recoveredFinals = missingAutomaticFinals(auditEntries, challengeIds);
+  appendAuditEntries(labelsWriter, recoveredFinals);
+  auditEntries.push(...recoveredFinals);
   const queue = new LabelingQueue(challenges.map((challenge) => challenge.id), LABEL_QUEUE_SEED);
   replayAudit(queue, auditEntries, challengeIds);
   const challengesById = new Map(challenges.map((challenge) => [challenge.id, challenge]));
   let activePointer = null;
+  let stateWrittenByThisServer = false;
 
   function nextPointer() {
     if (!activePointer) activePointer = queue.next();
@@ -324,7 +380,7 @@ export async function startLabelServer(opts = {}) {
     if (existsSync(stateFile.file)) {
       const currentMtimeMs = statSync(stateFile.file).mtimeMs;
       if (
-        currentMtimeMs !== stateFile.lastKnownMtimeMs
+        (!stateWrittenByThisServer || currentMtimeMs !== stateFile.lastKnownMtimeMs)
         && Date.now() - currentMtimeMs <= stateFile.lockWindowMs
       ) {
         return { ok: false, reason: 'state file is locked by another writer' };
@@ -343,6 +399,7 @@ export async function startLabelServer(opts = {}) {
       disputes: prospectiveQueue.getDisputes().map((dispute) => dispute.challengeId),
       lastSavedAt: new Date().toISOString(),
     });
+    if (result.ok) stateWrittenByThisServer = true;
     return result.ok ? result : { ok: false, reason: 'state file is locked by another writer' };
   }
 
@@ -444,8 +501,9 @@ export async function startLabelServer(opts = {}) {
           json(res, 409, { saved: false, error: stateResult.reason });
           return;
         }
-        labelsWriter.append(roundEntry);
-        auditEntries.push(roundEntry);
+        const automaticFinals = missingAutomaticFinals([...auditEntries, roundEntry], challengeIds);
+        appendAuditEntries(labelsWriter, [roundEntry, ...automaticFinals]);
+        auditEntries.push(roundEntry, ...automaticFinals);
         const labelResult = queue.recordLabel(pointer.challengeId, pointer.round, result.cells);
         activePointer = null;
         if (labelResult.bothRoundsNowLabeled) {
@@ -459,17 +517,6 @@ export async function startLabelServer(opts = {}) {
                 detectedAt: new Date().toISOString(),
               });
             }
-          } else {
-            const finalEntry = {
-              kind: 'final',
-              challengeId: pointer.challengeId,
-              cells: result.cells,
-              fromDispute: false,
-              disputeResolution: null,
-              labeledAt: new Date().toISOString(),
-            };
-            labelsWriter.append(finalEntry);
-            auditEntries.push(finalEntry);
           }
         }
         json(res, 200, { saved: true, stats: queue.getStats() });
