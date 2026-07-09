@@ -17,7 +17,7 @@
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
     "captcha:gate1": "tsx scripts/captcha-gate1.mjs",
-    "label": "tsx scripts/captcha-label-server.mjs",
+    "label": "tsx scripts/captcha-label-server-cli.mjs",
     "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish never",
     "publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish always",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
