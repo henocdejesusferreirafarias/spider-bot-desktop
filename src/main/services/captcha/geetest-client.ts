@@ -70,7 +70,7 @@ export class GeetestClient {
     };
     if (args.riskType) params.risk_type = args.riskType;
     const res = await this.req.get(`${this.baseUrl}/verify`, { params });
-    return this.parseJsonp(await res.text(), this.callback) as unknown as GeetestVerifyResult;
+    return this.parseJsonp(await res.text(), this.callback)['data'] as unknown as GeetestVerifyResult;
   }
 
   async fetchImage(path: string): Promise<Buffer> {
