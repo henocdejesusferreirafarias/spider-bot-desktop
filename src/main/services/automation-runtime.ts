@@ -74,7 +74,6 @@ import {
   waitForWithdrawalAccountSurface,
   waitForWithdrawalRequestSurface,
   waitForAddPixModal,
-  waitForPixRegistrationSaved,
   waitForVisibleNumberKeyboard,
   waitForDepositSurface,
   waitForProfileSurface,
@@ -129,6 +128,128 @@ const LOGIN_WORKFLOW_ID = "login";
 const POST_REGISTRATION_DEPOSIT_WORKFLOW_ID = "post-registration-deposit";
 const MANUAL_DEPOSIT_WORKFLOW_ID = "manual-deposit";
 const PIX_PHONE_REGISTRATION_WORKFLOW_ID = "pix-phone-registration";
+
+// Etapas do cadastro PIX PHONE. Uma falha carrega a etapa onde ocorreu para que o
+// log da rotina/suporte veja um motivo acionavel em vez de um texto solto.
+export type PixRegistrationStep =
+  | "router"
+  | "withdrawalPassword"
+  | "receivingTab"
+  | "openModal"
+  | "selectPhone"
+  | "fillForm"
+  | "submit"
+  | "confirm"
+  | "persistenceCheck";
+
+export class PixRegistrationError extends Error {
+  constructor(
+    readonly step: PixRegistrationStep,
+    readonly reason: string,
+    readonly diag?: string,
+    readonly code = step,
+  ) {
+    super(`[pix:${step}] ${reason}`);
+    this.name = "PixRegistrationError";
+  }
+}
+
+// Multiplicador unico para os deadlines do caminho critico do PIX. Em maquinas de
+// clientes muito lentas, exportar SPIDERBOT_PIX_SLOWNESS=1.5/2 estica todos os prazos
+// de uma vez sem tocar cada literal. Padrao 1 = comportamento identico ao anterior.
+const PIX_SLOWNESS = (() => {
+  const parsed = Number(process.env.SPIDERBOT_PIX_SLOWNESS);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 6 ? parsed : 1;
+})();
+const PIX_MS = (base: number): number => Math.round(base * PIX_SLOWNESS);
+
+// Decide qual prompt de senha de saque tratar quando ambos/nenhum podem estar na tela.
+// ENTRAR (modal existente) tem prioridade sobre DEFINIR: o modal "Inserir PIN" e
+// inequivoco, enquanto a heuristica de DEFINIR ja deu falso-positivo somando o campo
+// inline da tela de saque com o do modal. Funcao pura -> testavel sem browser.
+export function classifyWithdrawalPasswordPrompt(input: {
+  hasEnterModal: boolean;
+  hasSetupSurface: boolean;
+}): "enter" | "setup" | "done" {
+  if (input.hasEnterModal) return "enter";
+  if (input.hasSetupSurface) return "setup";
+  return "done";
+}
+
+export interface PixFormInputDescriptor {
+  index: number;
+  placeholder: string;
+  name: string;
+  id: string;
+  className: string;
+  precedesSelector: boolean;
+  followsSelector: boolean;
+  writable: boolean;
+  hasSelector: boolean;
+}
+
+// Resolve quais inputs sao nome / chave PIX / CPF a partir dos metadados coletados na
+// pagina. Estrutura comum das skins Pinia: nome ANTES do seletor `.ui-popover__wrapper`;
+// chave PIX e CPF, nessa ordem, DEPOIS dele. Placeholders/name/id entram so como fallback
+// (variam por traducao e skin). Puro -> testavel com descritores fake.
+export function resolvePixFormFieldRoles(descriptors: PixFormInputDescriptor[]): {
+  nameIndex?: number;
+  pixIndex?: number;
+  cpfIndex?: number;
+} {
+  const normalize = (value: string) =>
+    (value || "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const attrs = (d: PixFormInputDescriptor) =>
+    normalize(`${d.placeholder} ${d.name} ${d.id} ${d.className}`);
+  const writable = descriptors.filter((d) => d.writable);
+  const hasSelector = descriptors.some((d) => d.hasSelector);
+  const beforeSelector = hasSelector
+    ? descriptors.filter((d) => d.precedesSelector)
+    : [];
+  const afterWritable = hasSelector
+    ? descriptors.filter((d) => d.followsSelector && d.writable)
+    : [];
+
+  const nameInput =
+    beforeSelector.at(-1) ??
+    writable.find((d) => /nome|name|titular|beneficiario/.test(attrs(d)));
+  const pixInput =
+    afterWritable[0] ?? writable.find((d) => /chave do pix|pix/.test(attrs(d)));
+  const cpfInput =
+    afterWritable[1] ??
+    writable.find((d) => d !== pixInput && /cpf|11 digitos/.test(attrs(d)));
+
+  return {
+    nameIndex: nameInput?.index,
+    pixIndex: pixInput?.index,
+    cpfIndex: cpfInput?.index,
+  };
+}
+
+// Payload/retorno da etapa de preenchimento do form PIX (avaliada na pagina em 2 fases).
+type PixFormFillPayload =
+  | { mode: "gather" }
+  | {
+      mode: "set";
+      roles: { nameIndex?: number; pixIndex?: number; cpfIndex?: number };
+      pixPhone: string;
+      cpfValue: string;
+      realNameValue: string;
+    };
+
+interface PixFormStepResult {
+  phase: "gather" | "set" | "error";
+  descriptors: PixFormInputDescriptor[];
+  pix: boolean;
+  cpf: boolean;
+  nameFilled: boolean;
+  debug: unknown;
+}
 
 interface RemoteExecutionContext {
   depositAmount?: string;
@@ -763,12 +884,17 @@ export class AutomationRuntimeService {
       );
 
       if (reservedPixKey && !pixKeyConsumed) {
-        this.database.getOrCreateProfileAccount(profile.id);
+        const account = this.database.getOrCreateProfileAccount(profile.id);
         this.database.updateProfileAccountPhoneNumber(
           profile.id,
           reservedPixKey.phoneNumber,
         );
-        this.database.deletePixPhoneKey(reservedPixKey.id);
+        // Consumo com trilha de auditoria: marca a chave como 'used' (perfil/conta/quando)
+        // em vez de apagar a linha -- so alcancamos este ponto apos confirmacao real.
+        this.database.markPixPhoneKeyUsed(reservedPixKey.id, {
+          profileId: profile.id,
+          accountId: account.id,
+        });
         pixKeyConsumed = true;
         void this.browserRuntime.refreshAccountInfoForProfile(
           profile.id,
@@ -820,8 +946,16 @@ export class AutomationRuntimeService {
         },
       });
       this.database.updateProfileStatus(profile.id, "active");
-      const message =
-        error instanceof Error ? error.message : "erro inesperado";
+      // Erro com etapa/motivo acionavel: quando e um PixRegistrationError, o log da rotina
+      // e a atividade passam a dizer EM QUE ETAPA falhou (router/senha/modal/preencher/
+      // submit/confirmacao) em vez de um texto solto -- suporte/dev conseguem agir.
+      const pixError =
+        error instanceof PixRegistrationError ? error : undefined;
+      const message = pixError
+        ? `etapa ${pixError.step}: ${pixError.reason}${pixError.diag ? ` (${pixError.diag})` : ""}`
+        : error instanceof Error
+          ? error.message
+          : "erro inesperado";
       this.log(
         run.id,
         "error",
@@ -832,9 +966,16 @@ export class AutomationRuntimeService {
         scope: "automation",
         scopeId: automation.id,
         level: "error",
-        message: `[${profile.name}] Cadastro PIX falhou.`,
+        message: `[${profile.name}] Cadastro PIX falhou${pixError ? ` na etapa ${pixError.step}` : ""}.`,
         details: {
           runId: failedRun.id,
+          ...(pixError
+            ? {
+                step: pixError.step,
+                code: pixError.code,
+                reason: pixError.reason,
+              }
+            : {}),
         },
         createdAt: new Date().toISOString(),
       });
@@ -3463,10 +3604,10 @@ export class AutomationRuntimeService {
       // a espera do modal PIX trata o gate a CADA ciclo; senao a tela trava no "Inserir
       // PIN" e estoura "formulario Adicionar PIX nao abriu". Bug confirmado em runtime.
       let hasPixModal = false;
-      const pixModalDeadline = Date.now() + 12000;
+      const pixModalDeadline = Date.now() + PIX_MS(12000);
       while (Date.now() < pixModalDeadline) {
         this.ensureRunActive(runId);
-        if (await waitForAddPixModal(pixPage, 700)) {
+        if (await waitForAddPixModal(pixPage, PIX_MS(700))) {
           hasPixModal = true;
           break;
         }
@@ -3486,7 +3627,11 @@ export class AutomationRuntimeService {
           })
           .catch(() => "");
         diag(`5-page text: ${bodyText}`);
-        throw new Error("formulario Adicionar PIX nao abriu");
+        throw new PixRegistrationError(
+          "openModal",
+          "formulario Adicionar PIX nao abriu",
+          bodyText.slice(0, 160),
+        );
       }
 
       diag("6-selecting phone pix type");
@@ -3509,13 +3654,58 @@ export class AutomationRuntimeService {
         `8-submitted: ok=${submitted.ok} via=${submitted.diag ?? submitted.reason ?? "-"}`,
       );
       if (!submitted.ok) {
-        throw new Error(
+        throw new PixRegistrationError(
+          "submit",
           `formulario PIX nao submeteu programaticamente (${submitted.reason ?? "motivo desconhecido"})`,
+          submitted.diag,
         );
       }
 
-      if (!(await waitForPixRegistrationSaved(pixPage, 9000))) {
-        throw new Error("cadastro PIX nao confirmou apos o envio");
+      // Confirmacao FORTE de persistencia: em vez de tratar "o texto Adicionar PIX sumiu"
+      // como sucesso (falso-positivo que consumia a chave sem cadastro real), consultamos
+      // o estado da propria plataforma ate a conta PIX PHONE aparecer na lista/estado.
+      // Um unico re-submit guardado cobre o caso do primeiro submit nao ter pego; uma
+      // superficie de erro falha na hora (sem retry).
+      const confirmStartedAt = Date.now();
+      const confirmDeadline = confirmStartedAt + PIX_MS(12000);
+      let resubmitted = false;
+      let confirm = await programmaticPixUiAction(
+        resolveContentFrame(pixPage),
+        "verifyPixAccountListed",
+        { phoneDigits: pixPhone },
+      );
+      while (
+        !confirm.ok &&
+        confirm.reason !== "error-surface" &&
+        Date.now() < confirmDeadline
+      ) {
+        this.ensureRunActive(runId);
+        if (
+          !resubmitted &&
+          confirm.reason === "modal-open-unconfirmed" &&
+          Date.now() - confirmStartedAt > 3000
+        ) {
+          await programmaticPixUiAction(resolveContentFrame(pixPage), "submit");
+          resubmitted = true;
+        }
+        await pixPage.waitForTimeout(300).catch(() => undefined);
+        confirm = await programmaticPixUiAction(
+          resolveContentFrame(pixPage),
+          "verifyPixAccountListed",
+          { phoneDigits: pixPhone },
+        );
+      }
+      diag(
+        `9-confirm: ok=${confirm.ok} reason=${confirm.reason ?? "-"} diag=${confirm.diag ?? "-"}`,
+      );
+      if (!confirm.ok) {
+        throw new PixRegistrationError(
+          confirm.reason === "error-surface" ? "submit" : "persistenceCheck",
+          confirm.reason === "error-surface"
+            ? "plataforma sinalizou erro ao salvar a chave PIX"
+            : "cadastro PIX nao confirmou na plataforma (conta nao apareceu na lista)",
+          confirm.diag,
+        );
       }
       diag("9-pix registration saved");
     } finally {
@@ -3595,7 +3785,7 @@ export class AutomationRuntimeService {
     // de decidir recarregar — assim evitamos o refresh no caso comum em que a SPA ja
     // esta carregada e so estava se assentando.
     let routerReady = false;
-    const probeDeadline = Date.now() + 5000;
+    const probeDeadline = Date.now() + PIX_MS(5000);
     while (Date.now() < probeDeadline) {
       this.ensureRunActive(runId);
       if (await hasSpaRouter(spa)) {
@@ -3608,7 +3798,7 @@ export class AutomationRuntimeService {
       // Fallback raro: SPA nao montada nesta pagina. Carrega a home UMA vez.
       diag("router ausente apos 5s; carregando a home (fallback)");
       await this.ensurePlatformHomeLoaded(runId, pixPage, profile, startUrl);
-      const bootDeadline = Date.now() + 10000;
+      const bootDeadline = Date.now() + PIX_MS(10000);
       while (Date.now() < bootDeadline) {
         this.ensureRunActive(runId);
         if (await hasSpaRouter(spa)) {
@@ -3619,7 +3809,8 @@ export class AutomationRuntimeService {
       }
     }
     if (!routerReady) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "router",
         "SPA sem router acessivel (modo programatico requer Vue router no main world).",
       );
     }
@@ -3651,7 +3842,8 @@ export class AutomationRuntimeService {
       descriptor,
     );
     if (!withdrawalTarget) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "router",
         `nao consegui resolver a rota de saque (${await describeSpaState(spa)})`,
       );
     }
@@ -3660,13 +3852,14 @@ export class AutomationRuntimeService {
     // Deixa o componente carregar dados; algumas plataformas mostram o setup de senha
     // ja na propria tela de saque. Espera CONDICIONAL ate algo acionavel aparecer (em vez
     // de um tempo fixo que mascarava o prompt de senha quando ele demorava).
-    await waitForWithdrawalOrPasswordSignal(pixPage, 6000);
+    await waitForWithdrawalOrPasswordSignal(pixPage, PIX_MS(6000));
     await this.handleWithdrawalPasswordPrompts(runId, profile, pixPage);
 
-    if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
+    if (!(await waitForWithdrawalAccountSurface(pixPage, PIX_MS(6000)))) {
       await routerPush(spa, withdrawalTarget);
-      if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
-        throw new Error(
+      if (!(await waitForWithdrawalAccountSurface(pixPage, PIX_MS(6000)))) {
+        throw new PixRegistrationError(
+          "receivingTab",
           `tela de saque nao abriu via router (${await describeSpaState(spa)})`,
         );
       }
@@ -3685,15 +3878,17 @@ export class AutomationRuntimeService {
         descriptor,
       );
       await routerPush(spa, withdrawalTarget);
-      await waitForWithdrawalOrPasswordSignal(pixPage, 6000);
+      await waitForWithdrawalOrPasswordSignal(pixPage, PIX_MS(6000));
       await this.handleWithdrawalPasswordPrompts(runId, profile, pixPage);
-      if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
-        throw new Error(
+      if (!(await waitForWithdrawalAccountSurface(pixPage, PIX_MS(6000)))) {
+        throw new PixRegistrationError(
+          "withdrawalPassword",
           `tela de saque nao voltou apos definir senha (${await describeSpaState(spa)})`,
         );
       }
       if (await hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
-        throw new Error(
+        throw new PixRegistrationError(
+          "withdrawalPassword",
           "plataforma ainda pede adicionar senha de saque apos o setup programatico",
         );
       }
@@ -3729,8 +3924,13 @@ export class AutomationRuntimeService {
       // + "Proximo") e INEQUIVOCO e um form de CRIAR nunca casa esse detector. Checamos
       // ENTRAR PRIMEIRO para que ele jamais seja sequestrado pela deteccao de CRIAR (que ja
       // deu falso-positivo: o campo de senha inline da tela de saque + o do modal somavam 2
-      // e `fillWithdrawalPasswordSetup` achava 1 campo e falhava).
-      if (await hasExistingWithdrawalPasswordModal(pixPage)) {
+      // e `fillWithdrawalPasswordSetup` achava 1 campo e falhava). A decisao vive numa funcao
+      // pura (classifyWithdrawalPasswordPrompt) para ser testavel sem browser.
+      const promptDecision = classifyWithdrawalPasswordPrompt({
+        hasEnterModal: await hasExistingWithdrawalPasswordModal(pixPage),
+        hasSetupSurface: await hasWithdrawalPasswordSetupSurface(pixPage),
+      });
+      if (promptDecision === "enter") {
         diag(`prompt de senha: ENTRAR (iter ${iteration})`);
         let withdrawalPassword = this.database.getProfile(profile.id).account
           ?.withdrawalPassword;
@@ -3753,7 +3953,7 @@ export class AutomationRuntimeService {
           withdrawalPassword,
         );
         // espera CONDICIONAL o modal ENTRAR fechar, em vez de um waitForTimeout fixo
-        const modalDeadline = Date.now() + 4000;
+        const modalDeadline = Date.now() + PIX_MS(4000);
         while (
           Date.now() < modalDeadline &&
           (await hasExistingWithdrawalPasswordModal(pixPage))
@@ -3762,7 +3962,7 @@ export class AutomationRuntimeService {
         }
         continue;
       }
-      if (await hasWithdrawalPasswordSetupSurface(pixPage)) {
+      if (promptDecision === "setup") {
         diag(`prompt de senha: DEFINIR (iter ${iteration})`);
         const withdrawalPassword =
           this.database.ensureProfileWithdrawalPassword(profile.id);
@@ -3778,11 +3978,12 @@ export class AutomationRuntimeService {
         );
         const setupClosed = await waitForWithdrawalPasswordSetupToClose(
           pixPage,
-          4500,
+          PIX_MS(4500),
         );
         diag(`prompt DEFINIR fechou=${setupClosed}`);
         if (!setupClosed) {
-          throw new Error(
+          throw new PixRegistrationError(
+            "withdrawalPassword",
             "senha de saque nao confirmou na plataforma; tela de definicao continuou aberta",
           );
         }
@@ -3877,7 +4078,8 @@ export class AutomationRuntimeService {
       .catch(() => "");
     diag(`texto apos definir: ${postDefineText}`);
     if (!setupClosed) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "withdrawalPassword",
         "senha de saque nao confirmou na plataforma; tela de definicao continuou aberta",
       );
     }
@@ -3901,7 +4103,8 @@ export class AutomationRuntimeService {
       `3-receiving state: ok=${receiving.ok} ${receiving.diag ?? receiving.reason ?? ""}`,
     );
     if (!receiving.ok) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "receivingTab",
         `aba Conta para recebimento nao abriu por estado (${receiving.reason ?? "motivo desconhecido"})`,
       );
     }
@@ -3911,7 +4114,7 @@ export class AutomationRuntimeService {
     // que a senha e confirmada. Por isso tratamos o gate DENTRO do loop, antes de cada
     // tentativa de openAddPix. Sem isso, openAddPix nunca acha o modal PIX e estoura
     // ("modal de Pix nao abriu") deixando a senha por preencher -- bug confirmado em runtime.
-    const deadline = Date.now() + 8000;
+    const deadline = Date.now() + PIX_MS(8000);
     await this.handleWithdrawalPasswordPrompts(runId, profile, page);
     let addResult = await programmaticPixUiAction(spa, "openAddPix");
     while (!addResult.ok && Date.now() < deadline) {
@@ -3924,7 +4127,8 @@ export class AutomationRuntimeService {
       `3-pix add handler: ok=${addResult.ok} ${addResult.diag ?? addResult.reason ?? ""}`,
     );
     if (!addResult.ok) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "openModal",
         `modal Adicionar PIX nao abriu pelo handler Vue (${addResult.reason ?? "motivo desconhecido"})`,
       );
     }
@@ -5325,8 +5529,10 @@ export class AutomationRuntimeService {
       `selectPhone-state: ok=${result.ok} ${result.diag ?? result.reason ?? ""}`,
     );
     if (!result.ok) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "selectPhone",
         `tipo PHONE nao foi aplicado no estado Vue (${result.reason ?? "motivo desconhecido"})`,
+        result.diag,
       );
     }
   }
@@ -5358,228 +5564,211 @@ export class AutomationRuntimeService {
 
     diag(`fillForm-modal open: ${await pixModalOpen()}`);
 
-    const tryFill = () =>
+    // Etapa avaliada na pagina: no mode "gather" so COLETA metadados dos inputs do modal;
+    // no mode "set" recoleta a MESMA lista (mesma logica/ordem, para os indices baterem) e
+    // seta os valores pelos indices que resolvePixFormFieldRoles decidiu em Node. Assim a
+    // heuristica de escolha de campos fica testavel fora do browser.
+    const pixFormStep = (payload: PixFormFillPayload): Promise<PixFormStepResult> =>
       resolveContentFrame(page)
-        .evaluate(
-          ({ pixPhone, cpfValue, realNameValue }) => {
-            const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-            const normalize = (value: string | null | undefined) =>
-              (value || "")
-                .normalize("NFD")
-                .replace(/[\u0300-\u036f]/g, "")
-                .replace(/\s+/g, " ")
-                .trim()
-                .toLowerCase();
-            const isVisible = (element: BrowserRuntimeElement) => {
-              const rect = element.getBoundingClientRect();
-              const style = runtimeWindow.getComputedStyle(element);
-              return (
-                style.display !== "none" &&
-                style.visibility !== "hidden" &&
-                rect.width > 8 &&
-                rect.height > 8
-              );
-            };
-            const isInputElement = (
-              element: BrowserRuntimeElement,
-            ): element is BrowserRuntimeInputElement =>
-              typeof element.value === "string";
-            const setValue = (
-              input: BrowserRuntimeInputElement,
-              value: string,
-            ) => {
-              const setter = runtimeWindow.HTMLInputElement?.prototype
-                ? (Object.getOwnPropertyDescriptor(
-                    runtimeWindow.HTMLInputElement.prototype,
-                    "value",
-                  )?.set as
-                    | ((
-                        this: BrowserRuntimeInputElement,
-                        value: string,
-                      ) => void)
-                    | undefined)
-                : undefined;
-              setter?.call(input, value);
-              if (input.value !== value) {
-                input.value = value;
-              }
-              const RuntimeEvent = runtimeWindow.Event;
-              if (RuntimeEvent) {
-                input.dispatchEvent?.(
-                  new RuntimeEvent("input", { bubbles: true }),
-                );
-                input.dispatchEvent?.(
-                  new RuntimeEvent("change", { bubbles: true }),
-                );
-              }
-            };
-            const roots = Array.from(
-              runtimeWindow.document.querySelectorAll(
-                ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.modal,.popup,form",
-              ),
+        .evaluate((input: PixFormFillPayload): PixFormStepResult => {
+          const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const isVisible = (element: BrowserRuntimeElement) => {
+            const rect = element.getBoundingClientRect();
+            const style = runtimeWindow.getComputedStyle(element);
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              rect.width > 8 &&
+              rect.height > 8
+            );
+          };
+          const isInputElement = (
+            element: BrowserRuntimeElement,
+          ): element is BrowserRuntimeInputElement =>
+            typeof element.value === "string";
+          const setValue = (
+            target: BrowserRuntimeInputElement,
+            value: string,
+          ) => {
+            const setter = runtimeWindow.HTMLInputElement?.prototype
+              ? (Object.getOwnPropertyDescriptor(
+                  runtimeWindow.HTMLInputElement.prototype,
+                  "value",
+                )?.set as
+                  | ((this: BrowserRuntimeInputElement, value: string) => void)
+                  | undefined)
+              : undefined;
+            setter?.call(target, value);
+            if (target.value !== value) {
+              target.value = value;
+            }
+            const RuntimeEvent = runtimeWindow.Event;
+            if (RuntimeEvent) {
+              target.dispatchEvent?.(new RuntimeEvent("input", { bubbles: true }));
+              target.dispatchEvent?.(new RuntimeEvent("change", { bubbles: true }));
+            }
+          };
+          const roots = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.modal,.popup,form",
+            ),
+          )
+            .filter(
+              (element) =>
+                isVisible(element) &&
+                /adicionar\s+pix/i.test(normalize(element.textContent)),
             )
-              .filter(
-                (element) =>
-                  isVisible(element) &&
-                  /adicionar\s+pix/i.test(normalize(element.textContent)),
-              )
-              .sort((a, b) => {
-                const aHasInput = a.querySelector?.("input") ? 1 : 0;
-                const bHasInput = b.querySelector?.("input") ? 1 : 0;
-                if (aHasInput !== bHasInput) return bHasInput - aHasInput;
-                const aRect = a.getBoundingClientRect();
-                const bRect = b.getBoundingClientRect();
-                return aRect.width * aRect.height - bRect.width * bRect.height;
-              });
-            const root = roots[0] ?? runtimeWindow.document.body!;
-
-            const allInputs = Array.from(
-              root.querySelectorAll?.("input") ?? [],
+            .sort((a, b) => {
+              const aHasInput = a.querySelector?.("input") ? 1 : 0;
+              const bHasInput = b.querySelector?.("input") ? 1 : 0;
+              if (aHasInput !== bHasInput) return bHasInput - aHasInput;
+              const aRect = a.getBoundingClientRect();
+              const bRect = b.getBoundingClientRect();
+              return aRect.width * aRect.height - bRect.width * bRect.height;
+            });
+          const root = roots[0] ?? runtimeWindow.document.body!;
+          const inModal = (el: BrowserRuntimeElement) => {
+            const popup = el.closest?.(
+              ".van-popup, .van-dialog, .ui-popup, .ui-dialog, .modal, .popup",
             );
-            const allInputInfo = allInputs.map((inp) => ({
-              placeholder: (inp.placeholder || "").slice(0, 40),
-              disabled: !!(inp as BrowserRuntimeInputElement).disabled,
-              visible: isVisible(inp),
-              value:
-                (inp as BrowserRuntimeInputElement).value?.slice(0, 20) || "",
-            }));
-
-            const rootInfo = {
-              class: String(root.className || "").slice(0, 50),
-              height: root.getBoundingClientRect().height,
-              rootCount: roots.length,
-              inputCount: allInputInfo.length,
-            };
-
-            const inModal = (el: BrowserRuntimeElement) => {
-              const popup = el.closest?.(
-                ".van-popup, .van-dialog, .ui-popup, .ui-dialog, .modal, .popup",
-              );
-              return Boolean(popup && isVisible(popup));
-            };
-
-            const inputs = allInputs.filter(
-              (input): input is BrowserRuntimeInputElement =>
-                isInputElement(input) && isVisible(input) && inModal(input),
-            );
-            const writableInputs = inputs.filter(
-              (input) =>
-                !input.disabled && !input.readOnly && input.type !== "hidden",
-            );
-            const selector = root.querySelector?.(".ui-popover__wrapper");
-            const precedes = (
-              left: BrowserRuntimeElement,
-              right: BrowserRuntimeElement,
-            ) =>
-              Boolean(
-                left.compareDocumentPosition?.(right) &&
+            return Boolean(popup && isVisible(popup));
+          };
+          // Lista canonica: inputs visiveis dentro do modal, em ordem de DOM. Gather e set
+          // usam ESTA MESMA lista, entao os indices resolvidos em Node continuam validos.
+          const inputs = Array.from(root.querySelectorAll?.("input") ?? []).filter(
+            (candidate): candidate is BrowserRuntimeInputElement =>
+              isInputElement(candidate) && isVisible(candidate) && inModal(candidate),
+          );
+          const selector = root.querySelector?.(".ui-popover__wrapper") ?? null;
+          const precedes = (
+            left: BrowserRuntimeElement,
+            right: BrowserRuntimeElement,
+          ) =>
+            Boolean(
+              left.compareDocumentPosition?.(right) &&
                 left.compareDocumentPosition(right) & 4,
-              );
-            const beforeSelector = selector
-              ? inputs.filter((input) => precedes(input, selector))
-              : [];
-            const afterSelector = selector
-              ? inputs.filter((input) => precedes(selector, input))
-              : [];
-
-            // Estrutura comum das skins Pinia: nome antes do seletor; chave PIX e
-            // CPF, nessa ordem, depois dele. Placeholders variam por traducao e skin,
-            // portanto entram apenas como fallback.
-            const nameInput =
-              (beforeSelector.at(-1) as
-                | BrowserRuntimeInputElement
-                | undefined) ??
-              writableInputs.find((input) =>
-                /nome|name|titular|beneficiario/.test(
-                  normalize(`${input.placeholder} ${input.name} ${input.id}`),
-                ),
-              );
-            const structuralWritable = afterSelector.filter(
-              (input) =>
-                !input.disabled && !input.readOnly && input.type !== "hidden",
             );
-            const pixInput =
-              structuralWritable[0] ??
-              writableInputs.find((input) =>
-                /chave do pix|pix/.test(
-                  normalize(
-                    `${input.placeholder} ${input.name} ${input.id} ${input.className}`,
-                  ),
-                ),
-              );
-            const cpfInput =
-              structuralWritable[1] ??
-              writableInputs.find(
-                (input) =>
-                  input !== pixInput &&
-                  /cpf|11 digitos/.test(
-                    normalize(
-                      `${input.placeholder} ${input.name} ${input.id} ${input.className}`,
-                    ),
-                  ),
-              );
+          const allInputInfo = inputs.map((inp) => ({
+            placeholder: (inp.placeholder || "").slice(0, 40),
+            disabled: !!inp.disabled,
+            value: inp.value?.slice(0, 20) || "",
+          }));
+          const rootInfo = {
+            class: String(root.className || "").slice(0, 50),
+            rootCount: roots.length,
+            inputCount: inputs.length,
+            hasSelector: Boolean(selector),
+          };
 
-            if (!pixInput || !cpfInput) {
-              return {
-                cpf: Boolean(cpfInput),
-                pix: Boolean(pixInput),
-                name: Boolean(nameInput),
-                debug: {
-                  rootFound: true,
-                  rootInfo,
-                  inputs: allInputInfo,
-                  writableCount: writableInputs.length,
-                  pixPlaceholder: pixInput?.placeholder || "none",
-                  cpfPlaceholder: cpfInput?.placeholder || "none",
-                  namePlaceholder: nameInput?.placeholder || "none",
-                },
-              };
-            }
-
-            if (
-              nameInput &&
-              !nameInput.disabled &&
-              !nameInput.readOnly &&
-              !nameInput.value
-            ) {
-              setValue(nameInput, realNameValue);
-            }
-            setValue(pixInput, pixPhone);
-            setValue(cpfInput, cpfValue);
+          if (input.mode === "gather") {
+            const descriptors = inputs.map((inp, index) => ({
+              index,
+              placeholder: (inp.placeholder || "").slice(0, 40),
+              name: String(inp.name || "").slice(0, 40),
+              id: String(inp.id || "").slice(0, 40),
+              className: String(inp.className || "").slice(0, 60),
+              precedesSelector: selector ? precedes(inp, selector) : false,
+              followsSelector: selector ? precedes(selector, inp) : false,
+              writable: !inp.disabled && !inp.readOnly && inp.type !== "hidden",
+              hasSelector: Boolean(selector),
+            }));
             return {
-              cpf: true,
-              pix: true,
-              debug: {
-                rootFound: true,
-                inputs: allInputInfo,
-                nameFilled: !!nameInput,
-              },
+              phase: "gather",
+              descriptors,
+              pix: false,
+              cpf: false,
+              nameFilled: false,
+              debug: { rootInfo, allInputInfo },
             };
-          },
-          { cpfValue: cpf, pixPhone: phoneNumber, realNameValue: realName },
-        )
-        .catch(() => ({
-          cpf: false,
-          pix: false,
-          debug: { error: "evaluate failed" },
-        }));
+          }
 
-    let filled = await tryFill();
-    const fillDeadline = Date.now() + 4000;
-    while ((!filled.pix || !filled.cpf) && Date.now() < fillDeadline) {
+          const { nameIndex, pixIndex, cpfIndex } = input.roles;
+          const nameInput = nameIndex != null ? inputs[nameIndex] : undefined;
+          const pixInput = pixIndex != null ? inputs[pixIndex] : undefined;
+          const cpfInput = cpfIndex != null ? inputs[cpfIndex] : undefined;
+          if (!pixInput || !cpfInput) {
+            return {
+              phase: "set",
+              descriptors: [],
+              pix: Boolean(pixInput),
+              cpf: Boolean(cpfInput),
+              nameFilled: false,
+              debug: { rootInfo, allInputInfo },
+            };
+          }
+          if (
+            nameInput &&
+            !nameInput.disabled &&
+            !nameInput.readOnly &&
+            !nameInput.value
+          ) {
+            setValue(nameInput, input.realNameValue);
+          }
+          setValue(pixInput, input.pixPhone);
+          setValue(cpfInput, input.cpfValue);
+          return {
+            phase: "set",
+            descriptors: [],
+            pix: true,
+            cpf: true,
+            nameFilled: !!nameInput,
+            debug: { rootInfo, allInputInfo },
+          };
+        }, payload)
+        .catch(
+          (): PixFormStepResult => ({
+            phase: "error",
+            descriptors: [],
+            pix: false,
+            cpf: false,
+            nameFilled: false,
+            debug: { error: "evaluate failed" },
+          }),
+        );
+
+    let filled: PixFormStepResult = {
+      phase: "gather",
+      descriptors: [],
+      pix: false,
+      cpf: false,
+      nameFilled: false,
+      debug: undefined,
+    };
+    const fillDeadline = Date.now() + PIX_MS(4000);
+    do {
       this.ensureRunActive(runId);
+      const gathered = await pixFormStep({ mode: "gather" });
+      const roles = resolvePixFormFieldRoles(gathered.descriptors);
+      filled = await pixFormStep({
+        mode: "set",
+        roles,
+        pixPhone: phoneNumber,
+        cpfValue: cpf,
+        realNameValue: realName,
+      });
+      if (filled.pix && filled.cpf) {
+        break;
+      }
       await page.waitForTimeout(100).catch(() => undefined);
-      filled = await tryFill();
-    }
+    } while (Date.now() < fillDeadline);
 
     diag(
-      `fillForm-result: pix=${filled.pix} cpf=${filled.cpf} debug=${JSON.stringify((filled as Record<string, unknown>).debug)}`,
+      `fillForm-result: pix=${filled.pix} cpf=${filled.cpf} debug=${JSON.stringify(filled.debug)}`,
     );
     diag(`fillForm-modal after fill: ${await pixModalOpen()}`);
 
     if (!filled.pix || !filled.cpf) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "fillForm",
         "campos de telefone PIX e CPF nao foram encontrados no formulario",
+        JSON.stringify(filled.debug).slice(0, 160),
       );
     }
   }

@@ -825,13 +825,20 @@ export type ProgrammaticPixUiAction =
   | "openReceivingAccount"
   | "openAddPix"
   | "selectPhone"
-  | "submit";
+  | "submit"
+  | "verifyPixAccountListed";
 
 export interface ProgrammaticPixUiResult {
   ok: boolean;
   action: ProgrammaticPixUiAction;
   reason?: string;
   diag?: string;
+}
+
+// Payload opcional para acoes que precisam de dados (ex.: os digitos do telefone que
+// deve aparecer na lista de contas para a acao verifyPixAccountListed).
+export interface ProgrammaticPixUiPayload {
+  phoneDigits?: string;
 }
 
 // Aciona o cadastro PIX pelo estado, handlers e eventos direcionados da SPA, sem
@@ -844,11 +851,23 @@ export interface ProgrammaticPixUiResult {
 // Os expandos Vue/Pinia so existem no MAIN world do Patchright.
 export async function programmaticPixUiAction(
   spa: SpaHandle,
-  action: ProgrammaticPixUiAction
+  action: ProgrammaticPixUiAction,
+  payload?: ProgrammaticPixUiPayload
 ): Promise<ProgrammaticPixUiResult> {
+  // Compatibilidade: quando nao ha payload passamos a STRING nua (como sempre) para nao
+  // quebrar os testes que fingem `page.evaluate` chamando `callback(action)` com string.
+  // So com payload passamos um objeto { action, ...payload }.
   return spa
     .evaluate(
-      async (requestedAction: ProgrammaticPixUiAction): Promise<ProgrammaticPixUiResult> => {
+      async (
+        input:
+          | ProgrammaticPixUiAction
+          | { action: ProgrammaticPixUiAction; phoneDigits?: string }
+      ): Promise<ProgrammaticPixUiResult> => {
+        const requestedAction =
+          typeof input === "string" ? input : input.action;
+        const phoneDigits =
+          typeof input === "string" ? undefined : input.phoneDigits;
         type Rec = Record<PropertyKey, unknown>;
         type RuntimeElement = Rec & {
           __vue_app__?: unknown;
@@ -1352,6 +1371,87 @@ export async function programmaticPixUiAction(
           };
         }
 
+        if (requestedAction === "verifyPixAccountListed") {
+          // Confirmacao FORTE de persistencia: nao basta o modal sumir. Procuramos a
+          // conta PIX recem-cadastrada no proprio estado da plataforma (stores Pinia) e,
+          // como corroboracao, no DOM da lista. Match por ULTIMOS 8 digitos para tolerar
+          // mascara/formatacao. Sem evidencia positiva, so retornamos sucesso se houver
+          // sinal real -- "modal fechou" sozinho NAO conta (era a fonte do falso-positivo).
+          const target = String(phoneDigits ?? "").replace(/\D+/g, "");
+          const digitsOf = (value: unknown) => String(value ?? "").replace(/\D+/g, "");
+          const phoneMatch = (stored: unknown): boolean => {
+            const normalized = digitsOf(stored);
+            if (!normalized || !target) return false;
+            if (normalized.length < 8 || target.length < 8) return normalized === target;
+            return (
+              normalized.endsWith(target.slice(-8)) || target.endsWith(normalized.slice(-8))
+            );
+          };
+          const stores = collectPiniaStores();
+          let listedWhere: string | undefined;
+          const walk = (node: unknown, depth: number): boolean => {
+            if (depth > 3 || !isObj(node)) return false;
+            const length = read(node, "length");
+            if (typeof length === "number") {
+              for (const item of Array.from(node as unknown as ArrayLike<unknown>).slice(0, 200)) {
+                if (isObj(item)) {
+                  for (const key of Reflect.ownKeys(item).slice(0, 40)) {
+                    if (phoneMatch(unwrap(read(item, key)))) return true;
+                  }
+                } else if (phoneMatch(item)) {
+                  return true;
+                }
+              }
+            }
+            for (const key of Reflect.ownKeys(node).slice(0, 60)) {
+              const child = unwrap(read(node, key));
+              if (isObj(child) && walk(child, depth + 1)) return true;
+            }
+            return false;
+          };
+          if (stores) {
+            for (const [key, store] of stores) {
+              if (walk(store, 0)) {
+                listedWhere = `store=${key}`;
+                break;
+              }
+            }
+          }
+          if (!listedWhere) {
+            const domHit = elements.find((element) => phoneMatch(element.textContent));
+            if (domHit) listedWhere = "dom-list";
+          }
+          const modalStillOpen = Boolean(findPixModalRoot());
+          const bodyText = normalize(read(runtime.document.body, "textContent"));
+          const hasError =
+            /(erro|falha|invalid|inval|ja (existe|cadastrad)|nao foi|failed|denied|recus)/.test(
+              bodyText
+            ) && !/sucesso|success/.test(bodyText);
+
+          if (listedWhere) {
+            return { ok: true, action: requestedAction, diag: `listed:${listedWhere}` };
+          }
+          if (hasError) {
+            return {
+              ok: false,
+              action: requestedAction,
+              reason: "error-surface",
+              diag: bodyText.slice(0, 160)
+            };
+          }
+          if (modalStillOpen) {
+            return { ok: false, action: requestedAction, reason: "modal-open-unconfirmed" };
+          }
+          return {
+            ok: false,
+            action: requestedAction,
+            reason: "modal-closed-unconfirmed",
+            diag: stores
+              ? `stores=${Array.from(stores.keys()).slice(-20).join(",")}`
+              : "sem-pinia"
+          };
+        }
+
         const modalRoot = findPixModalRoot();
         if (!modalRoot) return { ok: false, action: requestedAction, reason: "modal-pix-ausente" };
         const confirmButton =
@@ -1402,7 +1502,7 @@ export async function programmaticPixUiAction(
         }
         return { ok: false, action: requestedAction, reason: "form-submit-ausente" };
       },
-      action,
+      payload ? { action, phoneDigits: payload.phoneDigits } : action,
       MAIN_WORLD
     )
     .catch(
