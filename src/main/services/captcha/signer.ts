@@ -175,11 +175,11 @@ export async function generateW(
     base.setLeft = left;
     base.userresponse = left / 1.0059466666666665 + 2;
   } else if (riskType === 'nine') {
-    const { findIconCells } = await import('./solvers/nine.js');
+    const { findIconCellsPhoto } = await import('./solvers/nine-photo.js');
     const gridBuf = await fetchImage(data.imgs!);
     const quesBufs = (data.ques as string[] | undefined) ?? [];
     const qBuf = quesBufs[0] ? await fetchImage(quesBufs[0]) : Buffer.alloc(0);
-    const cells = await findIconCells(gridBuf, qBuf, Number(data.nine_nums ?? 3));
+    const cells = await findIconCellsPhoto(gridBuf, qBuf, Number(data.nine_nums ?? 3));
     base.passtime = humanPasstime(1000, 0, 400);
     base.userresponse = cells;
   } else if (riskType === 'icon' || riskType === 'gobang' || riskType === 'winlinze') {
