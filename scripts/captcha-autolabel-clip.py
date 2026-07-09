@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -77,8 +76,8 @@ def main() -> int:
                 class_dir = out_root / target
                 class_dir.mkdir(parents=True, exist_ok=True)
                 name = f"{challenge.name}__r{row}c{col}.jpg"
-                rel = Path("dataset/labeled") / target / name
-                crop.save(out_root / target / name, quality=95)
+                cell_path = class_dir / name
+                crop.save(cell_path, quality=95)
                 mf.write(json.dumps({
                     "challengeId": challenge.name,
                     "targetClass": target,
@@ -86,7 +85,7 @@ def main() -> int:
                     "col": col,
                     "rank": rank,
                     "clipScore": score,
-                    "cellPath": str(rel).replace("\\", "/"),
+                    "cellPath": str(cell_path).replace("\\", "/"),
                     "gridPath": str(challenge / "grid.jpg").replace("\\", "/"),
                     "quesPath": str(challenge / "ques.png").replace("\\", "/"),
                 }, separators=(",", ":")) + "\n")
