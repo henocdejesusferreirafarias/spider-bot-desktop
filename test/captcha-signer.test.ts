@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { LotParser, randUid, encryptSymmetrical1, encryptAsymmetric1, generatePow } from '../src/main/services/captcha/signer.js';
+import { LotParser, randUid, encryptSymmetrical1, encryptAsymmetric1, generatePow, getPubKey } from '../src/main/services/captcha/signer.js';
 import { CURRENT_CONSTANTS } from '../src/main/services/captcha/constants.js';
 
 test('LotParser.getDict produz o dict esperado (fixture)', () => {
@@ -32,4 +32,9 @@ test('generatePow produz solução válida (md5 com prefixo de bits)', () => {
 test('encryptAsymmetric1 (RSA PKCS1v1.5) gera 128 bytes (256 hex)', () => {
   const enc = encryptAsymmetric1('test');
   assert.equal(enc.length, 256, '1024-bit RSA => 128 bytes => 256 hex');
+});
+
+test('encryptAsymmetric1 usa chave RSA com exponent 65537 (e=AQAB)', () => {
+  const jwk = getPubKey().export({ format: 'jwk' }) as { e: string };
+  assert.equal(jwk.e, 'AQAB', 'e deve ser 65537 (AQAB em base64url), não 4096');
 });

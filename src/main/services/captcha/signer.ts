@@ -78,12 +78,13 @@ export function encryptSymmetrical1(plainText: string, randomStr: string): Buffe
 
 // ---------- RSA PKCS1v1.5 (pubkey do GeeTest, via JWK) ----------
 function intHexToB64url(hex: string): string {
-  let buf = Buffer.from(hex, 'hex');
+  const padded = hex.length % 2 ? '0' + hex : hex;
+  let buf = Buffer.from(padded, 'hex');
   while (buf.length > 1 && buf[0] === 0) buf = buf.subarray(1);
   return buf.toString('base64url');
 }
 let _pubKey: crypto.KeyObject | undefined;
-function getPubKey(): crypto.KeyObject {
+export function getPubKey(): crypto.KeyObject {
   if (_pubKey) return _pubKey;
   _pubKey = crypto.createPublicKey({
     key: { kty: 'RSA', n: intHexToB64url(RSA_PUBKEY.n), e: intHexToB64url(RSA_PUBKEY.e) },
