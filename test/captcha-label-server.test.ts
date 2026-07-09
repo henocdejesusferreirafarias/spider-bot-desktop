@@ -1,19 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { startLabelServer } from '../scripts/captcha-label-server.mjs';
 
-function makeFixture() {
+function makeFixture(challengeCount = 2) {
   const dir = mkdtempSync(join(tmpdir(), 'captcha-label-server-'));
   const raw = join(dir, 'raw');
   const dataset = join(dir, 'dataset');
   mkdirSync(raw, { recursive: true });
   mkdirSync(dataset, { recursive: true });
 
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < challengeCount; i++) {
     const id = `00000${i}-test`;
     const cdir = join(raw, id);
     mkdirSync(cdir, { recursive: true });
@@ -32,6 +32,28 @@ function makeFixture() {
     }));
   }
   return { raw, dataset };
+}
+
+async function currentChallenge(port: number) {
+  return (await (await fetch(`http://127.0.0.1:${port}/api/challenge`)).json()) as {
+    challengeId: string;
+    round: 1 | 2;
+    done?: boolean;
+  };
+}
+
+async function saveLabel(port: number, round: number, cells: number[][]) {
+  return fetch(`http://127.0.0.1:${port}/api/label`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ round, cells }),
+  });
+}
+
+function auditEntries(dataset: string) {
+  const file = join(dataset, 'manual-labels.jsonl');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
 test('GET /api/challenge returns the first challenge with 9 cells', async () => {
@@ -116,6 +138,101 @@ test('GET / returns the HTML page', async () => {
     const html = await res.text();
     assert.match(html, /Plan 2d/);
     assert.match(html, /class="grid"/);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('restart rehydrates unresolved disputes without emitting a duplicate final', async () => {
+  const fx = makeFixture(1);
+  let srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const round1 = await currentChallenge(srv.port);
+    assert.equal(round1.done, undefined);
+    assert.equal((await saveLabel(srv.port, round1.round, [[1, 1], [1, 2]])).status, 200);
+    const round2 = await currentChallenge(srv.port);
+    assert.equal(round2.challengeId, round1.challengeId);
+    assert.notEqual(round2.round, round1.round);
+    assert.equal((await saveLabel(srv.port, round2.round, [[2, 1], [2, 2]])).status, 200);
+  } finally {
+    await srv.close();
+  }
+
+  srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const disputes = await (await fetch(`http://127.0.0.1:${srv.port}/api/disputes`)).json();
+    assert.equal(disputes.length, 1);
+    assert.equal(disputes[0].challengeId, '000000-test');
+    assert.deepEqual(await currentChallenge(srv.port), { done: true });
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 0);
+
+    const resolved = await fetch(`http://127.0.0.1:${srv.port}/api/disputes/resolve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ challengeId: '000000-test', choice: 'round1' }),
+    });
+    assert.equal(resolved.status, 200);
+  } finally {
+    await srv.close();
+  }
+
+  srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    assert.deepEqual(await (await fetch(`http://127.0.0.1:${srv.port}/api/disputes`)).json(), []);
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('restart rehydrates skipped rounds and does not create a final from the remaining round', async () => {
+  const fx = makeFixture(1);
+  let srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  let skipped;
+  try {
+    skipped = await currentChallenge(srv.port);
+    const response = await fetch(`http://127.0.0.1:${srv.port}/api/skip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ round: skipped.round }),
+    });
+    assert.equal(response.status, 200);
+  } finally {
+    await srv.close();
+  }
+
+  srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const remaining = await currentChallenge(srv.port);
+    assert.equal(remaining.challengeId, skipped?.challengeId);
+    assert.notEqual(remaining.round, skipped?.round);
+    assert.equal((await saveLabel(srv.port, remaining.round, [[1, 1], [2, 2]])).status, 200);
+    assert.deepEqual(await currentChallenge(srv.port), { done: true });
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 0);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('state lock conflicts reject labels before writing the audit or queue state', async () => {
+  const fx = makeFixture(1);
+  const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const challenge = await currentChallenge(srv.port);
+    writeFileSync(join(fx.dataset, 'label-state.json'), JSON.stringify({ otherWriter: true }));
+
+    const response = await saveLabel(srv.port, challenge.round, [[1, 1], [2, 2]]);
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { saved: false, error: 'state file is locked by another writer' });
+    assert.equal(existsSync(join(fx.dataset, 'manual-labels.jsonl')), false);
+    assert.deepEqual(await (await fetch(`http://127.0.0.1:${srv.port}/api/stats`)).json(), {
+      totalChallenges: 1,
+      labeledRounds: 0,
+      remainingRounds: 2,
+      disputeCount: 0,
+      skippedRounds: 0,
+    });
+    assert.deepEqual(await currentChallenge(srv.port), challenge);
   } finally {
     await srv.close();
   }
