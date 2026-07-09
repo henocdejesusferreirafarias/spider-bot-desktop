@@ -38,15 +38,24 @@ async function currentChallenge(port: number) {
   return (await (await fetch(`http://127.0.0.1:${port}/api/challenge`)).json()) as {
     challengeId: string;
     round: 1 | 2;
+    totalRounds?: number;
     done?: boolean;
   };
 }
 
-async function saveLabel(port: number, round: number, cells: number[][]) {
+async function saveLabel(port: number, challenge: { challengeId: string; round: number }, cells: number[][]) {
   return fetch(`http://127.0.0.1:${port}/api/label`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ round, cells }),
+    body: JSON.stringify({ challengeId: challenge.challengeId, round: challenge.round, cells }),
+  });
+}
+
+async function skipRound(port: number, challenge: { challengeId: string; round: number }) {
+  return fetch(`http://127.0.0.1:${port}/api/skip`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ challengeId: challenge.challengeId, round: challenge.round }),
   });
 }
 
@@ -98,11 +107,11 @@ test('POST /api/label with valid cells writes JSONL and updates stats', async ()
   const fx = makeFixture();
   const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
-    await (await fetch(`http://127.0.0.1:${srv.port}/api/challenge`)).json();
+    const challenge = await currentChallenge(srv.port);
     const res = await fetch(`http://127.0.0.1:${srv.port}/api/label`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ round: 1, cells: [[1, 1], [2, 2]] }),
+      body: JSON.stringify({ challengeId: challenge.challengeId, round: challenge.round, cells: [[1, 1], [2, 2]] }),
     });
     assert.equal(res.status, 200);
     const body = await res.json();
@@ -120,11 +129,11 @@ test('POST /api/label with wrong cell count returns 400', async () => {
   const fx = makeFixture();
   const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
-    await fetch(`http://127.0.0.1:${srv.port}/api/challenge`);
+    const challenge = await currentChallenge(srv.port);
     const res = await fetch(`http://127.0.0.1:${srv.port}/api/label`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ round: 1, cells: [[1, 1]] }),
+      body: JSON.stringify({ challengeId: challenge.challengeId, round: challenge.round, cells: [[1, 1]] }),
     });
     assert.equal(res.status, 400);
   } finally {
@@ -136,11 +145,11 @@ test('GET /api/stats reflects writes', async () => {
   const fx = makeFixture();
   const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
-    await fetch(`http://127.0.0.1:${srv.port}/api/challenge`);
+    const challenge = await currentChallenge(srv.port);
     await fetch(`http://127.0.0.1:${srv.port}/api/label`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ round: 1, cells: [[1, 1], [2, 2]] }),
+      body: JSON.stringify({ challengeId: challenge.challengeId, round: challenge.round, cells: [[1, 1], [2, 2]] }),
     });
     const stats = await (await fetch(`http://127.0.0.1:${srv.port}/api/stats`)).json();
     assert.equal(stats.labeledRounds, 1);
@@ -159,6 +168,9 @@ test('GET / returns the HTML page', async () => {
     const html = await res.text();
     assert.match(html, /Plan 2d/);
     assert.match(html, /class="grid"/);
+    assert.match(html, /challengeId: state\.challengeId/);
+    assert.match(html, /stats\.skippedRounds/);
+    assert.match(html, /isSubmitting/);
   } finally {
     await srv.close();
   }
@@ -170,11 +182,11 @@ test('restart rehydrates unresolved disputes without emitting a duplicate final'
   try {
     const round1 = await currentChallenge(srv.port);
     assert.equal(round1.done, undefined);
-    assert.equal((await saveLabel(srv.port, round1.round, [[1, 1], [1, 2]])).status, 200);
+    assert.equal((await saveLabel(srv.port, round1, [[1, 1], [1, 2]])).status, 200);
     const round2 = await currentChallenge(srv.port);
     assert.equal(round2.challengeId, round1.challengeId);
     assert.notEqual(round2.round, round1.round);
-    assert.equal((await saveLabel(srv.port, round2.round, [[2, 1], [2, 2]])).status, 200);
+    assert.equal((await saveLabel(srv.port, round2, [[2, 1], [2, 2]])).status, 200);
   } finally {
     await srv.close();
   }
@@ -214,11 +226,7 @@ test('restart rehydrates skipped rounds and does not create a final from the rem
   let skipped;
   try {
     skipped = await currentChallenge(srv.port);
-    const response = await fetch(`http://127.0.0.1:${srv.port}/api/skip`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ round: skipped.round }),
-    });
+    const response = await skipRound(srv.port, skipped);
     assert.equal(response.status, 200);
   } finally {
     await srv.close();
@@ -230,7 +238,7 @@ test('restart rehydrates skipped rounds and does not create a final from the rem
     const remaining = await currentChallenge(srv.port);
     assert.equal(remaining.challengeId, skipped?.challengeId);
     assert.notEqual(remaining.round, skipped?.round);
-    assert.equal((await saveLabel(srv.port, remaining.round, [[1, 1], [2, 2]])).status, 200);
+    assert.equal((await saveLabel(srv.port, remaining, [[1, 1], [2, 2]])).status, 200);
     assert.deepEqual(await currentChallenge(srv.port), { done: true });
     assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 0);
   } finally {
@@ -319,14 +327,37 @@ test('startup recovery retries on a later request after an active state reservat
   }
 });
 
-test('GET /disputes provides an operator view with dispute resolution controls', async () => {
+test('GET /api/disputes includes the challenge images needed to inspect a disagreement', async () => {
   const fx = makeFixture(1);
   const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
     const round1 = await currentChallenge(srv.port);
-    assert.equal((await saveLabel(srv.port, round1.round, [[1, 1], [1, 2]])).status, 200);
+    assert.equal((await saveLabel(srv.port, round1, [[1, 1], [1, 2]])).status, 200);
     const round2 = await currentChallenge(srv.port);
-    assert.equal((await saveLabel(srv.port, round2.round, [[2, 1], [2, 2]])).status, 200);
+    assert.equal((await saveLabel(srv.port, round2, [[2, 1], [2, 2]])).status, 200);
+
+    const response = await fetch(`http://127.0.0.1:${srv.port}/api/disputes`);
+    assert.equal(response.status, 200);
+    const [dispute] = await response.json();
+    assert.equal(dispute.challengeId, round1.challengeId);
+    assert.ok(dispute.quesDataUrl.startsWith('data:image/'));
+    assert.equal(dispute.cells.length, 9);
+    assert.ok(dispute.cells[0].dataUrl.startsWith('data:image/'));
+    assert.deepEqual(dispute.round1Cells, round1.round === 1 ? [[1, 1], [1, 2]] : [[2, 1], [2, 2]]);
+    assert.deepEqual(dispute.round2Cells, round2.round === 2 ? [[2, 1], [2, 2]] : [[1, 1], [1, 2]]);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('GET /disputes renders image comparison and dispute resolution controls', async () => {
+  const fx = makeFixture(1);
+  const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const round1 = await currentChallenge(srv.port);
+    assert.equal((await saveLabel(srv.port, round1, [[1, 1], [1, 2]])).status, 200);
+    const round2 = await currentChallenge(srv.port);
+    assert.equal((await saveLabel(srv.port, round2, [[2, 1], [2, 2]])).status, 200);
 
     const response = await fetch(`http://127.0.0.1:${srv.port}/disputes`);
     assert.equal(response.status, 200);
@@ -337,6 +368,10 @@ test('GET /disputes provides an operator view with dispute resolution controls',
     assert.match(html, /round1/);
     assert.match(html, /round2/);
     assert.match(html, /relabel/);
+    assert.match(html, /quesDataUrl/);
+    assert.match(html, /dispute-grid/);
+    assert.match(html, /round1-selected/);
+    assert.match(html, /round2-selected/);
 
     const completedPage = await (await fetch(`http://127.0.0.1:${srv.port}/`)).text();
     assert.match(completedPage, /href="\/disputes"/);
@@ -351,11 +386,11 @@ test('second server rejects its first write during another server lock window', 
   let second;
   try {
     const firstChallenge = await currentChallenge(first.port);
-    assert.equal((await saveLabel(first.port, firstChallenge.round, [[1, 1], [2, 2]])).status, 200);
+    assert.equal((await saveLabel(first.port, firstChallenge, [[1, 1], [2, 2]])).status, 200);
 
     second = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
     const secondChallenge = await currentChallenge(second.port);
-    const response = await saveLabel(second.port, secondChallenge.round, [[1, 1], [2, 2]]);
+    const response = await saveLabel(second.port, secondChallenge, [[1, 1], [2, 2]]);
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), { saved: false, error: 'state file is locked by another writer' });
     assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'round').length, 1);
@@ -372,7 +407,7 @@ test('state lock conflicts reject labels before writing the audit or queue state
     const challenge = await currentChallenge(srv.port);
     writeFileSync(join(fx.dataset, 'label-state.json'), JSON.stringify({ otherWriter: true }));
 
-    const response = await saveLabel(srv.port, challenge.round, [[1, 1], [2, 2]]);
+    const response = await saveLabel(srv.port, challenge, [[1, 1], [2, 2]]);
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), { saved: false, error: 'state file is locked by another writer' });
     assert.equal(existsSync(join(fx.dataset, 'manual-labels.jsonl')), false);
@@ -384,6 +419,43 @@ test('state lock conflicts reject labels before writing the audit or queue state
       skippedRounds: 0,
     });
     assert.deepEqual(await currentChallenge(srv.port), challenge);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('duplicate labels cannot mutate the next active challenge', async () => {
+  const fx = makeFixture(3);
+  const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const firstLabel = await currentChallenge(srv.port);
+    assert.equal((await saveLabel(srv.port, firstLabel, [[1, 1], [2, 2]])).status, 200);
+    const nextAfterLabel = await currentChallenge(srv.port);
+    assert.equal(nextAfterLabel.round, firstLabel.round);
+    assert.notEqual(nextAfterLabel.challengeId, firstLabel.challengeId);
+    const duplicateLabel = await saveLabel(srv.port, firstLabel, [[1, 2], [2, 3]]);
+    assert.equal(duplicateLabel.status, 409);
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'round').length, 1);
+    assert.deepEqual(await currentChallenge(srv.port), nextAfterLabel);
+
+  } finally {
+    await srv.close();
+  }
+});
+
+test('stale skips cannot mutate the next active challenge', async () => {
+  const fx = makeFixture(3);
+  const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const firstSkip = await currentChallenge(srv.port);
+    assert.equal((await skipRound(srv.port, firstSkip)).status, 200);
+    const nextAfterSkip = await currentChallenge(srv.port);
+    assert.equal(nextAfterSkip.round, firstSkip.round);
+    assert.notEqual(nextAfterSkip.challengeId, firstSkip.challengeId);
+    const duplicateSkip = await skipRound(srv.port, firstSkip);
+    assert.equal(duplicateSkip.status, 409);
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'skipped').length, 1);
+    assert.deepEqual(await currentChallenge(srv.port), nextAfterSkip);
   } finally {
     await srv.close();
   }

@@ -38,7 +38,7 @@ test('restarting the server resumes after the last labeled round', async () => {
     const firstLabel = await fetch(`http://127.0.0.1:${a.port}/api/label`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ round: first.round, cells: [[1, 1], [2, 2]] }),
+      body: JSON.stringify({ challengeId: first.challengeId, round: first.round, cells: [[1, 1], [2, 2]] }),
     });
     assert.equal(firstLabel.status, 200);
 

@@ -62,18 +62,20 @@ const els = {
   main: document.getElementById('main'),
 };
 let state = { challengeId: null, round: 1, nineNums: 3, selected: new Set() };
+let isSubmitting = false;
 
 function cellKey(row, col) { return row + ',' + col; }
 
 async function refreshStats() {
   const response = await fetch('/api/stats');
   const stats = await response.json();
-  els.stats.textContent = stats.labeledRounds + ' / ' + (stats.remainingRounds + stats.labeledRounds) + ' rodadas | Disputas: ' + stats.disputeCount;
+  els.stats.textContent = stats.labeledRounds + ' / ' + (stats.labeledRounds + stats.remainingRounds + stats.skippedRounds) + ' rodadas | Disputas: ' + stats.disputeCount;
 }
 
 function updateButtons() {
   els.hint.textContent = 'Selecione ' + state.nineNums + ' celulas. Marcadas: ' + state.selected.size + '.';
-  els.save.disabled = state.selected.size !== state.nineNums;
+  els.save.disabled = isSubmitting || state.selected.size !== state.nineNums;
+  els.skip.disabled = isSubmitting || !state.challengeId;
 }
 
 function clearSelection() {
@@ -147,15 +149,30 @@ async function submit(path, body) {
   return true;
 }
 
+async function submitCurrent(path, body) {
+  if (isSubmitting) return false;
+  isSubmitting = true;
+  updateButtons();
+  try {
+    const saved = await submit(path, body);
+    if (saved) await loadChallenge();
+    return saved;
+  } finally {
+    isSubmitting = false;
+    updateButtons();
+  }
+}
+
 async function save() {
-  if (state.selected.size !== state.nineNums) return;
+  if (isSubmitting || state.selected.size !== state.nineNums) return;
   els.error.textContent = '';
-  if (await submit('/api/label', { round: state.round, cells: selectedToCells() })) await loadChallenge();
+  await submitCurrent('/api/label', { challengeId: state.challengeId, round: state.round, cells: selectedToCells() });
 }
 
 async function skipRound() {
+  if (isSubmitting) return;
   els.error.textContent = '';
-  if (await submit('/api/skip', { round: state.round })) await loadChallenge();
+  await submitCurrent('/api/skip', { challengeId: state.challengeId, round: state.round });
 }
 
 els.save.addEventListener('click', save);
@@ -190,6 +207,15 @@ h1 { font-size: 20px; margin: 0; }
 a { color: #0969da; }
 .case { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; margin-bottom: 12px; padding: 16px; }
 .cells { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.prompt { display: block; max-width: 220px; max-height: 140px; margin: 12px auto; border: 1px solid #d0d7de; }
+.rounds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+.rounds h3 { font-size: 15px; margin: 0 0 8px; }
+.dispute-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.dispute-cell { position: relative; border: 2px solid transparent; min-width: 0; }
+.dispute-cell img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover; }
+.dispute-cell .coord { position: absolute; top: 3px; left: 3px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 10px; padding: 1px 3px; }
+.dispute-cell.round1-selected { border-color: #0969da; }
+.dispute-cell.round2-selected { border-color: #bf8700; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 button { font: inherit; padding: 8px 12px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
 button.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
@@ -205,10 +231,6 @@ input { font: inherit; min-width: 150px; padding: 7px; border: 1px solid #d0d7de
 </main>
 <script>
 const root = document.getElementById('disputes');
-
-function formatCells(cells) {
-  return cells.map((cell) => '(' + cell[0] + ',' + cell[1] + ')').join(' ');
-}
 
 function parseCells(value) {
   return value.trim().split(/\\s+/).filter(Boolean).map((part) => part.split(',').map(Number));
@@ -232,17 +254,44 @@ function button(label, action) {
   return element;
 }
 
+function renderRound(label, cells, selectedCells, selectedClass) {
+  const panel = document.createElement('section');
+  const title = document.createElement('h3');
+  title.textContent = label;
+  const grid = document.createElement('div');
+  grid.className = 'dispute-grid';
+  const selected = new Set(selectedCells.map((cell) => cell[0] + ',' + cell[1]));
+  for (const cell of cells) {
+    const element = document.createElement('div');
+    element.className = 'dispute-cell' + (selected.has(cell.row + ',' + cell.col) ? ' ' + selectedClass : '');
+    const image = document.createElement('img');
+    image.src = cell.dataUrl;
+    image.alt = 'cell ' + cell.row + ',' + cell.col;
+    const coord = document.createElement('span');
+    coord.className = 'coord';
+    coord.textContent = '(' + cell.row + ',' + cell.col + ')';
+    element.append(image, coord);
+    grid.appendChild(element);
+  }
+  panel.append(title, grid);
+  return panel;
+}
+
 function renderDispute(dispute) {
   const card = document.createElement('article');
   card.className = 'case';
   const title = document.createElement('h2');
   title.textContent = dispute.challengeId;
-  const round1 = document.createElement('p');
-  round1.className = 'cells';
-  round1.textContent = 'Round 1: ' + formatCells(dispute.round1Cells);
-  const round2 = document.createElement('p');
-  round2.className = 'cells';
-  round2.textContent = 'Round 2: ' + formatCells(dispute.round2Cells);
+  const prompt = document.createElement('img');
+  prompt.className = 'prompt';
+  prompt.src = dispute.quesDataUrl;
+  prompt.alt = 'prompt';
+  const rounds = document.createElement('div');
+  rounds.className = 'rounds';
+  rounds.append(
+    renderRound('Round 1', dispute.cells, dispute.round1Cells, 'round1-selected'),
+    renderRound('Round 2', dispute.cells, dispute.round2Cells, 'round2-selected'),
+  );
   const actions = document.createElement('div');
   actions.className = 'actions';
   const relabel = document.createElement('input');
@@ -265,7 +314,7 @@ function renderDispute(dispute) {
   });
   relabelButton.className = 'primary';
   actions.appendChild(relabelButton);
-  card.append(title, round1, round2, actions);
+  card.append(title, prompt, rounds, actions);
   return card;
 }
 
@@ -594,7 +643,16 @@ export async function startLabelServer(opts = {}) {
       }
 
       if (req.method === 'GET' && url.pathname === '/api/disputes') {
-        json(res, 200, queue.getDisputes());
+        const disputes = queue.getDisputes().map((dispute) => {
+          const challenge = challengesById.get(dispute.challengeId);
+          if (!challenge) throw new Error(`missing challenge ${dispute.challengeId}`);
+          return {
+            ...dispute,
+            quesDataUrl: fileToDataUrl(challenge.quesPath),
+            cells: cellsToDataUrls(challenge.gridPath),
+          };
+        });
+        json(res, 200, disputes);
         return;
       }
 
@@ -610,6 +668,14 @@ export async function startLabelServer(opts = {}) {
         const pointer = nextPointer();
         if (!pointer) {
           json(res, 400, { saved: false, error: 'queue exhausted' });
+          return;
+        }
+        if (typeof body?.challengeId !== 'string') {
+          json(res, 400, { saved: false, error: 'challengeId required' });
+          return;
+        }
+        if (body.challengeId !== pointer.challengeId) {
+          json(res, 409, { saved: false, error: `expected challenge ${pointer.challengeId}` });
           return;
         }
         if (body?.round !== pointer.round) {
