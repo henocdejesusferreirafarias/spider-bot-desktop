@@ -291,7 +291,9 @@ function missingAutomaticFinals(entries, challengeIds) {
 
 function appendAuditEntries(writer, entries) {
   if (entries.length === 0) return;
-  appendFileSync(writer.file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join(''));
+  const currentContents = existsSync(writer.file) ? readFileSync(writer.file, 'utf8') : '';
+  const needsLeadingNewline = currentContents.length > 0 && !currentContents.endsWith('\n');
+  appendFileSync(writer.file, `${needsLeadingNewline ? '\n' : ''}${entries.map((entry) => `${JSON.stringify(entry)}\n`).join('')}`);
 }
 
 function replayAudit(queue, entries, challengeIds) {
@@ -362,11 +364,7 @@ export async function startLabelServer(opts = {}) {
   const stateFile = new StateFile(join(datasetDir, 'label-state.json'), { lockWindowMs: 5000 });
   const challengeIds = new Set(challenges.map((challenge) => challenge.id));
   const auditEntries = readAuditEntries(labelsWriter.file);
-  const recoveredFinals = missingAutomaticFinals(auditEntries, challengeIds);
-  appendAuditEntries(labelsWriter, recoveredFinals);
-  auditEntries.push(...recoveredFinals);
   const queue = new LabelingQueue(challenges.map((challenge) => challenge.id), LABEL_QUEUE_SEED);
-  replayAudit(queue, auditEntries, challengeIds);
   const challengesById = new Map(challenges.map((challenge) => [challenge.id, challenge]));
   let activePointer = null;
   let stateWrittenByThisServer = false;
@@ -402,6 +400,13 @@ export async function startLabelServer(opts = {}) {
     if (result.ok) stateWrittenByThisServer = true;
     return result.ok ? result : { ok: false, reason: 'state file is locked by another writer' };
   }
+
+  const recoveredFinals = missingAutomaticFinals(auditEntries, challengeIds);
+  if (recoveredFinals.length > 0 && reserveState(recoveredFinals).ok) {
+    appendAuditEntries(labelsWriter, recoveredFinals);
+    auditEntries.push(...recoveredFinals);
+  }
+  replayAudit(queue, auditEntries, challengeIds);
 
   const server = createServer(async (req, res) => {
     try {
@@ -475,7 +480,7 @@ export async function startLabelServer(opts = {}) {
             json(res, 409, { saved: false, error: stateResult.reason });
             return;
           }
-          labelsWriter.append(skippedEntry);
+          appendAuditEntries(labelsWriter, [skippedEntry]);
           auditEntries.push(skippedEntry);
           queue.recordSkip(pointer.challengeId, pointer.round);
           activePointer = null;
@@ -571,7 +576,7 @@ export async function startLabelServer(opts = {}) {
           json(res, 409, { saved: false, error: stateResult.reason });
           return;
         }
-        labelsWriter.append(finalEntry);
+        appendAuditEntries(labelsWriter, [finalEntry]);
         auditEntries.push(finalEntry);
         disputesWriter.append({
           challengeId: body.challengeId,

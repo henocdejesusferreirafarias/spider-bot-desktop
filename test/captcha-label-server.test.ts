@@ -53,7 +53,14 @@ async function saveLabel(port: number, round: number, cells: number[][]) {
 function auditEntries(dataset: string) {
   const file = join(dataset, 'manual-labels.jsonl');
   if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  return readFileSync(file, 'utf8').split('\n').flatMap((line) => {
+    if (!line.trim()) return [];
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
 }
 
 function expireStateLock(dataset: string) {
@@ -243,6 +250,62 @@ test('restart repairs exactly one missing automatic final for matching completed
     await srv.close();
   }
 
+  srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('restart repairs a missing final after a truncated trailing record without repeated repairs', async () => {
+  const fx = makeFixture(1);
+  const labelsFile = join(fx.dataset, 'manual-labels.jsonl');
+  const cells = [[1, 1], [2, 2]];
+  const truncatedFinal = '{"kind":"final"';
+  writeFileSync(labelsFile, [
+    JSON.stringify({ kind: 'round', challengeId: '000000-test', round: 1, cells }),
+    JSON.stringify({ kind: 'round', challengeId: '000000-test', round: 2, cells }),
+    truncatedFinal,
+  ].join('\n'));
+
+  let srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const finals = auditEntries(fx.dataset).filter((entry) => entry.kind === 'final');
+    assert.equal(finals.length, 1);
+    assert.deepEqual(finals[0].cells, cells);
+    assert.match(readFileSync(labelsFile, 'utf8'), new RegExp(`${truncatedFinal}\\n`));
+  } finally {
+    await srv.close();
+  }
+
+  srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('startup recovery respects an active state reservation before appending a final', async () => {
+  const fx = makeFixture(1);
+  const labelsFile = join(fx.dataset, 'manual-labels.jsonl');
+  const cells = [[1, 1], [2, 2]];
+  writeFileSync(labelsFile, [
+    JSON.stringify({ kind: 'round', challengeId: '000000-test', round: 1, cells }),
+    JSON.stringify({ kind: 'round', challengeId: '000000-test', round: 2, cells }),
+    '',
+  ].join('\n'));
+  writeFileSync(join(fx.dataset, 'label-state.json'), JSON.stringify({ otherWriter: true }));
+
+  let srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 0);
+  } finally {
+    await srv.close();
+  }
+
+  expireStateLock(fx.dataset);
   srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
     assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
