@@ -95,10 +95,15 @@ runtime (automation-runtime.ts)
 O `geeked.py` usa `curl_cffi` para **impersonar o JA3 do Chrome**. O Node puro (fetch/undici) tem fingerprint TLS
 detectável e seria rejeitado pelo GeeTest. A solução: rotear `load`/`verify` pelo **`APIRequestContext` do
 patchright** (já é dependência do app, `patchright ^1.60.0`). O `APIRequestContext` roda no **stack de rede do
-Chromium** → JA3 genuíno do Chrome, *melhor* que a impersonação do `curl_cffi`. O contexto é isolado
-(`request.newContext()`), independente da sessão da página. O solver já é sempre chamado no contexto de uma página
-viva (`tryAutoSolveGeetestCaptcha` recebe `page` em `automation-runtime.ts:6159`), então acoplar a um contexto de
-browser não é perda real.
+Chromium** → JA3 genuíno do Chrome, *melhor* que a impersonação do `curl_cffi`.
+
+**Reusa o browser que a automação já mantém vivo — não abre browser nem processo novo.** O solver pega um `request`
+no **mesmo processo Chromium já ativo** da run (zero janela, zero processo adicional, custo ~zero). O `request` é
+**isolado** da sessão da página (cookies/storage próprios), pois o captcha é chaveado por `captcha_id`/`lot_number`,
+não por cookies da sessão do usuário — então não há risco de contaminar a sessão do cadastro. O modo standalone
+(`playwright.request.newContext()`, que spawnaria um Chromium headless só pra HTTP) **não é necessário** e não será
+usado, porque o solver só roda durante uma run ativa onde já há browser vivo
+(`tryAutoSolveGeetestCaptcha` recebe `page` em `automation-runtime.ts:6159`).
 
 **Plano B (se o gate da semana 1 falhar):** sidecar Python **embarcado** (python-build-standalone, ~30–40 MB,
 **sem torch/CLIP**) mantendo `curl_cffi` + `opencv-python` + o ONNX de 2,4 MB. O `signer` e os solvers de visão
