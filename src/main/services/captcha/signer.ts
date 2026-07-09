@@ -174,6 +174,16 @@ export async function generateW(
     base.passtime = humanPasstime(320, left * 1.6, 140);
     base.setLeft = left;
     base.userresponse = left / 1.0059466666666665 + 2;
+  } else if (riskType === 'nine') {
+    const { findIconCells } = await import('./solvers/nine.js');
+    const gridBuf = await fetchImage(data.imgs!);
+    const quesBufs = (data.ques as string[] | undefined) ?? [];
+    const qBuf = quesBufs[0] ? await fetchImage(quesBufs[0]) : Buffer.alloc(0);
+    const cells = await findIconCells(gridBuf, qBuf, Number(data.nine_nums ?? 3));
+    base.passtime = humanPasstime(1000, 0, 400);
+    base.userresponse = cells;
+  } else if (riskType === 'icon' || riskType === 'gobang' || riskType === 'winlinze') {
+    throw new Error(`generateW: risk_type "${riskType}" é Plan 2b/3`);
   } else {
     throw new Error(`generateW: risk_type "${riskType}" não implementado neste plano (Plan 2/3)`);
   }
