@@ -110,7 +110,17 @@ One line per accepted label. Three kinds of entries:
    {"kind":"final","challengeId":"...","cells":[[r,c],...],"fromDispute":true|false,"disputeResolution":"round1"|"round2"|"relabel"|null,"labeledAt":"ISO"}
    ```
 
-Consumers (Plan 3) read the last `final` entry per `challengeId`. The two `round` entries are kept for audit and inter-rater agreement statistics.
+Consumers (Plan 3) read the last `final` entry per `challengeId`. The two `round` entries are kept for audit and inter-rater agreement statistics. A challenge with `kind: "skipped"` (operator pressed `→`) is recorded with no cells and never produces a `final` entry unless the operator relabels it later.
+
+### Two-process lock
+
+The server stores the in-memory mtime of `label-state.json` from the most recent successful read or write. On every `recordLabel` and `resolveDispute`:
+
+1. `fs.statSync(labelStatePath).mtimeMs` is read.
+2. If it differs from the in-memory value by more than `LOCK_WINDOW_MS = 5000`, the server returns `409 Conflict` with `{ error: "another session is active" }` and does not write.
+3. Otherwise the server writes the new state, captures the new mtime, and proceeds.
+
+The check is racy across processes on the same machine (two processes can both read the same mtime before either writes), but it covers the common "two browser tabs" case where both POSTs hit the same server.
 
 ### `dataset/label-state.json`
 
@@ -170,7 +180,7 @@ Keyboard shortcuts:
 - `1`..`9` toggle cells (numPad also works).
 - `Enter` saves when count is correct.
 - `Backspace` or `Esc` clears current selection.
-- `→` skips (rare; marks challenge as `{"kind":"skipped", ...}` and moves to next — does not count toward round completion).
+- `→` skips — records `{"kind":"skipped","challengeId":"...","round":N,"labeledAt":"..."}` and advances to the next round. Skipped rounds count toward `currentIndex` but the challenge produces no `final` entry unless the operator later relabels it from the disputes view (skipped rounds do NOT enter the disputes queue, since both rounds being "skipped" is not a disagreement).
 
 Click a selected cell to deselect. Save button is disabled until count matches `nineNums`.
 
@@ -233,8 +243,8 @@ Plan 2d is done when:
 2. `npm run check` exits 0.
 3. `npm test` exits 0, including the three new test files.
 4. All 192 challenges can be labeled end-to-end through the UI without data loss.
-5. After all rounds and dispute resolutions, `dataset/manual-labels.jsonl` contains 192 `kind: "final"` entries (one per challenge), with each `cells` array of length equal to that challenge's `nineNums`.
-6. `label-state.json` reports `currentIndex == totalRounds == 384` and `disputes` empty.
+5. After all rounds and dispute resolutions, `dataset/manual-labels.jsonl` contains exactly one `kind: "final"` entry per challenge that was not skipped. Skipped challenges count as completed rounds but do not produce a `final` entry.
+6. `label-state.json` reports `currentIndex == totalRounds == 384` and `disputes` empty. If any challenge was skipped, its `kind: "skipped"` entries (one per round it appeared in) are present in `manual-labels.jsonl`.
 7. Killing and restarting the server mid-session preserves labeled work and resumes on the next unlabeled round.
 
 ## Files
