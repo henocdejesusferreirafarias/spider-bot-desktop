@@ -106,6 +106,8 @@
     "@spider-bot/license-core": "*",
     "@spider-bot/licensing-contracts": "git+https://github.com/henocdejesusferreirafarias/spider-bot-contracts.git#v1.1.1",
     "electron-updater": "^6.8.3",
+    "jpeg-js": "^0.4.4",
+    "onnxruntime-node": "^1.27.0",
     "opencv-wasm": "^4.3.0-10",
     "patchright": "^1.60.0",
     "pngjs": "^7.0.0",
@@ -115,6 +117,7 @@
   },
   "devDependencies": {
     "@electron/fuses": "^2.1.2",
+    "@types/jpeg-js": "^0.3.0",
     "@types/node": "^24.0.3",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.1.6",
