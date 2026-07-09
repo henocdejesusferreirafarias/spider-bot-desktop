@@ -54,7 +54,7 @@
 
 - [ ] **Step 1: Adicionar deps e scripts**
 
-Edite `package.json`: em `dependencies` adicione `"opencv-wasm": "^4.3.0-10"` e `"pngjs": "^7.0.0"`. Em `scripts` adicione `"captcha:gate1": "node scripts/captcha-gate1.mjs"`. Não remova nada ainda (remoção do Python é Plan 3).
+Edite `package.json`: em `dependencies` adicione `"opencv-wasm": "^4.3.0-10"` e `"pngjs": "^7.0.0"`. Em `scripts` adicione `"captcha:gate1": "tsx scripts/captcha-gate1.mjs"` (use `tsx`, não `node` — o script importa source TS; `tsx` é devDep já presente). Não remova nada ainda (remoção do Python é Plan 3).
 
 - [ ] **Step 2: Instalar**
 
@@ -300,10 +300,10 @@ test('randUid tem 16 chars hex', () => {
 
 test('generatePow produz solução válida (md5 com prefixo de bits)', () => {
   const r = generatePow('lot123', 'cap456', 'md5', '1', 4, '2026-07-08', '');
-  const h = crypto.createHash('md5').update(r.powMsg).digest('hex');
-  assert.equal(h, r.powSign, 'pow_sign deve ser md5(pow_msg)');
-  assert.ok(r.powMsg.startsWith('1|4|md5|2026-07-08|cap456|lot123||'), 'pow_msg tem prefixo correto');
-  assert.ok(r.powSign.startsWith('0'), 'bits=4 => prefixo "0" (1 nibble zero)');
+  const h = crypto.createHash('md5').update(r.pow_msg).digest('hex');
+  assert.equal(h, r.pow_sign, 'pow_sign deve ser md5(pow_msg)');
+  assert.ok(r.pow_msg.startsWith('1|4|md5|2026-07-08|cap456|lot123||'), 'pow_msg tem prefixo correto');
+  assert.ok(r.pow_sign.startsWith('0'), 'bits=4 => prefixo "0" (1 nibble zero)');
 });
 
 test('encryptAsymmetric1 (RSA PKCS1v1.5) gera 128 bytes (256 hex)', () => {
@@ -421,7 +421,7 @@ export function encryptAsymmetric1(message: string): string {
 }
 
 // ---------- PoW ----------
-export interface PowResult { powMsg: string; powSign: string; }
+export interface PowResult { pow_msg: string; pow_sign: string; }
 export function generatePow(
   lotNumberPow: string, captchaIdPow: string, hashFunc: string, hashVersion: string,
   bits: number, date: string, empty: string,
@@ -439,9 +439,9 @@ export function generatePow(
     else if (hashFunc === 'sha256') hashed = crypto.createHash('sha256').update(combined).digest('hex');
     if (!hashed) throw new Error(`hashfunc desconhecida: ${hashFunc}`);
     if (!hashed.startsWith(prefix)) continue;
-    if (bitRemainder === 0) return { powMsg: combined, powSign: hashed };
+    if (bitRemainder === 0) return { pow_msg: combined, pow_sign: hashed };
     const threshold = bitRemainder === 1 ? 7 : bitRemainder === 2 ? 3 : 1;
-    if (parseInt(hashed[bitDivision]!, 16) <= threshold) return { powMsg: combined, powSign: hashed };
+    if (parseInt(hashed[bitDivision]!, 16) <= threshold) return { pow_msg: combined, pow_sign: hashed };
   }
 }
 
@@ -761,6 +761,8 @@ export interface GeetestLoadData {
   pow_detail: { hashfunc: string; version: string; bits: number; datetime: string };
   pt: string;
   captcha_type?: string;
+  payload?: string;
+  process_token?: string;
   slice?: string; bg?: string;
   ques?: unknown; imgs?: string; nine_nums?: number;
   [k: string]: unknown;
@@ -868,9 +870,9 @@ git commit -m "feat(captcha): geetest-client (load/verify via APIRequestContext 
 
 ```js
 import { chromium } from 'patchright';
-import { GeetestClient } from '../src/main/services/captcha/geetest-client.ts';
-import { generateW } from '../src/main/services/captcha/signer.ts';
-import { findPuzzlePiecePosition } from '../src/main/services/captcha/solvers/slide.ts';
+import { GeetestClient } from '../src/main/services/captcha/geetest-client.js';
+import { generateW } from '../src/main/services/captcha/signer.js';
+import { findPuzzlePiecePosition } from '../src/main/services/captcha/solvers/slide.js';
 
 const CAPTCHA_ID = '54088bb07d2df3c46b79f80300b0abbe'; // demo slide
 const RISK_TYPE = 'slide';
@@ -887,7 +889,7 @@ for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const w = await generateW(data, CAPTCHA_ID, RISK_TYPE, (p) => client.fetchImage(p), findPuzzlePiecePosition);
     const res = await client.verify({
       captchaId: CAPTCHA_ID, lotNumber: data.lot_number,
-      payload: data.payload, processToken: data.process_token, w, riskType: RISK_TYPE,
+      payload: data.payload!, processToken: data.process_token!, w, riskType: RISK_TYPE,
     });
     if (res.result === 'success' || res.seccode) {
       console.log('GATE1=SUCCESS', JSON.stringify(res.seccode ?? res));
