@@ -63,6 +63,15 @@ function auditEntries(dataset: string) {
   });
 }
 
+function strictAuditEntries(dataset: string) {
+  const file = join(dataset, 'manual-labels.jsonl');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
+}
+
 function expireStateLock(dataset: string) {
   const expired = new Date(Date.now() - 10_000);
   utimesSync(join(dataset, 'label-state.json'), expired, expired);
@@ -258,7 +267,7 @@ test('restart repairs exactly one missing automatic final for matching completed
   }
 });
 
-test('restart repairs a missing final after a truncated trailing record without repeated repairs', async () => {
+test('restart removes a truncated trailing record before repairing exactly one final', async () => {
   const fx = makeFixture(1);
   const labelsFile = join(fx.dataset, 'manual-labels.jsonl');
   const cells = [[1, 1], [2, 2]];
@@ -271,23 +280,24 @@ test('restart repairs a missing final after a truncated trailing record without 
 
   let srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
-    const finals = auditEntries(fx.dataset).filter((entry) => entry.kind === 'final');
+    const entries = strictAuditEntries(fx.dataset);
+    const finals = entries.filter((entry) => entry.kind === 'final');
     assert.equal(finals.length, 1);
     assert.deepEqual(finals[0].cells, cells);
-    assert.match(readFileSync(labelsFile, 'utf8'), new RegExp(`${truncatedFinal}\\n`));
+    assert.equal(readFileSync(labelsFile, 'utf8').includes(`${truncatedFinal}\n`), false);
   } finally {
     await srv.close();
   }
 
   srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
-    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
+    assert.equal(strictAuditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
   } finally {
     await srv.close();
   }
 });
 
-test('startup recovery respects an active state reservation before appending a final', async () => {
+test('startup recovery retries on a later request after an active state reservation expires', async () => {
   const fx = makeFixture(1);
   const labelsFile = join(fx.dataset, 'manual-labels.jsonl');
   const cells = [[1, 1], [2, 2]];
@@ -301,14 +311,35 @@ test('startup recovery respects an active state reservation before appending a f
   let srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
     assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 0);
+    expireStateLock(fx.dataset);
+    assert.equal((await fetch(`http://127.0.0.1:${srv.port}/api/stats`)).status, 200);
+    assert.equal(strictAuditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
   } finally {
     await srv.close();
   }
+});
 
-  expireStateLock(fx.dataset);
-  srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+test('GET /disputes provides an operator view with dispute resolution controls', async () => {
+  const fx = makeFixture(1);
+  const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
   try {
-    assert.equal(auditEntries(fx.dataset).filter((entry) => entry.kind === 'final').length, 1);
+    const round1 = await currentChallenge(srv.port);
+    assert.equal((await saveLabel(srv.port, round1.round, [[1, 1], [1, 2]])).status, 200);
+    const round2 = await currentChallenge(srv.port);
+    assert.equal((await saveLabel(srv.port, round2.round, [[2, 1], [2, 2]])).status, 200);
+
+    const response = await fetch(`http://127.0.0.1:${srv.port}/disputes`);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /Disputas pendentes/);
+    assert.match(html, /\/api\/disputes/);
+    assert.match(html, /\/api\/disputes\/resolve/);
+    assert.match(html, /round1/);
+    assert.match(html, /round2/);
+    assert.match(html, /relabel/);
+
+    const completedPage = await (await fetch(`http://127.0.0.1:${srv.port}/`)).text();
+    assert.match(completedPage, /href="\/disputes"/);
   } finally {
     await srv.close();
   }

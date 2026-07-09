@@ -107,7 +107,7 @@ async function loadChallenge() {
   const response = await fetch('/api/challenge');
   const body = await response.json();
   if (body.done) {
-    els.main.innerHTML = '<h2>Sessao completa</h2><p>Todas as rodadas rotuladas.</p>';
+    els.main.innerHTML = '<h2>Sessao completa</h2><p>Todas as rodadas rotuladas. <a href="/disputes">Revisar disputas</a>.</p>';
     await refreshStats();
     return;
   }
@@ -172,6 +172,122 @@ document.addEventListener('keydown', (event) => {
 });
 
 loadChallenge();
+</script>
+</body>
+</html>`;
+
+const DISPUTES_HTML = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Plan 2d - Disputas</title>
+<style>
+:root { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2328; }
+body { margin: 0; padding: 24px; }
+main { max-width: 720px; margin: 0 auto; }
+header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+a { color: #0969da; }
+.case { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; margin-bottom: 12px; padding: 16px; }
+.cells { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+button { font: inherit; padding: 8px 12px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
+button.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
+input { font: inherit; min-width: 150px; padding: 7px; border: 1px solid #d0d7de; border-radius: 6px; }
+.empty, .error { color: #57606a; }
+.error { color: #cf222e; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Disputas pendentes</h1><a href="/">Voltar para rotulagem</a></header>
+  <div id="disputes" class="empty">Carregando...</div>
+</main>
+<script>
+const root = document.getElementById('disputes');
+
+function formatCells(cells) {
+  return cells.map((cell) => '(' + cell[0] + ',' + cell[1] + ')').join(' ');
+}
+
+function parseCells(value) {
+  return value.trim().split(/\\s+/).filter(Boolean).map((part) => part.split(',').map(Number));
+}
+
+async function resolveDispute(challengeId, choice, cells) {
+  const body = { challengeId, choice };
+  if (choice === 'relabel') body.cells = cells;
+  const response = await fetch('/api/disputes/resolve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error('Falha ao resolver: ' + response.status);
+}
+
+function button(label, action) {
+  const element = document.createElement('button');
+  element.textContent = label;
+  element.addEventListener('click', action);
+  return element;
+}
+
+function renderDispute(dispute) {
+  const card = document.createElement('article');
+  card.className = 'case';
+  const title = document.createElement('h2');
+  title.textContent = dispute.challengeId;
+  const round1 = document.createElement('p');
+  round1.className = 'cells';
+  round1.textContent = 'Round 1: ' + formatCells(dispute.round1Cells);
+  const round2 = document.createElement('p');
+  round2.className = 'cells';
+  round2.textContent = 'Round 2: ' + formatCells(dispute.round2Cells);
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  const relabel = document.createElement('input');
+  relabel.placeholder = '1,1 2,2';
+  const showError = (error) => {
+    const message = document.createElement('p');
+    message.className = 'error';
+    message.textContent = error.message;
+    card.appendChild(message);
+  };
+  actions.appendChild(button('Usar round 1', async () => {
+    try { await resolveDispute(dispute.challengeId, 'round1'); await loadDisputes(); } catch (error) { showError(error); }
+  }));
+  actions.appendChild(button('Usar round 2', async () => {
+    try { await resolveDispute(dispute.challengeId, 'round2'); await loadDisputes(); } catch (error) { showError(error); }
+  }));
+  actions.appendChild(relabel);
+  const relabelButton = button('Salvar relabel', async () => {
+    try { await resolveDispute(dispute.challengeId, 'relabel', parseCells(relabel.value)); await loadDisputes(); } catch (error) { showError(error); }
+  });
+  relabelButton.className = 'primary';
+  actions.appendChild(relabelButton);
+  card.append(title, round1, round2, actions);
+  return card;
+}
+
+async function loadDisputes() {
+  root.textContent = 'Carregando...';
+  try {
+    const response = await fetch('/api/disputes');
+    if (!response.ok) throw new Error('Falha ao carregar disputas: ' + response.status);
+    const disputes = await response.json();
+    root.innerHTML = '';
+    if (disputes.length === 0) {
+      root.textContent = 'Nenhuma disputa pendente.';
+      return;
+    }
+    for (const dispute of disputes) root.appendChild(renderDispute(dispute));
+  } catch (error) {
+    root.className = 'error';
+    root.textContent = error.message;
+  }
+}
+
+loadDisputes();
 </script>
 </body>
 </html>`;
@@ -296,6 +412,27 @@ function appendAuditEntries(writer, entries) {
   appendFileSync(writer.file, `${needsLeadingNewline ? '\n' : ''}${entries.map((entry) => `${JSON.stringify(entry)}\n`).join('')}`);
 }
 
+function removeInvalidTrailingAuditRecord(file) {
+  if (!existsSync(file)) return false;
+  const contents = readFileSync(file, 'utf8');
+  const lines = contents.split('\n');
+  let lastRecordIndex = lines.length - 1;
+  while (lastRecordIndex >= 0 && !lines[lastRecordIndex].trim()) lastRecordIndex--;
+  if (lastRecordIndex < 0) return false;
+
+  try {
+    JSON.parse(lines[lastRecordIndex]);
+    return false;
+  } catch {
+    let recordStart = 0;
+    for (let index = 0; index < lastRecordIndex; index++) {
+      recordStart += lines[index].length + 1;
+    }
+    writeFileSync(file, contents.slice(0, recordStart), 'utf8');
+    return true;
+  }
+}
+
 function replayAudit(queue, entries, challengeIds) {
   for (const entry of entries) {
     if (!challengeIds.has(entry.challengeId)) continue;
@@ -401,19 +538,33 @@ export async function startLabelServer(opts = {}) {
     return result.ok ? result : { ok: false, reason: 'state file is locked by another writer' };
   }
 
-  const recoveredFinals = missingAutomaticFinals(auditEntries, challengeIds);
-  if (recoveredFinals.length > 0 && reserveState(recoveredFinals).ok) {
-    appendAuditEntries(labelsWriter, recoveredFinals);
+  function appendReservedAuditEntries(entries) {
+    removeInvalidTrailingAuditRecord(labelsWriter.file);
+    appendAuditEntries(labelsWriter, entries);
+  }
+
+  function recoverMissingFinals() {
+    const recoveredFinals = missingAutomaticFinals(auditEntries, challengeIds);
+    if (recoveredFinals.length === 0 || !reserveState(recoveredFinals).ok) return;
+    appendReservedAuditEntries(recoveredFinals);
     auditEntries.push(...recoveredFinals);
   }
+
+  recoverMissingFinals();
   replayAudit(queue, auditEntries, challengeIds);
 
   const server = createServer(async (req, res) => {
     try {
+      recoverMissingFinals();
       const url = new URL(req.url ?? '/', `http://${host}:${port}`);
       if (req.method === 'GET' && url.pathname === '/') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(HTML);
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/disputes') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(DISPUTES_HTML);
         return;
       }
 
@@ -480,7 +631,7 @@ export async function startLabelServer(opts = {}) {
             json(res, 409, { saved: false, error: stateResult.reason });
             return;
           }
-          appendAuditEntries(labelsWriter, [skippedEntry]);
+          appendReservedAuditEntries([skippedEntry]);
           auditEntries.push(skippedEntry);
           queue.recordSkip(pointer.challengeId, pointer.round);
           activePointer = null;
@@ -507,7 +658,7 @@ export async function startLabelServer(opts = {}) {
           return;
         }
         const automaticFinals = missingAutomaticFinals([...auditEntries, roundEntry], challengeIds);
-        appendAuditEntries(labelsWriter, [roundEntry, ...automaticFinals]);
+        appendReservedAuditEntries([roundEntry, ...automaticFinals]);
         auditEntries.push(roundEntry, ...automaticFinals);
         const labelResult = queue.recordLabel(pointer.challengeId, pointer.round, result.cells);
         activePointer = null;
@@ -576,7 +727,7 @@ export async function startLabelServer(opts = {}) {
           json(res, 409, { saved: false, error: stateResult.reason });
           return;
         }
-        appendAuditEntries(labelsWriter, [finalEntry]);
+        appendReservedAuditEntries([finalEntry]);
         auditEntries.push(finalEntry);
         disputesWriter.append({
           challengeId: body.challengeId,
