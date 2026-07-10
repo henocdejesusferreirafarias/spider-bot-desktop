@@ -103,6 +103,38 @@ test('GET /api/challenge returns the first challenge with 9 cells', async () => 
   }
 });
 
+test('GET /api/challenge includes optional model suggestions', async () => {
+  const fx = makeFixture();
+  const srv = await startLabelServer({
+    port: 0,
+    rawDir: fx.raw,
+    datasetDir: fx.dataset,
+    suggestCells: async () => [[1, 1], [2, 2]],
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.port}/api/challenge`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.suggestedCells, [[1, 1], [2, 2]]);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('GET / contains suggestion preselection logic', async () => {
+  const fx = makeFixture();
+  const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });
+  try {
+    const res = await fetch(`http://127.0.0.1:${srv.port}/`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /suggestedCells/);
+    assert.match(html, /classList\.add\('selected'\)/);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('POST /api/label with valid cells writes JSONL and updates stats', async () => {
   const fx = makeFixture();
   const srv = await startLabelServer({ port: 0, rawDir: fx.raw, datasetDir: fx.dataset });

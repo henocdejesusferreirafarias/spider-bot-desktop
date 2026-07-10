@@ -5,6 +5,7 @@ import { PNG } from 'pngjs';
 import { decodeRgba, splitGridCells } from './captcha-nine-dataset-utils.mjs';
 import { JsonlWriter, StateFile, loadChallenges } from './captcha-label-persistence.mjs';
 import { LabelingQueue } from './captcha-label-queue.mjs';
+import { suggestNineCells } from './captcha-label-suggestions.mjs';
 
 const HTML = `<!doctype html>
 <html lang="pt-BR">
@@ -115,6 +116,9 @@ async function loadChallenge() {
   }
 
   state = { challengeId: body.challengeId, round: body.round, nineNums: body.nineNums, selected: new Set() };
+  for (const cell of body.suggestedCells ?? []) {
+    state.selected.add(cellKey(cell[0], cell[1]));
+  }
   els.ques.src = body.quesDataUrl;
   els.grid.innerHTML = '';
   for (const cell of body.cells) {
@@ -129,6 +133,7 @@ async function loadChallenge() {
     coord.textContent = '(' + cell.row + ',' + cell.col + ')';
     element.appendChild(image);
     element.appendChild(coord);
+    if (state.selected.has(element.dataset.key)) element.classList.add('selected');
     element.addEventListener('click', () => toggleCell(cell.row, cell.col));
     els.grid.appendChild(element);
   }
@@ -552,6 +557,7 @@ export async function startLabelServer(opts = {}) {
   const auditEntries = readAuditEntries(labelsWriter.file);
   const queue = new LabelingQueue(challenges.map((challenge) => challenge.id), LABEL_QUEUE_SEED);
   const challengesById = new Map(challenges.map((challenge) => [challenge.id, challenge]));
+  const suggestCells = opts.suggestCells ?? suggestNineCells;
   let activePointer = null;
   let stateWrittenByThisServer = false;
 
@@ -625,6 +631,12 @@ export async function startLabelServer(opts = {}) {
         }
         const challenge = challengesById.get(pointer.challengeId);
         if (!challenge) throw new Error(`missing challenge ${pointer.challengeId}`);
+        let suggestedCells = null;
+        try {
+          suggestedCells = await suggestCells(challenge.gridPath, challenge.quesPath, challenge.nineNums);
+        } catch (error) {
+          console.warn('label suggestion failed:', error instanceof Error ? error.message : String(error));
+        }
         json(res, 200, {
           challengeId: pointer.challengeId,
           round: pointer.round,
@@ -633,6 +645,7 @@ export async function startLabelServer(opts = {}) {
           nineNums: challenge.nineNums,
           quesDataUrl: fileToDataUrl(challenge.quesPath),
           cells: cellsToDataUrls(challenge.gridPath),
+          suggestedCells,
         });
         return;
       }
