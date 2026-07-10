@@ -1,4 +1,6 @@
 import { parseArgs } from './captcha-nine-dataset-utils.mjs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export { parseArgs };
 
@@ -69,7 +71,9 @@ export async function loadComumpg({
   }
   const parsed = parseJsonp(text, callback);
   if (parsed.status !== 'success') throw new Error(`load non-success: ${JSON.stringify(parsed).slice(0, 200)}`);
-  return parsed.data;
+  const data = parsed.data;
+  data.__rawBody = text;
+  return data;
 }
 
 export async function fetchComumpgImage({
@@ -88,8 +92,75 @@ export async function fetchComumpgImage({
   return Buffer.from(await res.arrayBuffer());
 }
 
-export function runCollect(_options = {}) {
-  throw new Error('not implemented');
+export function nextIndex(outRoot, append) {
+  if (!append || !existsSync(outRoot)) return 0;
+  let max = -1;
+  for (const entry of readdirSync(outRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const match = entry.name.match(/^(\d{6})-/);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return max + 1;
+}
+
+export function writeChallenge({ outRoot, index, data, grid, ques, saveRaw, loadBody }) {
+  const lotNumber = String(data.lot_number);
+  const id = `${String(index).padStart(6, '0')}-${lotNumber}`;
+  const dir = join(outRoot, id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'grid.jpg'), grid);
+  writeFileSync(join(dir, 'ques.png'), ques);
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify({
+    id,
+    source: 'comumpg',
+    captchaId: String(data.captcha_id ?? DEFAULTS.captchaId),
+    host: DEFAULTS.host,
+    clientType: DEFAULTS.clientType,
+    lang: DEFAULTS.lang,
+    lotNumber,
+    nineNums: Number(data.nine_nums ?? 3),
+    gridPath: String(data.imgs ?? ''),
+    quesPath: Array.isArray(data.ques) && typeof data.ques[0] === 'string' ? data.ques[0] : '',
+    targetClass: null,
+    targetScore: null,
+    capturedAt: new Date().toISOString(),
+  }, null, 2));
+  if (saveRaw && loadBody) writeFileSync(join(dir, 'load.json'), loadBody);
+  return id;
+}
+
+export async function runCollect(options = {}) {
+  const opts = { ...DEFAULTS, ...options };
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== 'function') throw new Error('fetch is not available; pass fetchImpl or run on Node 22+');
+  mkdirSync(opts.out, { recursive: true });
+  const startIndex = nextIndex(opts.out, opts.append);
+  const collected = [];
+  let skipped = 0;
+
+  for (let i = 0; i < opts.count; i++) {
+    const data = await loadComumpg({ fetchImpl, captchaId: opts.captchaId, host: opts.host, clientType: opts.clientType, lang: opts.lang, referer: opts.referer, userAgent: opts.userAgent });
+    const lotNumber = String(data.lot_number);
+    const alreadyExists = readdirSync(opts.out, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .some((e) => e.name.endsWith(`-${lotNumber}`));
+    if (alreadyExists) {
+      skipped += 1;
+      console.log(`[${i + 1}/${opts.count}] dup=${lotNumber} skipped`);
+      continue;
+    }
+    const grid = await fetchComumpgImage({ fetchImpl, path: String(data.imgs), referer: opts.referer, userAgent: opts.userAgent });
+    const quesPaths = Array.isArray(data.ques) ? data.ques : [];
+    const quesPath = typeof quesPaths[0] === 'string' ? quesPaths[0] : null;
+    if (!data.imgs || !quesPath) throw new Error(`challenge ${i}: missing imgs or ques path`);
+    const ques = await fetchComumpgImage({ fetchImpl, path: quesPath, referer: opts.referer, userAgent: opts.userAgent });
+    const id = writeChallenge({ outRoot: opts.out, index: startIndex + collected.length, data, grid, ques, saveRaw: opts.saveRaw, loadBody: opts.saveRaw ? data.__rawBody : null });
+    collected.push(id);
+    console.log(`[${i + 1}/${opts.count}] ${id} nine=${Number(data.nine_nums ?? 3)}`);
+    if (opts.delayMs > 0 && i < opts.count - 1) await new Promise((r) => setTimeout(r, opts.delayMs));
+  }
+
+  return { collected: collected.length, skipped, outRoot: opts.out, entries: collected };
 }
 
 function isMainModule() {

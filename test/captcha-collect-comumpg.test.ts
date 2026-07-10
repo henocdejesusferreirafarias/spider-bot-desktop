@@ -141,3 +141,136 @@ test('fetchComumpgImage throws on non-200 status', async () => {
     /image fetch 404/,
   );
 });
+
+import { mkdtempSync, mkdirSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { runCollect } from '../scripts/captcha-collect-comumpg.mjs';
+
+function fullMockFetch(loadBody: string, grid: Buffer, ques: Buffer) {
+  const calls: { url: string; headers: Record<string, string> }[] = [];
+  const fetchImpl = async (url: string, init?: { headers?: Record<string, string> }) => {
+    calls.push({ url, headers: init?.headers ?? {} });
+    if (url.includes('/load')) {
+      const sentCallback = new URL(url).searchParams.get('callback') ?? '';
+      const echoedBody = sentCallback
+        ? loadBody.replace(/^geetest_\d+\(/, `${sentCallback}(`)
+        : loadBody;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'text/javascript;charset=UTF-8' : null) },
+        text: async () => echoedBody,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      } as unknown as Response;
+    }
+    const buf = url.endsWith('.jpg') ? grid : ques;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '',
+      arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    } as unknown as Response;
+  };
+  return { fetchImpl, calls };
+}
+
+test('runCollect writes grid.jpg, ques.png, and meta.json with comumpg provenance', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-happy-'));
+  const { fetchImpl } = fullMockFetch(fixture, FAKE_GRID, FAKE_PNG);
+  const result = await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 1,
+    out,
+    delayMs: 0,
+  });
+  assert.equal(result.collected, 1);
+  assert.equal(result.skipped, 0);
+  assert.deepEqual(result.entries, ['000000-45ed640cfa9640558baf7b42c11d018d']);
+  const dir = join(out, '000000-45ed640cfa9640558baf7b42c11d018d');
+  assert.ok(existsSync(join(dir, 'grid.jpg')));
+  assert.ok(existsSync(join(dir, 'ques.png')));
+  assert.deepEqual(Array.from(readFileSync(join(dir, 'grid.jpg'))).slice(0, 4), [0xff, 0xd8, 0xff, 0xe0]);
+  assert.deepEqual(Array.from(readFileSync(join(dir, 'ques.png')).slice(0, 8)), Array.from(FAKE_PNG));
+  const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
+  assert.equal(meta.id, '000000-45ed640cfa9640558baf7b42c11d018d');
+  assert.equal(meta.source, 'comumpg');
+  assert.equal(meta.captchaId, '62c528ead784206de7e6db17765b9ac0');
+  assert.equal(meta.host, 'gcaptcha4-hrc.gsensebot.com');
+  assert.equal(meta.clientType, 'h5');
+  assert.equal(meta.lang, 'por');
+  assert.equal(meta.lotNumber, '45ed640cfa9640558baf7b42c11d018d');
+  assert.equal(meta.nineNums, 3);
+  assert.equal(meta.gridPath, 'captcha_v4/15a082f210/nine/680eb6dc2f/2025-09-12T14/ac1979a2b9f94bb8beb53854643ac039.jpg');
+  assert.equal(meta.quesPath, 'nerualpic/v4_pic/nine_prompt/74b865cec1369cc94e6749e164a54dcb.png');
+  assert.equal(meta.targetClass, null);
+  assert.equal(meta.targetScore, null);
+  assert.match(meta.capturedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('runCollect with append continues from the max existing numeric prefix', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-append-'));
+  mkdirSync(join(out, '000007-abc'), { recursive: true });
+  writeFileSync(join(out, '000007-abc', 'meta.json'), '{}');
+  const { fetchImpl } = fullMockFetch(fixture, FAKE_GRID, FAKE_PNG);
+  const result = await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 1,
+    out,
+    append: true,
+    delayMs: 0,
+  });
+  assert.deepEqual(result.entries, ['000008-45ed640cfa9640558baf7b42c11d018d']);
+  const dirs = readdirSync(out).sort();
+  assert.deepEqual(dirs, ['000007-abc', '000008-45ed640cfa9640558baf7b42c11d018d']);
+});
+
+test('runCollect skips a challenge whose lot_number directory already exists', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-dedup-'));
+  mkdirSync(join(out, '000000-45ed640cfa9640558baf7b42c11d018d'), { recursive: true });
+  writeFileSync(join(out, '000000-45ed640cfa9640558baf7b42c11d018d', 'meta.json'), '{}');
+  const { fetchImpl } = fullMockFetch(fixture, FAKE_GRID, FAKE_PNG);
+  const result = await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 1,
+    out,
+    delayMs: 0,
+  });
+  assert.equal(result.collected, 0);
+  assert.equal(result.skipped, 1);
+  assert.deepEqual(result.entries, []);
+  const dirs = readdirSync(out).sort();
+  assert.deepEqual(dirs, ['000000-45ed640cfa9640558baf7b42c11d018d']);
+});
+
+test('runCollect fails fast on a WAF 403 response and writes no directory', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-waf-'));
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 403,
+    headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null) },
+    text: async () => '<html><title>blocked</title></html>',
+    arrayBuffer: async () => new ArrayBuffer(0),
+  }) as unknown as Response;
+  await assert.rejects(
+    () => runCollect({ fetchImpl: fetchImpl as unknown as typeof fetch, count: 1, out, delayMs: 0 }),
+    /blocked by EdgeOne WAF/,
+  );
+  assert.deepEqual(readdirSync(out), []);
+});
+
+test('runCollect with saveRaw also writes load.json with the raw JSONP body', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-saveraw-'));
+  const { fetchImpl } = fullMockFetch(fixture, FAKE_GRID, FAKE_PNG);
+  await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 1,
+    out,
+    delayMs: 0,
+    saveRaw: true,
+  });
+  const dir = join(out, '000000-45ed640cfa9640558baf7b42c11d018d');
+  const raw = readFileSync(join(dir, 'load.json'), 'utf8');
+  assert.ok(raw.startsWith('geetest_'));
+  assert.match(raw, /45ed640cfa9640558baf7b42c11d018d/);
+});
