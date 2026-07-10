@@ -118,7 +118,18 @@ export function nextIndex(outRoot, append) {
   return max + 1;
 }
 
+export function isNineImagePayload(data) {
+  const gridPath = typeof data.imgs === 'string' ? data.imgs : '';
+  const quesPaths = Array.isArray(data.ques) ? data.ques : [];
+  const quesPath = typeof quesPaths[0] === 'string' ? quesPaths[0] : '';
+  return gridPath.includes('/nine/') && quesPath.includes('nine_prompt');
+}
+
 export function writeChallenge({ outRoot, index, data, grid, ques, saveRaw, loadBody, captchaId, host, clientType, lang }) {
+  const captchaType = String(data.captcha_type ?? '');
+  if (captchaType !== 'nine' || !isNineImagePayload(data)) {
+    throw new Error(`refusing to write non-nine challenge: type=${captchaType || 'unknown'}`);
+  }
   const lotNumber = String(data.lot_number);
   const id = `${String(index).padStart(6, '0')}-${lotNumber}`;
   const dir = join(outRoot, id);
@@ -128,6 +139,7 @@ export function writeChallenge({ outRoot, index, data, grid, ques, saveRaw, load
   writeFileSync(join(dir, 'meta.json'), JSON.stringify({
     id,
     source: 'comumpg',
+    captchaType,
     captchaId: String(captchaId ?? DEFAULTS.captchaId),
     host: String(host ?? DEFAULTS.host),
     clientType: String(clientType ?? DEFAULTS.clientType),
@@ -152,12 +164,20 @@ export async function runCollect(options = {}) {
   const startIndex = nextIndex(opts.out, opts.append);
   const collected = [];
   let skipped = 0;
+  let skippedType = 0;
 
   for (let i = 0; i < opts.count; i++) {
     const data = await withRetry(
       () => loadComumpg({ fetchImpl, captchaId: opts.captchaId, host: opts.host, clientType: opts.clientType, lang: opts.lang, referer: opts.referer, userAgent: opts.userAgent }),
       { delayMs: opts.delayMs, label: `challenge ${i}` },
     );
+    const captchaType = String(data.captcha_type ?? '');
+    if (captchaType !== 'nine') {
+      skippedType += 1;
+      console.log(`[${i + 1}/${opts.count}] skip lot=${data.lot_number} type=${captchaType || 'unknown'} (nine-only)`);
+      if (opts.delayMs > 0 && i < opts.count - 1) await new Promise((r) => setTimeout(r, opts.delayMs));
+      continue;
+    }
     const lotNumber = String(data.lot_number);
     const alreadyExists = readdirSync(opts.out, { withFileTypes: true })
       .filter((e) => e.isDirectory())
@@ -171,13 +191,19 @@ export async function runCollect(options = {}) {
     const quesPaths = Array.isArray(data.ques) ? data.ques : [];
     const quesPath = typeof quesPaths[0] === 'string' ? quesPaths[0] : null;
     if (!gridPath || !quesPath) throw new Error(`challenge ${i}: missing imgs or ques path`);
+    if (!isNineImagePayload(data)) {
+      skippedType += 1;
+      console.log(`[${i + 1}/${opts.count}] skip lot=${data.lot_number} type=nine paths=non-nine (nine-only)`);
+      if (opts.delayMs > 0 && i < opts.count - 1) await new Promise((r) => setTimeout(r, opts.delayMs));
+      continue;
+    }
     const grid = await withRetry(
       () => fetchComumpgImage({ fetchImpl, path: gridPath, referer: opts.referer, userAgent: opts.userAgent }),
-      { delayMs: opts.delayMs, label: `challenge ${i}` },
+      { delayMs: opts.delayMs, label: `challenge ${i} (grid)` },
     );
     const ques = await withRetry(
       () => fetchComumpgImage({ fetchImpl, path: quesPath, referer: opts.referer, userAgent: opts.userAgent }),
-      { delayMs: opts.delayMs, label: `challenge ${i}` },
+      { delayMs: opts.delayMs, label: `challenge ${i} (ques)` },
     );
     const id = writeChallenge({
       outRoot: opts.out,
@@ -195,7 +221,7 @@ export async function runCollect(options = {}) {
     if (opts.delayMs > 0 && i < opts.count - 1) await new Promise((r) => setTimeout(r, opts.delayMs));
   }
 
-  return { collected: collected.length, skipped, outRoot: opts.out, entries: collected };
+  return { collected: collected.length, skipped, skippedType, outRoot: opts.out, entries: collected };
 }
 
 function isMainModule() {
@@ -234,7 +260,7 @@ if (isMainModule()) {
         saveRaw: bool(args['save-raw']),
         withClassifier: bool(args['with-classifier']),
       })
-        .then((r) => console.log(`collected=${r.collected} skipped=${r.skipped} out=${r.outRoot}`))
+        .then((r) => console.log(`collected=${r.collected} skipped=${r.skipped} skippedType=${r.skippedType} out=${r.outRoot}`))
         .catch((err) => {
           console.error(err instanceof Error ? err.message : String(err));
           process.exitCode = 1;

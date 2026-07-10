@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseJsonp } from '../scripts/captcha-collect-comumpg.mjs';
+import { isNineImagePayload, parseJsonp } from '../scripts/captcha-collect-comumpg.mjs';
 
 const fixture = readFileSync(
   join(process.cwd(), 'test', 'fixtures', 'captcha', 'comumpg', 'load.jsonp'),
@@ -394,4 +394,122 @@ test('runCollect with append on an EMPTY out dir starts at 000000-', async () =>
     delayMs: 0,
   });
   assert.deepEqual(result.entries, ['000000-45ed640cfa9640558baf7b42c11d018d']);
+});
+
+// Recorded icon-shaped load body (captcha_type:"icon", no nine_nums, icon imgs/ques paths
+// captured from a live probe of gcaptcha4-hrc.gsensebot.com). Used to verify the nine-only filter.
+const iconBody = `geetest_0000000000(${JSON.stringify({
+  status: 'success',
+  data: {
+    lot_number: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    captcha_type: 'icon',
+    imgs: 'captcha_v4/2c5971e9b6/icon/0cf69c2ad4/2025-04-14T17/fc6776bba2f44ce4810409b9ca89e5e6.jpg',
+    ques: [
+      'nerualpic/original_icon_pic/icon_20201215/32b3fcac371b420f9b6f18edd77701af.png',
+      'nerualpic/original_icon_pic/icon_20201215/aaaaaaa.png',
+      'nerualpic/original_icon_pic/icon_20201215/bbbbbbb.png',
+    ],
+  },
+})})`;
+
+function mockFetchSequence(loadBodies: string[], grid: Buffer, ques: Buffer) {
+  let loadCalls = 0;
+  const fetchImpl = async (url: string) => {
+    if (url.includes('/load')) {
+      const body = loadBodies[Math.min(loadCalls, loadBodies.length - 1)];
+      loadCalls += 1;
+      const sentCallback = new URL(url).searchParams.get('callback') ?? '';
+      const echoed = sentCallback ? body.replace(/^geetest_\d+\(/, `${sentCallback}(`) : body;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'text/javascript;charset=UTF-8' : null) },
+        text: async () => echoed,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      } as unknown as Response;
+    }
+    const buf = url.endsWith('.jpg') ? grid : ques;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '',
+      arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    } as unknown as Response;
+  };
+  return { fetchImpl, loadCalls: () => loadCalls };
+}
+
+test('runCollect skips non-nine (icon) challenges and saves only the nine ones', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-icon-skip-'));
+  const { fetchImpl } = mockFetchSequence([iconBody, fixture], FAKE_GRID, FAKE_PNG);
+  const result = await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 2,
+    out,
+    delayMs: 0,
+  });
+  assert.equal(result.collected, 1);
+  assert.equal(result.skippedType, 1);
+  assert.deepEqual(result.entries, ['000000-45ed640cfa9640558baf7b42c11d018d']);
+  const dirs = readdirSync(out).sort();
+  assert.deepEqual(dirs, ['000000-45ed640cfa9640558baf7b42c11d018d']);
+  const meta = JSON.parse(readFileSync(join(out, '000000-45ed640cfa9640558baf7b42c11d018d', 'meta.json'), 'utf8'));
+  assert.equal(meta.captchaType, 'nine');
+});
+
+test('runCollect skips all non-nine challenges and collects zero (no dirs written)', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-all-icon-'));
+  const { fetchImpl, loadCalls } = mockFetchSequence([iconBody, iconBody, iconBody], FAKE_GRID, FAKE_PNG);
+  const result = await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 3,
+    out,
+    delayMs: 0,
+  });
+  assert.equal(result.collected, 0);
+  assert.equal(result.skippedType, 3);
+  assert.deepEqual(result.entries, []);
+  assert.deepEqual(readdirSync(out), []);
+  assert.equal(loadCalls(), 3);
+});
+
+test('isNineImagePayload requires both a nine grid path and a nine_prompt ques path', () => {
+  assert.equal(isNineImagePayload({
+    imgs: 'captcha_v4/15a082f210/nine/680eb6dc2f/2025-09-12T14/x.jpg',
+    ques: ['nerualpic/v4_pic/nine_prompt/x.png'],
+  }), true);
+  assert.equal(isNineImagePayload({
+    imgs: 'captcha_v4/2c5971e9b6/icon/0cf69c2ad4/2025-04-14T17/x.jpg',
+    ques: ['nerualpic/v4_pic/nine_prompt/x.png'],
+  }), false);
+  assert.equal(isNineImagePayload({
+    imgs: 'captcha_v4/15a082f210/nine/680eb6dc2f/2025-09-12T14/x.jpg',
+    ques: ['nerualpic/original_icon_pic/icon_20201215/x.png'],
+  }), false);
+});
+
+test('runCollect skips type-nine responses whose image paths are icon-shaped', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-nine-icon-paths-'));
+  const fakeNineWithIconPaths = `geetest_0000000000(${JSON.stringify({
+    status: 'success',
+    data: {
+      lot_number: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      captcha_type: 'nine',
+      imgs: 'captcha_v4/2c5971e9b6/icon/0cf69c2ad4/2025-04-14T17/fc6776bba2f44ce4810409b9ca89e5e6.jpg',
+      ques: ['nerualpic/original_icon_pic/icon_20201215/32b3fcac371b420f9b6f18edd77701af.png'],
+    },
+  })})`;
+  const { fetchImpl, loadCalls } = mockFetchSequence([fakeNineWithIconPaths], FAKE_GRID, FAKE_PNG);
+  const result = await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 1,
+    out,
+    delayMs: 0,
+  });
+  assert.equal(result.collected, 0);
+  assert.equal(result.skippedType, 1);
+  assert.deepEqual(result.entries, []);
+  assert.deepEqual(readdirSync(out), []);
+  assert.equal(loadCalls(), 1);
 });
