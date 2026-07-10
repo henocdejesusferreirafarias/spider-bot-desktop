@@ -11,6 +11,7 @@ const MODEL = resolveCaptchaAsset('geetest_v4_icon.onnx');
 const CHARSET_PATH = resolveCaptchaAsset('charsets.json');
 const PHOTO_MODEL = resolveCaptchaAsset('nine_photo.onnx');
 const PHOTO_CLASSES_PATH = resolveCaptchaAsset('nine_classes.json');
+const NINE_MATCH_MODEL = resolveCaptchaAsset('nine_match.onnx');
 const PHOTO_MEAN = [0.485, 0.456, 0.406] as const;
 const PHOTO_STD = [0.229, 0.224, 0.225] as const;
 
@@ -72,6 +73,57 @@ export function normalizePhotoRgbForImageNet(rgba: Uint8Array, w: number, h: num
     return arr;
   } finally {
     resized.delete();
+  }
+}
+
+function opaqueOnWhite(rgba: Uint8Array): Uint8Array {
+  const out = new Uint8Array(rgba.length);
+  for (let i = 0; i < rgba.length; i += 4) {
+    const alpha = (rgba[i + 3] ?? 255) / 255;
+    out[i] = Math.round(((rgba[i] ?? 0) * alpha) + (255 * (1 - alpha)));
+    out[i + 1] = Math.round(((rgba[i + 1] ?? 0) * alpha) + (255 * (1 - alpha)));
+    out[i + 2] = Math.round(((rgba[i + 2] ?? 0) * alpha) + (255 * (1 - alpha)));
+    out[i + 3] = 255;
+  }
+  return out;
+}
+
+function resizeOpaqueRgba(rgba: Uint8Array, w: number, h: number): Mat {
+  const input = decodeToMat(opaqueOnWhite(rgba), w, h);
+  const resized = resize(input, 64, 64, 'INTER_LINEAR');
+  input.delete();
+  return resized;
+}
+
+export function normalizeNineMatchPairForImageNet(
+  quesRgba: Uint8Array,
+  quesWidth: number,
+  quesHeight: number,
+  cellRgba: Uint8Array,
+  cellWidth: number,
+  cellHeight: number,
+): Float32Array {
+  const ques = resizeOpaqueRgba(quesRgba, quesWidth, quesHeight);
+  const cell = resizeOpaqueRgba(cellRgba, cellWidth, cellHeight);
+  try {
+    const width = 128;
+    const height = 64;
+    const arr = new Float32Array(3 * width * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const source = x < 64 ? ques : cell;
+        const sourceX = x < 64 ? x : x - 64;
+        const src = (y * 64 + sourceX) * 4;
+        const dest = y * width + x;
+        for (const ch of [0, 1, 2] as const) {
+          arr[ch * width * height + dest] = (((source.data[src + ch] ?? 0) / 255) - PHOTO_MEAN[ch]) / PHOTO_STD[ch];
+        }
+      }
+    }
+    return arr;
+  } finally {
+    ques.delete();
+    cell.delete();
   }
 }
 
@@ -142,7 +194,40 @@ export class PhotoClassifier {
   }
 }
 
+export interface NineMatchImage {
+  data: Uint8Array;
+  width: number;
+  height: number;
+}
+
+export class NineMatchClassifier {
+  private session: ort.InferenceSession | undefined;
+
+  private async ensure(): Promise<ort.InferenceSession> {
+    if (!this.session) this.session = await ort.InferenceSession.create(NINE_MATCH_MODEL);
+    return this.session;
+  }
+
+  async score(ques: NineMatchImage, cell: NineMatchImage): Promise<number> {
+    const session = await this.ensure();
+    const tensor = new ort.Tensor(
+      'float32',
+      normalizeNineMatchPairForImageNet(ques.data, ques.width, ques.height, cell.data, cell.width, cell.height),
+      [1, 3, 64, 128],
+    );
+    const out = await session.run({ input: tensor });
+    const data = out.logit?.data;
+    if (!data || data.length < 1) {
+      throw new Error('nine_match.onnx did not return logit output');
+    }
+    const logit = Number(data[0]);
+    return 1 / (1 + Math.exp(-logit));
+  }
+}
+
 let _clf: IconClassifier | undefined;
 export function getClassifier(): IconClassifier { return _clf ??= new IconClassifier(); }
 let _photoClassifier: PhotoClassifier | undefined;
 export function getPhotoClassifier(): PhotoClassifier { return _photoClassifier ??= new PhotoClassifier(); }
+let _nineMatchClassifier: NineMatchClassifier | undefined;
+export function getNineMatchClassifier(): NineMatchClassifier { return _nineMatchClassifier ??= new NineMatchClassifier(); }
