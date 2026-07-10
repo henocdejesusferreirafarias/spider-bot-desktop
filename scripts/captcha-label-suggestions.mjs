@@ -14,26 +14,43 @@ function sigmoid(value) {
   return 1 / (1 + Math.exp(-value));
 }
 
-function resizeNearest(rgba, width, height, targetWidth, targetHeight) {
-  const out = new Uint8Array(targetWidth * targetHeight * 4);
-  for (let y = 0; y < targetHeight; y++) {
-    const sourceY = Math.min(height - 1, Math.floor((y / targetHeight) * height));
-    for (let x = 0; x < targetWidth; x++) {
-      const sourceX = Math.min(width - 1, Math.floor((x / targetWidth) * width));
-      const source = (sourceY * width + sourceX) * 4;
-      const dest = (y * targetWidth + x) * 4;
-      out[dest] = rgba[source];
-      out[dest + 1] = rgba[source + 1];
-      out[dest + 2] = rgba[source + 2];
-      out[dest + 3] = rgba[source + 3];
+function rgbaToRgbOnBackground(rgba, background = [255, 255, 255]) {
+  const out = new Uint8Array((rgba.length / 4) * 3);
+  for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+    const alpha = rgba[i + 3] / 255;
+    for (let ch = 0; ch < 3; ch++) {
+      out[j + ch] = Math.round((rgba[i + ch] * alpha) + (background[ch] * (1 - alpha)));
     }
   }
   return out;
 }
 
-function normalizePair(ques, cell) {
-  const left = resizeNearest(ques.data, ques.width, ques.height, 64, 64);
-  const right = resizeNearest(cell.data, cell.width, cell.height, 64, 64);
+function resizeBilinearRgb(rgb, width, height, targetWidth, targetHeight) {
+  const out = new Uint8Array(targetWidth * targetHeight * 3);
+  for (let y = 0; y < targetHeight; y++) {
+    const sourceY = Math.max(0, Math.min(height - 1, ((y + 0.5) * height / targetHeight) - 0.5));
+    const y0 = Math.floor(sourceY);
+    const y1 = Math.min(height - 1, y0 + 1);
+    const wy = sourceY - y0;
+    for (let x = 0; x < targetWidth; x++) {
+      const sourceX = Math.max(0, Math.min(width - 1, ((x + 0.5) * width / targetWidth) - 0.5));
+      const x0 = Math.floor(sourceX);
+      const x1 = Math.min(width - 1, x0 + 1);
+      const wx = sourceX - x0;
+      const dest = (y * targetWidth + x) * 3;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = (rgb[(y0 * width + x0) * 3 + ch] * (1 - wx)) + (rgb[(y0 * width + x1) * 3 + ch] * wx);
+        const bottom = (rgb[(y1 * width + x0) * 3 + ch] * (1 - wx)) + (rgb[(y1 * width + x1) * 3 + ch] * wx);
+        out[dest + ch] = Math.round((top * (1 - wy)) + (bottom * wy));
+      }
+    }
+  }
+  return out;
+}
+
+export function normalizePair(ques, cell) {
+  const left = resizeBilinearRgb(rgbaToRgbOnBackground(ques.data), ques.width, ques.height, 64, 64);
+  const right = resizeBilinearRgb(rgbaToRgbOnBackground(cell.data), cell.width, cell.height, 64, 64);
   const width = 128;
   const height = 64;
   const arr = new Float32Array(3 * width * height);
@@ -41,7 +58,7 @@ function normalizePair(ques, cell) {
     for (let x = 0; x < width; x++) {
       const source = x < 64 ? left : right;
       const sourceX = x < 64 ? x : x - 64;
-      const sourceOffset = (y * 64 + sourceX) * 4;
+      const sourceOffset = (y * 64 + sourceX) * 3;
       const dest = y * width + x;
       for (let ch = 0; ch < 3; ch++) {
         arr[ch * width * height + dest] = ((source[sourceOffset + ch] / 255) - MEAN[ch]) / STD[ch];
