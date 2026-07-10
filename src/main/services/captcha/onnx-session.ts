@@ -209,19 +209,34 @@ export class NineMatchClassifier {
   }
 
   async score(ques: NineMatchImage, cell: NineMatchImage): Promise<number> {
+    const [score] = await this.scoreCells(ques, [cell]);
+    if (score === undefined) {
+      throw new Error('nine_match.onnx did not score the cell');
+    }
+    return score;
+  }
+
+  async scoreCells(ques: NineMatchImage, cells: NineMatchImage[]): Promise<number[]> {
+    if (cells.length === 0) return [];
     const session = await this.ensure();
-    const tensor = new ort.Tensor(
-      'float32',
-      normalizeNineMatchPairForImageNet(ques.data, ques.width, ques.height, cell.data, cell.width, cell.height),
-      [1, 3, 64, 128],
-    );
+    const sampleSize = 3 * 64 * 128;
+    const batch = new Float32Array(cells.length * sampleSize);
+    cells.forEach((cell, index) => {
+      batch.set(
+        normalizeNineMatchPairForImageNet(ques.data, ques.width, ques.height, cell.data, cell.width, cell.height),
+        index * sampleSize,
+      );
+    });
+    const tensor = new ort.Tensor('float32', batch, [cells.length, 3, 64, 128]);
     const out = await session.run({ input: tensor });
     const data = out.logit?.data;
-    if (!data || data.length < 1) {
+    if (!data || data.length < cells.length) {
       throw new Error('nine_match.onnx did not return logit output');
     }
-    const logit = Number(data[0]);
-    return 1 / (1 + Math.exp(-logit));
+    return Array.from({ length: cells.length }, (_, index) => {
+      const logit = Number(data[index]);
+      return 1 / (1 + Math.exp(-logit));
+    });
   }
 }
 

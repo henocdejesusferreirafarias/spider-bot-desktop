@@ -84,3 +84,25 @@ test('findIconCellsPhoto ranks cells with the nine-match pair scorer', async () 
 
   assert.deepEqual(cells, [[2, 3], [1, 2], [2, 1]]);
 });
+
+test('findIconCellsPhoto uses one batched scorer call when available', async () => {
+  const grid = solidPng(9, 9, [255, 255, 255, 255]);
+  const ques = solidPng(3, 3, [0, 0, 0, 255]);
+  let singleCalls = 0;
+  let batchCalls = 0;
+
+  const cells = await findIconCellsPhoto(grid, ques, 2, {
+    async score() {
+      singleCalls += 1;
+      return 0;
+    },
+    async scoreCells(_ques, batch) {
+      batchCalls += 1;
+      return batch.map((cell) => (cell.row === 3 && cell.col === 1 ? 1 : cell.row === 1 && cell.col === 3 ? 0.9 : 0.1));
+    },
+  });
+
+  assert.equal(batchCalls, 1);
+  assert.equal(singleCalls, 0);
+  assert.deepEqual(cells, [[3, 1], [1, 3]]);
+});

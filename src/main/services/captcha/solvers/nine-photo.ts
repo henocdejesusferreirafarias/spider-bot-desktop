@@ -29,6 +29,7 @@ export interface NineMatchCell extends NineMatchImage {
 
 export interface NineMatchScorer {
   score(ques: NineMatchImage, cell: NineMatchCell): Promise<number>;
+  scoreCells?(ques: NineMatchImage, cells: NineMatchCell[]): Promise<number[]>;
 }
 
 export function rankNineMatchCells(cells: RankedNineMatchCell[], nineNums: number): Array<[number, number]> {
@@ -63,12 +64,16 @@ export async function findIconCellsPhoto(
 ): Promise<Array<[number, number]>> {
   const grid = decodeImage(gridBuf);
   const ques = decodeImage(quesBuf);
-  const cells: RankedNineMatchCell[] = [];
+  const cells: NineMatchCell[] = [];
   for (let row = 1; row <= 3; row++) {
     for (let col = 1; col <= 3; col++) {
-      const cell = cropCell(grid, row, col);
-      cells.push({ row, col, score: await matcher.score(ques, cell) });
+      cells.push(cropCell(grid, row, col));
     }
   }
-  return rankNineMatchCells(cells, nineNums);
+  const scores = matcher.scoreCells ? await matcher.scoreCells(ques, cells) : await Promise.all(cells.map((cell) => matcher.score(ques, cell)));
+  if (scores.length !== cells.length) {
+    throw new Error(`nine_match scorer returned ${scores.length} scores for ${cells.length} cells`);
+  }
+  const ranked = cells.map((cell, index) => ({ row: cell.row, col: cell.col, score: scores[index] ?? 0 }));
+  return rankNineMatchCells(ranked, nineNums);
 }
