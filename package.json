@@ -22,6 +22,7 @@
     "extract:nine-authorized": "tsx scripts/captcha-import-authorized-nine-dataset.mjs",
     "label": "tsx scripts/captcha-label-server-cli.mjs",
     "train:nine-match": "python scripts/captcha-train-nine-match.py",
+    "train:nine-siamese": "python scripts/captcha-train-nine-match.py --arch siamese",
     "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish never",
     "publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish always",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",

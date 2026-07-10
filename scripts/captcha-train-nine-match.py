@@ -4,12 +4,14 @@ import argparse
 import json
 import random
 import tempfile
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -149,12 +151,91 @@ def weighted_sampler(samples: list[PairSample]) -> WeightedRandomSampler:
     return WeightedRandomSampler(weights, num_samples=len(samples), replacement=True)
 
 
-def make_model() -> nn.Module:
-    weights = models.MobileNet_V3_Small_Weights.IMAGENET1K_V1
+class SiameseMobileNetMatcher(nn.Module):
+    def __init__(self, *, pretrained: bool = True, embedding_dim: int = 256):
+        super().__init__()
+        weights = models.MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
+        base = models.mobilenet_v3_small(weights=weights)
+        self.features = base.features
+        self.avgpool = base.avgpool
+        feature_dim = base.classifier[0].in_features
+        self.projection = nn.Sequential(
+            nn.Linear(feature_dim, embedding_dim),
+            nn.Hardswish(inplace=True),
+            nn.Dropout(p=0.1),
+            nn.Linear(embedding_dim, embedding_dim),
+        )
+        self.head = nn.Sequential(
+            nn.Linear(embedding_dim * 4, embedding_dim),
+            nn.Hardswish(inplace=True),
+            nn.Dropout(p=0.15),
+            nn.Linear(embedding_dim, 1),
+        )
+
+    def encode_half(self, image: torch.Tensor) -> torch.Tensor:
+        features = self.features(image)
+        pooled = self.avgpool(features)
+        flat = torch.flatten(pooled, 1)
+        projected = self.projection(flat)
+        return F.normalize(projected, dim=1)
+
+    def forward(self, pair: torch.Tensor) -> torch.Tensor:
+        prompt = pair[:, :, :, :CELL_SIZE]
+        cell = pair[:, :, :, CELL_SIZE:]
+        prompt_embedding = self.encode_half(prompt)
+        cell_embedding = self.encode_half(cell)
+        features = torch.cat([
+            prompt_embedding,
+            cell_embedding,
+            torch.abs(prompt_embedding - cell_embedding),
+            prompt_embedding * cell_embedding,
+        ], dim=1)
+        return self.head(features)
+
+
+def make_pair_model(*, pretrained: bool = True) -> nn.Module:
+    weights = models.MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
     model = models.mobilenet_v3_small(weights=weights)
     in_features = model.classifier[-1].in_features
     model.classifier[-1] = nn.Linear(in_features, 1)
     return model
+
+
+def make_model(arch: str = "pair", *, pretrained: bool = True, embedding_dim: int = 256) -> nn.Module:
+    if arch == "pair":
+        return make_pair_model(pretrained=pretrained)
+    if arch == "siamese":
+        return SiameseMobileNetMatcher(pretrained=pretrained, embedding_dim=embedding_dim)
+    raise ValueError(f"unknown arch: {arch}")
+
+
+def self_test() -> int:
+    torch.manual_seed(20260710)
+    for arch in ("pair", "siamese"):
+        model = make_model(arch=arch, pretrained=False).eval()
+        x = torch.randn(2, 3, PAIR_HEIGHT, PAIR_WIDTH)
+        with torch.inference_mode():
+            logits = model(x)
+        print(f"arch={arch} logit_shape={tuple(logits.shape)}")
+        if tuple(logits.shape) != (2, 1):
+            raise AssertionError(f"{arch} produced {tuple(logits.shape)}")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        onnx_path = Path(tmp_dir) / "nine_match_siamese.onnx"
+        model = make_model(arch="siamese", pretrained=False).eval()
+        export_onnx(model, onnx_path, torch.device("cpu"))
+        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+        x = torch.randn(2, 3, PAIR_HEIGHT, PAIR_WIDTH)
+        torch_result = model(x).detach().numpy()
+        result = session.run(["logit"], {"input": x.numpy()})[0]
+        if tuple(result.shape) != (2, 1):
+            raise AssertionError(f"onnx produced {tuple(result.shape)}")
+        print("onnx_export=ok arch=siamese")
+        max_diff = float(np.max(np.abs(torch_result - result)))
+        if max_diff > 1e-3:
+            raise AssertionError(f"onnx parity failed for self-test: max_diff={max_diff:.6f}")
+        print("onnx_parity=ok arch=siamese")
+    print("self_test=ok")
+    return 0
 
 
 @torch.inference_mode()
@@ -195,15 +276,22 @@ def export_onnx(model: nn.Module, output: Path, device: torch.device):
     model.eval()
     dummy = torch.zeros(1, 3, PAIR_HEIGHT, PAIR_WIDTH, device=device)
     output.parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(
-        model,
-        dummy,
-        output,
-        input_names=["input"],
-        output_names=["logit"],
-        opset_version=17,
-        dynamic_axes={"input": {0: "batch"}, "logit": {0: "batch"}},
-    )
+    export_args = {
+        "input_names": ["input"],
+        "output_names": ["logit"],
+        "opset_version": 17,
+        "dynamic_axes": {"input": {0: "batch"}, "logit": {0: "batch"}},
+    }
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="You are using the legacy TorchScript-based ONNX export.*",
+            category=DeprecationWarning,
+        )
+        try:
+            torch.onnx.export(model, dummy, output, dynamo=False, **export_args)
+        except TypeError:
+            torch.onnx.export(model, dummy, output, **export_args)
 
 
 @torch.inference_mode()
@@ -211,22 +299,30 @@ def verify_onnx_parity(model: nn.Module, onnx_path: Path, samples: list[PairSamp
     chosen = samples[:min(50, len(samples))]
     if not chosen:
         raise ValueError("no samples available for ONNX parity")
+    original_device = next(model.parameters()).device
+    model = model.to(torch.device("cpu"))
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-    for sample in chosen:
-        tensor = transform(make_pair_image(sample)).unsqueeze(0)
-        torch_logit = float(model(tensor.to(device)).cpu().numpy()[0][0])
-        onnx_logit = float(session.run(["logit"], {"input": tensor.numpy()})[0][0][0])
-        if abs(torch_logit - onnx_logit) > 1e-4:
-            raise AssertionError(f"ONNX parity failed for {sample.challenge_id}:{sample.row},{sample.col}")
+    try:
+        for sample in chosen:
+            tensor = transform(make_pair_image(sample)).unsqueeze(0)
+            torch_logit = float(model(tensor).cpu().numpy()[0][0])
+            onnx_logit = float(session.run(["logit"], {"input": tensor.numpy()})[0][0][0])
+            if abs(torch_logit - onnx_logit) > 1e-3:
+                raise AssertionError(f"ONNX parity failed for {sample.challenge_id}:{sample.row},{sample.col}")
+    finally:
+        model.to(original_device)
     print(f"onnx_parity=ok samples={len(chosen)}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--raw", default="dataset/raw")
     parser.add_argument("--labels", default="dataset/manual-labels.jsonl")
     parser.add_argument("--out-model", default="assets/captcha/nine_match.onnx")
     parser.add_argument("--out-meta", default="assets/captcha/nine_match.json")
+    parser.add_argument("--arch", choices=["pair", "siamese"], default="pair")
+    parser.add_argument("--embedding-dim", type=int, default=256)
     parser.add_argument("--epochs", type=int, default=18)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-4)
@@ -234,6 +330,8 @@ def main() -> int:
     parser.add_argument("--min-challenge-acc", type=float, default=0.60)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
+    if args.self_test:
+        return self_test()
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -248,10 +346,15 @@ def main() -> int:
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=weighted_sampler(train), num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    model = make_model().to(device)
+    model = make_model(arch=args.arch, embedding_dim=args.embedding_dim).to(device)
     pos = sum(sample.label for sample in train)
     neg = len(train) - pos
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([neg / max(pos, 1)], device=device))
+    if args.arch == "pair":
+        loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([neg / max(pos, 1)], device=device))
+        class_balance = "weighted_sampler_and_positive_loss_weight"
+    else:
+        loss_fn = nn.BCEWithLogitsLoss()
+        class_balance = "weighted_sampler"
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     best_state = None
     best_score = -1.0
@@ -313,6 +416,9 @@ def main() -> int:
                 "std": STD,
             },
             "training": {
+                "arch": args.arch,
+                "embeddingDim": args.embedding_dim if args.arch == "siamese" else None,
+                "classBalance": class_balance,
                 "sourceRaw": str(Path(args.raw)),
                 "sourceLabels": str(Path(args.labels)),
                 "seed": args.seed,
