@@ -13,5 +13,6 @@ test('nine match trainer self-test covers pair and siamese model contracts', { t
   assert.match(result.stdout, /arch=siamese logit_shape=\(2, 1\)/);
   assert.match(result.stdout, /onnx_export=ok arch=siamese/);
   assert.match(result.stdout, /onnx_parity=ok arch=siamese/);
+  assert.match(result.stdout, /prompt_alpha_composite=ok/);
   assert.match(result.stdout, /self_test=ok/);
 });

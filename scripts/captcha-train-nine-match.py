@@ -102,8 +102,15 @@ def crop_cell(grid: Image.Image, row: int, col: int) -> Image.Image:
     return grid.crop((left, top, left + cell_width, top + cell_height))
 
 
+def prompt_to_rgb(prompt: Image.Image, background: tuple[int, int, int] = (255, 255, 255)) -> Image.Image:
+    rgba = prompt.convert("RGBA")
+    canvas = Image.new("RGBA", rgba.size, (*background, 255))
+    canvas.alpha_composite(rgba)
+    return canvas.convert("RGB")
+
+
 def make_pair_image(sample: PairSample) -> Image.Image:
-    ques = Image.open(sample.ques_path).convert("RGB").resize((CELL_SIZE, CELL_SIZE), Image.Resampling.BILINEAR)
+    ques = prompt_to_rgb(Image.open(sample.ques_path)).resize((CELL_SIZE, CELL_SIZE), Image.Resampling.BILINEAR)
     grid = Image.open(sample.grid_path).convert("RGB")
     cell = crop_cell(grid, sample.row, sample.col).resize((CELL_SIZE, CELL_SIZE), Image.Resampling.BILINEAR)
     pair = Image.new("RGB", (PAIR_WIDTH, PAIR_HEIGHT))
@@ -211,6 +218,14 @@ def make_model(arch: str = "pair", *, pretrained: bool = True, embedding_dim: in
 
 def self_test() -> int:
     torch.manual_seed(20260710)
+    transparent_prompt = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+    for x in range(2, 6):
+        transparent_prompt.putpixel((x, 4), (0, 0, 0, 255))
+        transparent_prompt.putpixel((4, x), (0, 0, 0, 255))
+    composited = np.array(prompt_to_rgb(transparent_prompt))
+    if composited.mean() <= 200 or composited.min() != 0 or composited.max() != 255:
+        raise AssertionError("transparent prompt was not composited as black-on-white")
+    print("prompt_alpha_composite=ok")
     for arch in ("pair", "siamese"):
         model = make_model(arch=arch, pretrained=False).eval()
         x = torch.randn(2, 3, PAIR_HEIGHT, PAIR_WIDTH)
