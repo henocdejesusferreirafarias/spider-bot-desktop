@@ -21,8 +21,9 @@ import type {
 } from "@spider-bot/licensing-contracts";
 import { PredatorDatabase } from "./database.js";
 import { BrowserRuntimeService } from "./browser-runtime.js";
-import { GeetestSolverService } from "./geetest-solver.js";
+import { shouldAttemptAutomaticGeetestSolve, solveNineGeetestWithClient } from "./geetest-solver.js";
 import type { GeetestCaptchaData, GeetestSolution } from "./geetest-solver.js";
+import { GeetestClient } from "./captcha/geetest-client.js";
 import {
   resolveRemoteActionTimeoutMs,
   resolveRemoteNavigationTimeoutMs,
@@ -168,7 +169,6 @@ export class AutomationRuntimeService {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly activeAutomationIds = new Set<string>();
   private readonly activeProfileIds = new Set<string>();
-  private geetestSolver: GeetestSolverService | undefined;
   private readonly geetestCapturedData = new Map<string, GeetestCaptchaData>();
   // Guarda a ref do listener de `request` por run para poder fazer page.off no dispose.
   // Sem isto o listener vazava: as janelas ficam abertas entre execucoes e cada run
@@ -178,9 +178,6 @@ export class AutomationRuntimeService {
     { page: Page; listener: (...args: unknown[]) => void }
   >();
   private readonly autoCaptchaSolverRuns = new Set<string>();
-  // Runs que de fato aqueceram o worker do solver (lazy): begin so ocorre no 1o sinal de
-  // rede geetest; usamos isto para liberar o warm-session de forma balanceada no finally.
-  private readonly warmedSolverRuns = new Set<string>();
 
   // --- Interacao adaptativa (generica p/ QUALQUER plataforma; sem regras por dominio) ---
   // Plataformas lentas levam ate 10s+ para deixar um ponto realmente acionavel (medido
@@ -2336,13 +2333,8 @@ export class AutomationRuntimeService {
       automation.params.autoCaptchaSolverEnabled === "true";
     if (autoCaptchaSolverEnabled) {
       this.autoCaptchaSolverRuns.add(runId);
-      // Worker do solver sobe SOB DEMANDA (lazy): so ao ver o 1o trafego de rede geetest
-      // (em setupGeetestInterception). Evita carregar CLIP/torch no inicio de TODO run e
-      // disputar CPU com a abertura dos navegadores quando a plataforma nem tem captcha.
       this.setupGeetestInterception(runId, page);
       await this.installGeetestBridge(page).catch(() => undefined);
-    } else {
-      await this.geetestSolver?.stopIfIdle().catch(() => undefined);
     }
 
     this.log(
@@ -2570,11 +2562,6 @@ export class AutomationRuntimeService {
     } finally {
       this.disposeGeetestInterception(runId);
       this.autoCaptchaSolverRuns.delete(runId);
-      // Libera o warm-session apenas se realmente aquecemos (lazy). Sem isto, plataformas
-      // sem captcha — que nunca dao begin — fariam um release indevido no contador.
-      if (this.warmedSolverRuns.delete(runId)) {
-        this.geetestSolver?.releaseWarmSession();
-      }
     }
   }
 
@@ -5888,11 +5875,6 @@ export class AutomationRuntimeService {
     return Number.isFinite(amount) && amount > 0 ? amount : undefined;
   }
 
-  private getGeetestSolver(): GeetestSolverService {
-    this.geetestSolver ??= new GeetestSolverService();
-    return this.geetestSolver;
-  }
-
   private isAutoCaptchaSolverEnabled(runId: string): boolean {
     return this.autoCaptchaSolverRuns.has(runId);
   }
@@ -6838,16 +6820,6 @@ export class AutomationRuntimeService {
       if (!/geetest|geevisit|gcaptcha/.test(url.toLowerCase())) {
         return;
       }
-      // 1o sinal de rede geetest neste run = ha captcha real chegando. Pre-aquece o worker
-      // AGORA (em paralelo com o widget montando) para esconder o cold-start do CLIP, sem
-      // nunca aquecer quando a plataforma nao tem captcha. So enquanto o run esta ativo.
-      if (
-        this.autoCaptchaSolverRuns.has(runId) &&
-        !this.warmedSolverRuns.has(runId)
-      ) {
-        this.warmedSolverRuns.add(runId);
-        this.getGeetestSolver().beginWarmSession();
-      }
       const parsed = this.extractGeetestDataFromUrl(url);
       if (parsed) {
         this.geetestCapturedData.set(runId, parsed);
@@ -6897,7 +6869,14 @@ export class AutomationRuntimeService {
       return false;
     }
 
-    const solver = this.getGeetestSolver();
+    if (!captured || !shouldAttemptAutomaticGeetestSolve(captured.riskType)) {
+      return false;
+    }
+
+    const client = new GeetestClient(
+      page.context().request,
+      captured.baseUrl,
+    );
 
     for (
       let attempt = 1;
@@ -6905,12 +6884,10 @@ export class AutomationRuntimeService {
       attempt += 1
     ) {
       this.ensureRunActive(runId);
-      const solution = await solver.solve(
+      const solution = await solveNineGeetestWithClient(
+        client,
         captchaId,
-        captured?.riskType || null,
-        captured?.baseUrl,
-        undefined,
-        1,
+        captured.riskType,
       );
 
       if (!solution || !solution.lot_number || !solution.pass_token) {

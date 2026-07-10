@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { generateW, type GeetestChallengeData } from "./captcha/signer.js";
+import type { GeetestVerifyResult } from "./captcha/geetest-client.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -57,6 +59,68 @@ interface WorkerSolveOutcome {
 interface PendingWorkerRequest {
   resolve: (outcome: WorkerSolveOutcome) => void;
   timer: NodeJS.Timeout;
+}
+
+export function shouldAttemptAutomaticGeetestSolve(riskType?: string | null): boolean {
+  return riskType?.trim().toLowerCase() === "nine";
+}
+
+export interface GeetestNineClient {
+  load(captchaId: string, riskType?: string | null): Promise<GeetestChallengeData & { captcha_type?: string }>;
+  fetchImage(path: string): Promise<Buffer>;
+  verify(args: {
+    captchaId: string;
+    lotNumber: string;
+    payload: string;
+    processToken: string;
+    w: string;
+    riskType?: string | null;
+  }): Promise<GeetestVerifyResult>;
+}
+
+export type GenerateGeetestW = (
+  data: GeetestChallengeData,
+  captchaId: string,
+  riskType: string,
+  fetchImage: (path: string) => Promise<Buffer>,
+) => Promise<string>;
+
+export async function solveNineGeetestWithClient(
+  client: GeetestNineClient,
+  captchaId: string,
+  riskType?: string | null,
+  generateGeetestW: GenerateGeetestW = (data, id, type, fetchImage) => generateW(data, id, type, fetchImage, () => 0),
+): Promise<GeetestSolution | null> {
+  if (!shouldAttemptAutomaticGeetestSolve(riskType)) {
+    return null;
+  }
+
+  const data = await client.load(captchaId, "nine");
+  if (data.captcha_type && !shouldAttemptAutomaticGeetestSolve(data.captcha_type)) {
+    return null;
+  }
+
+  const w = await generateGeetestW(data, captchaId, "nine", (path) => client.fetchImage(path));
+  const result = await client.verify({
+    captchaId,
+    lotNumber: data.lot_number,
+    payload: String(data.payload ?? ""),
+    processToken: String(data.process_token ?? ""),
+    w,
+    riskType: "nine",
+  });
+  const seccode = result.seccode;
+  if (!seccode?.pass_token || !seccode.lot_number) {
+    return null;
+  }
+
+  return {
+    captcha_id: seccode.captcha_id ?? captchaId,
+    lot_number: seccode.lot_number,
+    pass_token: seccode.pass_token,
+    gen_time: seccode.gen_time,
+    captcha_output: seccode.captcha_output,
+  };
 }
 
 function findPython(): string | null {
@@ -120,6 +184,10 @@ export class GeetestSolverService {
   }
 
   async solve(captchaId: string, riskType?: string | null, baseUrl?: string, proxy?: string, maxRetries?: number): Promise<GeetestSolution | null> {
+    if (!shouldAttemptAutomaticGeetestSolve(riskType)) {
+      return null;
+    }
+
     const payload = this.buildPayload(captchaId, riskType, baseUrl, proxy, maxRetries);
 
     if (this.warmSessionDepth > 0 || this.worker) {
