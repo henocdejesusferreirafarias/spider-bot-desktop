@@ -168,6 +168,37 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  console.error('captcha-collect-comumpg: not implemented yet');
-  process.exitCode = 1;
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help || args.h) {
+    console.log([
+      'Usage: npm run collect:nine-comumpg -- [--count N] [--out DIR] [--append] [--delay-ms MS]',
+      '                           [--captcha-id ID] [--host H] [--client-type T] [--lang L]',
+      '                           [--referer URL] [--user-agent UA] [--save-raw]',
+      '',
+      `Defaults: count=100 out=dataset/raw delay-ms=600 captcha-id=${DEFAULTS.captchaId}`,
+      `          host=${DEFAULTS.host} client-type=${DEFAULTS.clientType} lang=${DEFAULTS.lang}`,
+    ].join('\n'));
+    process.exitCode = 0;
+  } else {
+    const bool = (v) => v === true || v === 'true';
+    runCollect({
+      count: Number(args.count ?? DEFAULTS.count),
+      out: String(args.out ?? DEFAULTS.out),
+      append: bool(args.append),
+      delayMs: Number(args.delayMs ?? DEFAULTS.delayMs),
+      captchaId: String(args['captcha-id'] ?? DEFAULTS.captchaId),
+      host: String(args.host ?? DEFAULTS.host),
+      clientType: String(args['client-type'] ?? DEFAULTS.clientType),
+      lang: String(args.lang ?? DEFAULTS.lang),
+      referer: String(args.referer ?? DEFAULTS.referer),
+      userAgent: String(args['user-agent'] ?? DEFAULTS.userAgent),
+      saveRaw: bool(args['save-raw']),
+      withClassifier: bool(args['with-classifier']),
+    })
+      .then((r) => console.log(`collected=${r.collected} skipped=${r.skipped} out=${r.outRoot}`))
+      .catch((err) => {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exitCode = 1;
+      });
+  }
 }
