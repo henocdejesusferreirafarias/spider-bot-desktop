@@ -274,3 +274,124 @@ test('runCollect with saveRaw also writes load.json with the raw JSONP body', as
   assert.ok(raw.startsWith('geetest_'));
   assert.match(raw, /45ed640cfa9640558baf7b42c11d018d/);
 });
+
+test('runCollect writes the OVERRIDDEN captchaId/host/clientType/lang into meta.json, not the defaults', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-override-'));
+  const { fetchImpl } = fullMockFetch(fixture, FAKE_GRID, FAKE_PNG);
+  await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 1,
+    out,
+    delayMs: 0,
+    captchaId: 'OVERRIDE-CID',
+    host: 'override.example.com',
+    clientType: 'web',
+    lang: 'en',
+  });
+  const dir = join(out, '000000-45ed640cfa9640558baf7b42c11d018d');
+  const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
+  assert.equal(meta.captchaId, 'OVERRIDE-CID');
+  assert.equal(meta.host, 'override.example.com');
+  assert.equal(meta.clientType, 'web');
+  assert.equal(meta.lang, 'en');
+});
+
+test('runCollect throws "challenge 0: missing imgs or ques path" (not an image fetch error) when imgs is absent', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-missing-imgs-'));
+  const loadBody = `geetest_123(${JSON.stringify({
+    status: 'success',
+    data: { lot_number: 'noimgslot', captcha_type: 'nine', nine_nums: 3, ques: ['nerualpic/v4_pic/nine_prompt/x.png'] },
+  })})`;
+  const fetchImpl = async (url: string) => {
+    if (url.includes('/load')) {
+      const sentCallback = new URL(url).searchParams.get('callback') ?? 'geetest_123';
+      const body = loadBody.replace(/^geetest_123\(/, `${sentCallback}(`);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'text/javascript;charset=UTF-8' : null) },
+        text: async () => body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      } as unknown as Response;
+    }
+    return {
+      ok: false,
+      status: 404,
+      headers: { get: () => null },
+      text: async () => '',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as unknown as Response;
+  };
+  await assert.rejects(
+    () => runCollect({ fetchImpl: fetchImpl as unknown as typeof fetch, count: 1, out, delayMs: 0 }),
+    /challenge 0: missing imgs or ques path/,
+  );
+  assert.deepEqual(readdirSync(out), []);
+});
+
+test('runCollect retries a transient TypeError on /load once and then succeeds', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-retry-ok-'));
+  let loadCalls = 0;
+  const fetchImpl = async (url: string) => {
+    if (url.includes('/load')) {
+      loadCalls += 1;
+      if (loadCalls === 1) throw new TypeError('fetch failed');
+      const sentCallback = new URL(url).searchParams.get('callback') ?? '';
+      const body = fixture.replace(/^geetest_\d+\(/, `${sentCallback}(`);
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (n: string) => (n.toLowerCase() === 'content-type' ? 'text/javascript;charset=UTF-8' : null) },
+        text: async () => body,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      } as unknown as Response;
+    }
+    const buf = url.endsWith('.jpg') ? FAKE_GRID : FAKE_PNG;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '',
+      arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    } as unknown as Response;
+  };
+  const result = await runCollect({ fetchImpl: fetchImpl as unknown as typeof fetch, count: 1, out, delayMs: 1 });
+  assert.equal(result.collected, 1);
+  assert.equal(loadCalls, 2);
+});
+
+test('runCollect rejects with the TypeError when /load throws transiently on both attempts (no infinite retry)', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-retry-fail-'));
+  let loadCalls = 0;
+  const fetchImpl = async (url: string) => {
+    if (url.includes('/load')) {
+      loadCalls += 1;
+      throw new TypeError('network down');
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as unknown as Response;
+  };
+  await assert.rejects(
+    () => runCollect({ fetchImpl: fetchImpl as unknown as typeof fetch, count: 1, out, delayMs: 1 }),
+    (err: unknown) => err instanceof TypeError && (err as Error).message === 'network down',
+  );
+  assert.equal(loadCalls, 2);
+});
+
+test('runCollect with append on an EMPTY out dir starts at 000000-', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'comumpg-append-empty-'));
+  const { fetchImpl } = fullMockFetch(fixture, FAKE_GRID, FAKE_PNG);
+  const result = await runCollect({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    count: 1,
+    out,
+    append: true,
+    delayMs: 0,
+  });
+  assert.deepEqual(result.entries, ['000000-45ed640cfa9640558baf7b42c11d018d']);
+});

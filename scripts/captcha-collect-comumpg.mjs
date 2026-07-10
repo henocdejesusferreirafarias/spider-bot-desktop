@@ -39,6 +39,21 @@ function buildHeaders({ referer, userAgent, secFetchDest, accept }) {
   };
 }
 
+async function withRetry(fn, { delayMs, label }) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (delayMs <= 0) throw error;
+    const isTransient =
+      error instanceof TypeError ||
+      (error && typeof error.code === 'string' && /ECONNRESET|ENOTFOUND|ECONNABORTED|ETIMEDOUT|EAI_AGAIN/.test(error.code));
+    if (!isTransient) throw error;
+    console.log(`${label}: transient error (${error.message ?? error}); retrying after ${delayMs}ms`);
+    await new Promise((r) => setTimeout(r, delayMs));
+    return await fn();
+  }
+}
+
 export async function loadComumpg({
   fetchImpl,
   captchaId = DEFAULTS.captchaId,
@@ -103,7 +118,7 @@ export function nextIndex(outRoot, append) {
   return max + 1;
 }
 
-export function writeChallenge({ outRoot, index, data, grid, ques, saveRaw, loadBody }) {
+export function writeChallenge({ outRoot, index, data, grid, ques, saveRaw, loadBody, captchaId, host, clientType, lang }) {
   const lotNumber = String(data.lot_number);
   const id = `${String(index).padStart(6, '0')}-${lotNumber}`;
   const dir = join(outRoot, id);
@@ -113,10 +128,10 @@ export function writeChallenge({ outRoot, index, data, grid, ques, saveRaw, load
   writeFileSync(join(dir, 'meta.json'), JSON.stringify({
     id,
     source: 'comumpg',
-    captchaId: String(data.captcha_id ?? DEFAULTS.captchaId),
-    host: DEFAULTS.host,
-    clientType: DEFAULTS.clientType,
-    lang: DEFAULTS.lang,
+    captchaId: String(captchaId ?? DEFAULTS.captchaId),
+    host: String(host ?? DEFAULTS.host),
+    clientType: String(clientType ?? DEFAULTS.clientType),
+    lang: String(lang ?? DEFAULTS.lang),
     lotNumber,
     nineNums: Number(data.nine_nums ?? 3),
     gridPath: String(data.imgs ?? ''),
@@ -139,7 +154,10 @@ export async function runCollect(options = {}) {
   let skipped = 0;
 
   for (let i = 0; i < opts.count; i++) {
-    const data = await loadComumpg({ fetchImpl, captchaId: opts.captchaId, host: opts.host, clientType: opts.clientType, lang: opts.lang, referer: opts.referer, userAgent: opts.userAgent });
+    const data = await withRetry(
+      () => loadComumpg({ fetchImpl, captchaId: opts.captchaId, host: opts.host, clientType: opts.clientType, lang: opts.lang, referer: opts.referer, userAgent: opts.userAgent }),
+      { delayMs: opts.delayMs, label: `challenge ${i}` },
+    );
     const lotNumber = String(data.lot_number);
     const alreadyExists = readdirSync(opts.out, { withFileTypes: true })
       .filter((e) => e.isDirectory())
@@ -149,12 +167,29 @@ export async function runCollect(options = {}) {
       console.log(`[${i + 1}/${opts.count}] dup=${lotNumber} skipped`);
       continue;
     }
-    const grid = await fetchComumpgImage({ fetchImpl, path: String(data.imgs), referer: opts.referer, userAgent: opts.userAgent });
+    const gridPath = typeof data.imgs === 'string' && data.imgs ? data.imgs : null;
     const quesPaths = Array.isArray(data.ques) ? data.ques : [];
     const quesPath = typeof quesPaths[0] === 'string' ? quesPaths[0] : null;
-    if (!data.imgs || !quesPath) throw new Error(`challenge ${i}: missing imgs or ques path`);
-    const ques = await fetchComumpgImage({ fetchImpl, path: quesPath, referer: opts.referer, userAgent: opts.userAgent });
-    const id = writeChallenge({ outRoot: opts.out, index: startIndex + collected.length, data, grid, ques, saveRaw: opts.saveRaw, loadBody: opts.saveRaw ? data.__rawBody : null });
+    if (!gridPath || !quesPath) throw new Error(`challenge ${i}: missing imgs or ques path`);
+    const grid = await withRetry(
+      () => fetchComumpgImage({ fetchImpl, path: gridPath, referer: opts.referer, userAgent: opts.userAgent }),
+      { delayMs: opts.delayMs, label: `challenge ${i}` },
+    );
+    const ques = await withRetry(
+      () => fetchComumpgImage({ fetchImpl, path: quesPath, referer: opts.referer, userAgent: opts.userAgent }),
+      { delayMs: opts.delayMs, label: `challenge ${i}` },
+    );
+    const id = writeChallenge({
+      outRoot: opts.out,
+      index: startIndex + collected.length,
+      data, grid, ques,
+      saveRaw: opts.saveRaw,
+      loadBody: opts.saveRaw ? data.__rawBody : null,
+      captchaId: opts.captchaId,
+      host: opts.host,
+      clientType: opts.clientType,
+      lang: opts.lang,
+    });
     collected.push(id);
     console.log(`[${i + 1}/${opts.count}] ${id} nine=${Number(data.nine_nums ?? 3)}`);
     if (opts.delayMs > 0 && i < opts.count - 1) await new Promise((r) => setTimeout(r, opts.delayMs));
@@ -169,7 +204,7 @@ function isMainModule() {
 
 if (isMainModule()) {
   const args = parseArgs(process.argv.slice(2));
-  if (args.help || args.h) {
+  if (args.help) {
     console.log([
       'Usage: npm run collect:nine-comumpg -- [--count N] [--out DIR] [--append] [--delay-ms MS]',
       '                           [--captcha-id ID] [--host H] [--client-type T] [--lang L]',
@@ -181,24 +216,29 @@ if (isMainModule()) {
     process.exitCode = 0;
   } else {
     const bool = (v) => v === true || v === 'true';
-    runCollect({
-      count: Number(args.count ?? DEFAULTS.count),
-      out: String(args.out ?? DEFAULTS.out),
-      append: bool(args.append),
-      delayMs: Number(args.delayMs ?? DEFAULTS.delayMs),
-      captchaId: String(args['captcha-id'] ?? DEFAULTS.captchaId),
-      host: String(args.host ?? DEFAULTS.host),
-      clientType: String(args['client-type'] ?? DEFAULTS.clientType),
-      lang: String(args.lang ?? DEFAULTS.lang),
-      referer: String(args.referer ?? DEFAULTS.referer),
-      userAgent: String(args['user-agent'] ?? DEFAULTS.userAgent),
-      saveRaw: bool(args['save-raw']),
-      withClassifier: bool(args['with-classifier']),
-    })
-      .then((r) => console.log(`collected=${r.collected} skipped=${r.skipped} out=${r.outRoot}`))
-      .catch((err) => {
-        console.error(err instanceof Error ? err.message : String(err));
-        process.exitCode = 1;
-      });
+    if (bool(args['with-classifier'])) {
+      console.error('--with-classifier is not implemented yet; the collector stays standalone. Re-run without it.');
+      process.exitCode = 1;
+    } else {
+      runCollect({
+        count: Number(args.count ?? DEFAULTS.count),
+        out: String(args.out ?? DEFAULTS.out),
+        append: bool(args.append),
+        delayMs: Number(args.delayMs ?? DEFAULTS.delayMs),
+        captchaId: String(args['captcha-id'] ?? DEFAULTS.captchaId),
+        host: String(args.host ?? DEFAULTS.host),
+        clientType: String(args['client-type'] ?? DEFAULTS.clientType),
+        lang: String(args.lang ?? DEFAULTS.lang),
+        referer: String(args.referer ?? DEFAULTS.referer),
+        userAgent: String(args['user-agent'] ?? DEFAULTS.userAgent),
+        saveRaw: bool(args['save-raw']),
+        withClassifier: bool(args['with-classifier']),
+      })
+        .then((r) => console.log(`collected=${r.collected} skipped=${r.skipped} out=${r.outRoot}`))
+        .catch((err) => {
+          console.error(err instanceof Error ? err.message : String(err));
+          process.exitCode = 1;
+        });
+    }
   }
 }
