@@ -21,7 +21,7 @@ import type {
 } from "@spider-bot/licensing-contracts";
 import { PredatorDatabase } from "./database.js";
 import { BrowserRuntimeService } from "./browser-runtime.js";
-import { shouldAttemptAutomaticGeetestSolve, solveNineGeetestWithClient } from "./geetest-solver.js";
+import { shouldProbeGeetestChallenge, solveNineGeetestWithClient } from "./geetest-solver.js";
 import type { GeetestCaptchaData, GeetestSolution } from "./geetest-solver.js";
 import { GeetestClient } from "./captcha/geetest-client.js";
 import {
@@ -6869,13 +6869,13 @@ export class AutomationRuntimeService {
       return false;
     }
 
-    if (!captured || !shouldAttemptAutomaticGeetestSolve(captured.riskType)) {
+    if (captured && !shouldProbeGeetestChallenge(captured.riskType)) {
       return false;
     }
 
     const client = new GeetestClient(
       page.context().request,
-      captured.baseUrl,
+      captured?.baseUrl ?? "https://gcaptcha4.geevisit.com",
     );
 
     for (
@@ -6887,7 +6887,7 @@ export class AutomationRuntimeService {
       const solution = await solveNineGeetestWithClient(
         client,
         captchaId,
-        captured.riskType,
+        captured?.riskType,
       );
 
       if (!solution || !solution.lot_number || !solution.pass_token) {

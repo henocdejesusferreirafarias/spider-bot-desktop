@@ -65,6 +65,10 @@ export function shouldAttemptAutomaticGeetestSolve(riskType?: string | null): bo
   return riskType?.trim().toLowerCase() === "nine";
 }
 
+export function shouldProbeGeetestChallenge(riskType?: string | null): boolean {
+  return !riskType || shouldAttemptAutomaticGeetestSolve(riskType);
+}
+
 export interface GeetestNineClient {
   load(captchaId: string, riskType?: string | null): Promise<GeetestChallengeData & { captcha_type?: string }>;
   fetchImage(path: string): Promise<Buffer>;
@@ -91,11 +95,11 @@ export async function solveNineGeetestWithClient(
   riskType?: string | null,
   generateGeetestW: GenerateGeetestW = (data, id, type, fetchImage) => generateW(data, id, type, fetchImage, () => 0),
 ): Promise<GeetestSolution | null> {
-  if (!shouldAttemptAutomaticGeetestSolve(riskType)) {
+  if (!shouldProbeGeetestChallenge(riskType)) {
     return null;
   }
 
-  const data = await client.load(captchaId, "nine");
+  const data = await client.load(captchaId, shouldAttemptAutomaticGeetestSolve(riskType) ? "nine" : undefined);
   if (data.captcha_type && !shouldAttemptAutomaticGeetestSolve(data.captcha_type)) {
     return null;
   }

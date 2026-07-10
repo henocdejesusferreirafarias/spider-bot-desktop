@@ -11,6 +11,70 @@ test("temporary Geetest policy attempts automatic solving only for nine captchas
   assert.equal(shouldAttemptAutomaticGeetestSolve(undefined), false);
 });
 
+test("solveNineGeetestWithClient probes load when captured risk type is unknown", async () => {
+  const calls: string[] = [];
+  const client = {
+    async load(captchaId: string, riskType?: string | null) {
+      calls.push(`load:${captchaId}:${riskType ?? "none"}`);
+      return {
+        lot_number: "lot-unknown",
+        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-10" },
+        pt: "0",
+        captcha_type: "nine",
+        payload: "payload-unknown",
+        process_token: "process-unknown",
+        imgs: "grid.jpg",
+        ques: ["ques.png"],
+        nine_nums: 3,
+      };
+    },
+    async fetchImage() {
+      return Buffer.alloc(0);
+    },
+    async verify() {
+      return {
+        result: "success",
+        seccode: {
+          captcha_id: "captcha-unknown",
+          lot_number: "lot-unknown",
+          pass_token: "pass-unknown",
+        },
+      };
+    },
+  };
+
+  const solution = await solveNineGeetestWithClient(client, "captcha-unknown", undefined, async () => "signed-w");
+
+  assert.equal(solution?.pass_token, "pass-unknown");
+  assert.deepEqual(calls, ["load:captcha-unknown:none"]);
+});
+
+test("solveNineGeetestWithClient skips a loaded non-nine challenge without signing", async () => {
+  let signed = false;
+  const solution = await solveNineGeetestWithClient({
+    async load() {
+      return {
+        lot_number: "lot-icon",
+        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-10" },
+        pt: "0",
+        captcha_type: "icon",
+      };
+    },
+    async fetchImage() {
+      throw new Error("must not fetch image");
+    },
+    async verify() {
+      throw new Error("must not verify");
+    },
+  }, "captcha-icon", undefined, async () => {
+    signed = true;
+    return "signed-w";
+  });
+
+  assert.equal(solution, null);
+  assert.equal(signed, false);
+});
+
 test("solveNineGeetestWithClient verifies nine captcha using the TS signer path", async () => {
   const calls: string[] = [];
   const client = {
