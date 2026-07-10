@@ -22,9 +22,28 @@ main { max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #d0
 .ques { text-align: center; margin-bottom: 16px; }
 .ques img { max-height: 140px; background: #fff; border: 1px solid #d0d7de; }
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; aspect-ratio: 1 / 1; }
-.cell { position: relative; cursor: pointer; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
+.cell { position: relative; cursor: pointer; border: 2px solid #d0d7de; border-radius: 4px; overflow: hidden; background: #111; }
 .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.cell.selected { border-color: #1f883d; box-shadow: 0 0 0 2px rgba(31, 136, 61, 0.3) inset; }
+.cell.selected {
+  border-color: #0969da;
+  outline: 5px solid #2da44e;
+  outline-offset: -7px;
+  box-shadow: 0 0 0 3px #ffffff inset, 0 0 0 999px rgba(45, 164, 78, 0.22) inset;
+}
+.cell.selected::after {
+  content: "OK";
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  background: #2da44e;
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 6px;
+  border-radius: 999px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+}
 .cell .coord { position: absolute; top: 4px; left: 4px; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; padding: 1px 4px; border-radius: 3px; }
 .actions { display: flex; gap: 8px; margin-top: 16px; align-items: center; }
 button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
