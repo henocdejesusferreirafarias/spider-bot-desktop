@@ -18,6 +18,12 @@ O script de controles do mundo principal aguarda o `cc.Director.prototype.tick` 
 - O loop do jogo WG é acelerado sem reescrever bundles de terceiros.
 - Launchers WG em hosts ou caminhos diferentes permanecem fora de escopo até haver uma URL observada e testes correspondentes.
 
+## Experimento PG
+
+Em desenvolvimento, `PREDATOR_PG_SPEED_STRATEGY=director-tick` troca somente a estratégia PG para o wrapper de `cc.Director.prototype.tick`. O padrão continua `bundle-timescale` quando a variável está ausente ou tem outro valor.
+
+O experimento não aplica o patch de `_timeScale` nem os overrides genéricos de timer/RAF ao frame PG, evitando aceleração dupla. Ele existe para validar o comportamento do Cocos sem abrir DevTools; o gate de loading PG permanece uma decisão separada.
+
 ## Verificação
 
 - O launcher WG real foi testado manualmente em 1x, 2x, 4x e 8x com a mesma estratégia de `Director.tick`.

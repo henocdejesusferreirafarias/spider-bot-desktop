@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { BrowserRuntimeService as BrowserRuntimeServiceType } from "../src/main/services/browser-runtime.js";
 
-const { BrowserRuntimeService, projectMirrorFrameCoordinates } = await import(
+const { BrowserRuntimeService, projectMirrorFrameCoordinates, resolvePgSpeedStrategy } = await import(
   "../src/main/services/browser-runtime.js"
 );
 const { AutomationRuntimeService, isPlausibleQrImageDimensions } = await import(
@@ -95,6 +95,13 @@ test("iframe coordinates are projected into the top-level viewport", () => {
 
   assert.equal(projected.xRatio, 0.3);
   assert.equal(projected.yRatio, 0.34375);
+});
+
+test("PG Director tick experiment is opt-in and defaults to the bundle strategy", () => {
+  assert.equal(resolvePgSpeedStrategy(undefined), "bundle-timescale");
+  assert.equal(resolvePgSpeedStrategy("director-tick"), "director-tick");
+  assert.equal(resolvePgSpeedStrategy(" DIRECTOR-TICK "), "director-tick");
+  assert.equal(resolvePgSpeedStrategy("unsupported"), "bundle-timescale");
 });
 
 test("mirror capture script does not exclude child frames", () => {

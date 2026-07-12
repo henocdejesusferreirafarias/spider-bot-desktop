@@ -95,6 +95,11 @@ const CHROMIUM_MIN_WINDOW_DIP_HEIGHT = 250;
 const execFileAsync = promisify(execFile);
 const PATCHRIGHT_INIT_SCRIPT_CONTEXT = false;
 
+export type PgSpeedStrategy = "bundle-timescale" | "director-tick";
+
+export const resolvePgSpeedStrategy = (value: string | undefined): PgSpeedStrategy =>
+  value?.trim().toLowerCase() === "director-tick" ? "director-tick" : "bundle-timescale";
+
 const __filenameForSplash = fileURLToPath(import.meta.url);
 const __dirnameForSplash = dirname(__filenameForSplash);
 
@@ -1015,6 +1020,7 @@ export class BrowserRuntimeService {
   private readonly mirrorReplayClearTimers = new WeakMap<Page, ReturnType<typeof setTimeout>>();
   private readonly mirrorTouchActive = new WeakMap<Page, boolean>();
   private readonly contextSpeedRates = new WeakMap<BrowserContext, number>();
+  private readonly pgSpeedStrategy = resolvePgSpeedStrategy(process.env.PREDATOR_PG_SPEED_STRATEGY);
   private readonly launchingSlotIndexes = new Set<number>();
   private readonly activeSplashes = new Map<string, string>();
   private activeScreenLayout?: ScreenLayoutSettings;
@@ -5902,12 +5908,13 @@ export class BrowserRuntimeService {
   // compartilhado entre mundos -- lidos de forma lazy pelo script.
   private buildMainWorldControlsScript(
     initialSpeedRate = 1,
-    options: { pgGameOnly?: boolean } = {}
+    options: { pgGameOnly?: boolean; pgDirectorTickExperiment?: boolean } = {}
   ): string {
     const safeInitialSpeedRate = this.clampNumber(initialSpeedRate, 1, 25);
     return `
 (() => {
   const pgGameOnly = ${JSON.stringify(Boolean(options.pgGameOnly))};
+  const pgDirectorTickExperiment = ${JSON.stringify(Boolean(options.pgDirectorTickExperiment))};
   // Padroes de frame de jogo conhecidos (do registry de provedores). O speed so
   // ativa dentro de um iframe de jogo reconhecido — evita interferir em timers de
   // login/cadastro/deposito/saque.
@@ -5940,6 +5947,7 @@ export class BrowserRuntimeService {
   const isCocosDirectorTickFrame = () => {
     try {
       if (window.top === window) return false;
+      if (pgDirectorTickExperiment && isPgCocosFrame()) return true;
       const path = window.location.pathname || "";
       const href = window.location.href || "";
       return cocosDirectorTickPatterns.some((re) => re.test(path) || re.test(href));
@@ -6070,14 +6078,14 @@ export class BrowserRuntimeService {
     try {
       const prototype = globalThis.cc && globalThis.cc.Director && globalThis.cc.Director.prototype;
       if (!prototype || typeof prototype.tick !== "function") return false;
-      if (prototype.tick.__predatorWgTick) return true;
+      if (prototype.tick.__predatorCocosDirectorTick) return true;
       const originalTick = prototype.tick;
       const patchedTick = function(delta, ...rest) {
         const rate = readRate();
         const scaledDelta = typeof delta === "number" && Number.isFinite(delta) ? delta * rate : delta;
         return originalTick.call(this, scaledDelta, ...rest);
       };
-      Object.defineProperty(patchedTick, "__predatorWgTick", { value: true });
+      Object.defineProperty(patchedTick, "__predatorCocosDirectorTick", { value: true });
       prototype.tick = patchedTick;
       return prototype.tick === patchedTick;
     } catch (e) {
@@ -6138,7 +6146,9 @@ export class BrowserRuntimeService {
   // Injeta o script de controles no MUNDO PRINCIPAL. O evaluate principal cobre
   // paginas ja carregadas com CSP; a tag fica como fallback.
   private async installRuntimeControlsMainWorld(target: Page | Frame, speedRate = 1): Promise<void> {
-    const src = this.buildMainWorldControlsScript(speedRate);
+    const src = this.buildMainWorldControlsScript(speedRate, {
+      pgDirectorTickExperiment: this.pgSpeedStrategy === "director-tick"
+    });
     const targetUrl = sanitizeDiagnosticUrl(target.url());
     const installedViaMainWorldEvaluate = await target
       .evaluate(() => {
@@ -6240,7 +6250,10 @@ export class BrowserRuntimeService {
 
     try {
       const response = await session.send("Page.addScriptToEvaluateOnNewDocument", {
-        source: this.buildMainWorldControlsScript(speedRate, { pgGameOnly: true })
+        source: this.buildMainWorldControlsScript(speedRate, {
+          pgGameOnly: true,
+          pgDirectorTickExperiment: this.pgSpeedStrategy === "director-tick"
+        })
       });
       const identifier = (response as { identifier?: string }).identifier;
       if (identifier) {
@@ -6622,7 +6635,9 @@ export class BrowserRuntimeService {
       // scriptMatch e sao resolvidos aqui; provedores generic-timers aceleram
       // via overrides de timer no frame, sem tocar no bundle.
       const speedProvider = resolveProviderByScriptUrl(url);
-      if (speedProvider) {
+      const usePgDirectorTick =
+        this.pgSpeedStrategy === "director-tick" && speedProvider?.id === "pg";
+      if (speedProvider && !usePgDirectorTick) {
         try {
           const response = await route.fetch();
           const body = await response.text();
