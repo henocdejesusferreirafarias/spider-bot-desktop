@@ -5940,8 +5940,9 @@ export class BrowserRuntimeService {
   const isCocosDirectorTickFrame = () => {
     try {
       if (window.top === window) return false;
+      const path = window.location.pathname || "";
       const href = window.location.href || "";
-      return cocosDirectorTickPatterns.some((re) => re.test(href));
+      return cocosDirectorTickPatterns.some((re) => re.test(path) || re.test(href));
     } catch (e) {
       return false;
     }
@@ -6050,14 +6051,21 @@ export class BrowserRuntimeService {
   };
   const syncSpeed = () => {
     syncGameSpeedRate();
+    // Para o candidato WG/Cocos o delta e escalado por Director.tick(). Nao
+    // sobrescrevemos os timers/RAF aqui, pois isso faria o mesmo delta ser
+    // acelerado uma segunda vez.
+    if (isCocosDirectorTickFrame()) {
+      restoreSpeed();
+      return;
+    }
     if (readRate() > 1) installSpeed();
     else restoreSpeed();
   };
   syncSpeed();
 
-  // WG usa Cocos 3 e alimenta sistemas, componentes e renderizacao pelo
-  // argumento delta de Director.tick(). O scheduler isolado nao altera o spin;
-  // por isso escalamos esse delta no proprio loop publico do Director.
+  // A rota /clientv3/index.html apenas seleciona um candidato; a presenca de
+  // cc.Director.prototype.tick confirma Cocos 3 antes de qualquer patch.
+  // O WG alimenta sistemas, componentes e renderizacao pelo delta de tick().
   const installCocosDirectorTickSpeed = () => {
     try {
       const prototype = globalThis.cc && globalThis.cc.Director && globalThis.cc.Director.prototype;

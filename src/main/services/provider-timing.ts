@@ -61,12 +61,12 @@ const PG_PROFILE: ProviderTimingProfile = {
   speedRange: DEFAULT_SPEED_RANGE
 };
 
-// WG usa o launcher Cocos 3 em qualquer subdominio de wgnetworking.com.
+// Hosts do WG variam entre sessoes; a rota e so uma candidata. O runtime ainda
+// exige cc.Director.prototype.tick antes de aplicar a estrategia Cocos.
 const WG_PROFILE: ProviderTimingProfile = {
   id: "wg",
   label: "WG (Cocos 3)",
-  gameFrameUrlPattern:
-    /^https?:\/\/(?:[^/]+\.)?wgnetworking\.com\/clientv3\/index\.html(?:[?#]|$)/i,
+  gameFrameUrlPattern: /\/clientv3\/index\.html$/i,
   speedStrategy: "cocos-director-tick",
   speedRange: DEFAULT_SPEED_RANGE
 };

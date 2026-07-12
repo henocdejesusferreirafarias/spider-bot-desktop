@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Aplicar o Speed Time ao loop Cocos dos jogos WG servidos por `wgnetworking.com`.
+**Goal:** Aplicar o Speed Time ao loop Cocos dos jogos WG sem depender do host de entrega.
 
 **Architecture:** O registry declara WG como `cocos-director-tick` e fornece seus padrões de frame. O script do mundo principal instala uma única vez um wrapper em `cc.Director.prototype.tick`, que multiplica o delta pela taxa atual em `data-rtc-speed`.
 
@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- O patch se limita a `*.wgnetworking.com/clientv3/index.html`.
+- O caminho `/clientv3/index.html` só é candidato; `cc.Director.prototype.tick` confirma Cocos antes do patch.
 - PG e PP não mudam de estratégia.
 - Em 1x, o delta é encaminhado sem alteração.
 - O wrapper não pode ser empilhado.
@@ -72,8 +72,7 @@ export type EngineSpeedStrategy =
 const WG_PROFILE: ProviderTimingProfile = {
   id: "wg",
   label: "WG (Cocos 3)",
-  gameFrameUrlPattern:
-    /^https?:\/\/(?:[^/]+\.)?wgnetworking\.com\/clientv3\/index\.html(?:[?#]|$)/i,
+  gameFrameUrlPattern: /\/clientv3\/index\.html$/i,
   speedStrategy: "cocos-director-tick",
   speedRange: DEFAULT_SPEED_RANGE
 };
@@ -141,7 +140,7 @@ const patchedTick = function (delta, ...rest) {
 };
 ```
 
-Clear the retry interval after installation or after a bounded number of attempts. Run this installer only for the serialized WG patterns. Keep existing PG loading guards and generic timing behavior unchanged.
+Clear the retry interval after installation or after a bounded number of attempts. Run this installer only for the serialized WG patterns. Disable generic timer/RAF overrides for this candidate so `Director.tick` is the only scaling path; keep existing PG and PP behavior unchanged.
 
 - [ ] **Step 4: Run test to verify it passes**
 
