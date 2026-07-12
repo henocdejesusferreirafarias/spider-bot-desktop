@@ -34,6 +34,7 @@ import { resolveRuntimeWindowTargetsStrict } from "./runtime-window-selection.js
 import { selectMobileDevice, type DeviceProfile } from "./device-catalog.js";
 import {
   bundleMatchesEngine,
+  cocosDirectorTickFramePatternSources,
   isKnownGameFrameUrl,
   knownGameFramePatternSources,
   patchGameSpeedScript,
@@ -5913,6 +5914,9 @@ export class BrowserRuntimeService {
   const gameFramePatterns = ${JSON.stringify(knownGameFramePatternSources())}.map((s) => {
     try { return new RegExp(s, "i"); } catch (e) { return null; }
   }).filter(Boolean);
+  const cocosDirectorTickPatterns = ${JSON.stringify(cocosDirectorTickFramePatternSources())}.map((s) => {
+    try { return new RegExp(s, "i"); } catch (e) { return null; }
+  }).filter(Boolean);
   const isKnownGameFrame = () => {
     try {
       if (window.top === window) return false;
@@ -5929,6 +5933,15 @@ export class BrowserRuntimeService {
     try {
       if (window.top === window) return false;
       return /\\/\\d+\\/index\\.html$/i.test(window.location.pathname || "");
+    } catch (e) {
+      return false;
+    }
+  };
+  const isCocosDirectorTickFrame = () => {
+    try {
+      if (window.top === window) return false;
+      const href = window.location.href || "";
+      return cocosDirectorTickPatterns.some((re) => re.test(href));
     } catch (e) {
       return false;
     }
@@ -5997,6 +6010,7 @@ export class BrowserRuntimeService {
   // ---- SPEED ----
   const nST = window.setTimeout;
   const nSI = window.setInterval;
+  const nCI = window.clearInterval;
   const nRAF = window.requestAnimationFrame;
   const nNow = Date.now;
   const nPN = performance.now;
@@ -6040,6 +6054,38 @@ export class BrowserRuntimeService {
     else restoreSpeed();
   };
   syncSpeed();
+
+  // WG usa Cocos 3 e alimenta sistemas, componentes e renderizacao pelo
+  // argumento delta de Director.tick(). O scheduler isolado nao altera o spin;
+  // por isso escalamos esse delta no proprio loop publico do Director.
+  const installCocosDirectorTickSpeed = () => {
+    try {
+      const prototype = globalThis.cc && globalThis.cc.Director && globalThis.cc.Director.prototype;
+      if (!prototype || typeof prototype.tick !== "function") return false;
+      if (prototype.tick.__predatorWgTick) return true;
+      const originalTick = prototype.tick;
+      const patchedTick = function(delta, ...rest) {
+        const rate = readRate();
+        const scaledDelta = typeof delta === "number" && Number.isFinite(delta) ? delta * rate : delta;
+        return originalTick.call(this, scaledDelta, ...rest);
+      };
+      Object.defineProperty(patchedTick, "__predatorWgTick", { value: true });
+      prototype.tick = patchedTick;
+      return prototype.tick === patchedTick;
+    } catch (e) {
+      return false;
+    }
+  };
+  if (isCocosDirectorTickFrame()) {
+    let attempts = 0;
+    const retryId = nSI.call(window, () => {
+      attempts += 1;
+      if (installCocosDirectorTickSpeed() || attempts >= 200) {
+        nCI.call(window, retryId);
+      }
+    }, 50);
+    installCocosDirectorTickSpeed();
+  }
 
   let observerInstalled = false;
   const bindRootControls = () => {
@@ -6232,8 +6278,8 @@ export class BrowserRuntimeService {
       return;
     }
     const speedRate = this.clampNumber(rate, 1, 25);
-    // O new-document script via CDP ja usa pgGameOnly: true — so aplica em
-    // iframes de jogos PG/Cocos em navegacoes futuras.
+    // O new-document script via CDP so aplica controles em iframes de jogos
+    // reconhecidos em navegacoes futuras.
     await this.installRuntimeControlsNewDocumentScript(page, speedRate);
     const targets: Array<Page | Frame> = [page, ...page.frames().filter((frame) => frame !== page.mainFrame())];
     await Promise.allSettled(
@@ -6241,8 +6287,8 @@ export class BrowserRuntimeService {
         await this.setRuntimeControlAttr(target, "data-rtc-speed", String(speedRate));
         // Speed hack so em frames de jogos: evita interferir com timers de
         // login/cadastro/deposito/saque (anti-bot, animacoes, polling de QR).
-        const isPgGameTarget = isKnownGameFrameUrl(target.url());
-        if (isPgGameTarget && speedRate > 1) {
+        const isGameTarget = isKnownGameFrameUrl(target.url());
+        if (isGameTarget && speedRate > 1) {
           await this.installRuntimeControlsMainWorld(target, speedRate);
         }
       })

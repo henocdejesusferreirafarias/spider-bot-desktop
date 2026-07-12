@@ -22,7 +22,7 @@
 
 import type { Frame, Page } from "patchright";
 
-export type EngineSpeedStrategy = "cocos-timescale" | "generic-timers";
+export type EngineSpeedStrategy = "cocos-timescale" | "cocos-director-tick" | "generic-timers";
 
 export interface ProviderTimingProfile {
   readonly id: string;
@@ -61,14 +61,13 @@ const PG_PROFILE: ProviderTimingProfile = {
   speedRange: DEFAULT_SPEED_RANGE
 };
 
-// WG — PLACEHOLDER. TODO: preencher gameFrameUrlPattern a partir da URL real do
-// iframe de um jogo WG (ver "Como adicionar um provedor" acima). Enquanto o
-// padrao for placeholder, jogos WG nao serao reconhecidos como game frame.
+// WG usa o launcher Cocos 3 em qualquer subdominio de wgnetworking.com.
 const WG_PROFILE: ProviderTimingProfile = {
   id: "wg",
-  label: "WG",
-  gameFrameUrlPattern: /\/wg\/[^/]+\/index\.html$/i, // TODO: confirmar com URL real
-  speedStrategy: "generic-timers",
+  label: "WG (Cocos 3)",
+  gameFrameUrlPattern:
+    /^https?:\/\/(?:[^/]+\.)?wgnetworking\.com\/clientv3\/index\.html(?:[?#]|$)/i,
+  speedStrategy: "cocos-director-tick",
   speedRange: DEFAULT_SPEED_RANGE
 };
 
@@ -205,6 +204,13 @@ export function patchGameSpeedScript(body: string, rate: number, profile: Provid
 // pagina (sem acesso ao registry Node).
 export function knownGameFramePatternSources(): string[] {
   return PROVIDER_TIMING_PROFILES.map((p) => p.gameFrameUrlPattern.source);
+}
+
+// Padroes que usam o loop publico do Director do Cocos, em vez de patch de bundle.
+export function cocosDirectorTickFramePatternSources(): string[] {
+  return PROVIDER_TIMING_PROFILES
+    .filter((profile) => profile.speedStrategy === "cocos-director-tick")
+    .map((profile) => profile.gameFrameUrlPattern.source);
 }
 
 // Tipo utilitario para consumidores que ja tem um Page/Frame.
