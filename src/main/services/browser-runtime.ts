@@ -95,11 +95,6 @@ const CHROMIUM_MIN_WINDOW_DIP_HEIGHT = 250;
 const execFileAsync = promisify(execFile);
 const PATCHRIGHT_INIT_SCRIPT_CONTEXT = false;
 
-export type PgSpeedStrategy = "bundle-timescale" | "director-tick";
-
-export const resolvePgSpeedStrategy = (value: string | undefined): PgSpeedStrategy =>
-  value?.trim().toLowerCase() === "director-tick" ? "director-tick" : "bundle-timescale";
-
 const __filenameForSplash = fileURLToPath(import.meta.url);
 const __dirnameForSplash = dirname(__filenameForSplash);
 
@@ -1020,7 +1015,6 @@ export class BrowserRuntimeService {
   private readonly mirrorReplayClearTimers = new WeakMap<Page, ReturnType<typeof setTimeout>>();
   private readonly mirrorTouchActive = new WeakMap<Page, boolean>();
   private readonly contextSpeedRates = new WeakMap<BrowserContext, number>();
-  private readonly pgSpeedStrategy = resolvePgSpeedStrategy(process.env.PREDATOR_PG_SPEED_STRATEGY);
   private readonly launchingSlotIndexes = new Set<number>();
   private readonly activeSplashes = new Map<string, string>();
   private activeScreenLayout?: ScreenLayoutSettings;
@@ -5908,13 +5902,12 @@ export class BrowserRuntimeService {
   // compartilhado entre mundos -- lidos de forma lazy pelo script.
   private buildMainWorldControlsScript(
     initialSpeedRate = 1,
-    options: { pgGameOnly?: boolean; pgDirectorTickExperiment?: boolean } = {}
+    options: { pgGameOnly?: boolean } = {}
   ): string {
     const safeInitialSpeedRate = this.clampNumber(initialSpeedRate, 1, 25);
     return `
 (() => {
   const pgGameOnly = ${JSON.stringify(Boolean(options.pgGameOnly))};
-  const pgDirectorTickExperiment = ${JSON.stringify(Boolean(options.pgDirectorTickExperiment))};
   // Padroes de frame de jogo conhecidos (do registry de provedores). O speed so
   // ativa dentro de um iframe de jogo reconhecido — evita interferir em timers de
   // login/cadastro/deposito/saque.
@@ -5947,7 +5940,6 @@ export class BrowserRuntimeService {
   const isCocosDirectorTickFrame = () => {
     try {
       if (window.top === window) return false;
-      if (pgDirectorTickExperiment && isPgCocosFrame()) return true;
       const path = window.location.pathname || "";
       const href = window.location.href || "";
       return cocosDirectorTickPatterns.some((re) => re.test(path) || re.test(href));
@@ -5985,27 +5977,27 @@ export class BrowserRuntimeService {
     if (!currentRoot) return false;
     try { currentRoot.setAttribute(name, value); return true; } catch (e) { return false; }
   };
-  const isPgLoadingOrInterstitial = () => {
+  // Cache de loading PG: a tela pode reaparecer depois que o jogo ja iniciou.
+  // Manter esse estado separado evita consultar DOM a cada frame/timer e permite
+  // restaurar os relogios nativos durante reconexao, carregamento ou erro.
+  let pgLoadingState = isPgCocosFrame();
+  const refreshPgLoadingState = () => {
     if (!isPgCocosFrame()) return false;
+    let nextState = true;
     try {
-      if (window.__predatorPgSpeedUnlocked) return false;
       const text = String(document.body && document.body.innerText || "");
       const loadingPattern = /A\\s*carregar|A\\s*iniciar\\s*sess[aã]o|INICIAR|Retorno\\s+para\\s+o\\s+Jogador|Internet\\s+est[aá]\\s+lenta|lig[aá]?[cç][aã]o\\s+[àa]\\s+Internet\\s+est[aá]\\s+lenta|Atualizar|Aguardar|Jogos\\s+PG\\s+Oficiais|Ignorar|Aceitar|verifica/i;
       if (!document.body || !document.querySelector('#GameCanvas,canvas.gameCanvas,canvas')) {
-        return true;
+      } else if (loadingPattern.test(text)) {
+      } else {
+        nextState = false;
       }
-      if (loadingPattern.test(text)) {
-        window.__predatorPgSpeedGateReason = text.slice(0, 160);
-        return true;
-      }
-      window.__predatorPgSpeedUnlocked = true;
-      window.__predatorPgSpeedGateReason = "";
-      return false;
-    } catch (e) {
-      try { window.__predatorPgSpeedGateReason = "error:" + String(e); } catch (_) {}
-      return true;
-    }
+    } catch (e) {}
+    const changed = pgLoadingState !== nextState;
+    pgLoadingState = nextState;
+    return changed;
   };
+  const isPgLoadingOrInterstitial = () => pgLoadingState;
   const readDesiredRate = () => clamp(readAttr('data-rtc-speed') || initialSpeedRate);
   const readRate = () => (isPgLoadingOrInterstitial() ? 1 : readDesiredRate());
   const syncGameSpeedRate = () => {
@@ -6071,7 +6063,31 @@ export class BrowserRuntimeService {
   };
   syncSpeed();
 
-  // A rota /clientv3/index.html apenas seleciona um candidato; a presenca de
+  if (isPgCocosFrame()) {
+    let refreshPending = false;
+    const refreshAndSyncSpeed = () => {
+      if (refreshPgLoadingState()) syncSpeed();
+    };
+    const schedulePgLoadingRefresh = () => {
+      if (refreshPending) return;
+      refreshPending = true;
+      nST.call(window, () => {
+        refreshPending = false;
+        refreshAndSyncSpeed();
+      }, 80);
+    };
+    refreshAndSyncSpeed();
+    try {
+      new MutationObserver(schedulePgLoadingRefresh).observe(document.documentElement, {
+        childList: true,
+        characterData: true,
+        subtree: true
+      });
+    } catch (e) {}
+    nSI.call(window, refreshAndSyncSpeed, 300);
+  }
+
+  // A rota /clientv3/index.html seleciona um candidato WG; a presenca de
   // cc.Director.prototype.tick confirma Cocos 3 antes de qualquer patch.
   // O WG alimenta sistemas, componentes e renderizacao pelo delta de tick().
   const installCocosDirectorTickSpeed = () => {
@@ -6146,9 +6162,7 @@ export class BrowserRuntimeService {
   // Injeta o script de controles no MUNDO PRINCIPAL. O evaluate principal cobre
   // paginas ja carregadas com CSP; a tag fica como fallback.
   private async installRuntimeControlsMainWorld(target: Page | Frame, speedRate = 1): Promise<void> {
-    const src = this.buildMainWorldControlsScript(speedRate, {
-      pgDirectorTickExperiment: this.pgSpeedStrategy === "director-tick"
-    });
+    const src = this.buildMainWorldControlsScript(speedRate);
     const targetUrl = sanitizeDiagnosticUrl(target.url());
     const installedViaMainWorldEvaluate = await target
       .evaluate(() => {
@@ -6250,10 +6264,7 @@ export class BrowserRuntimeService {
 
     try {
       const response = await session.send("Page.addScriptToEvaluateOnNewDocument", {
-        source: this.buildMainWorldControlsScript(speedRate, {
-          pgGameOnly: true,
-          pgDirectorTickExperiment: this.pgSpeedStrategy === "director-tick"
-        })
+        source: this.buildMainWorldControlsScript(speedRate, { pgGameOnly: true })
       });
       const identifier = (response as { identifier?: string }).identifier;
       if (identifier) {
@@ -6635,9 +6646,7 @@ export class BrowserRuntimeService {
       // scriptMatch e sao resolvidos aqui; provedores generic-timers aceleram
       // via overrides de timer no frame, sem tocar no bundle.
       const speedProvider = resolveProviderByScriptUrl(url);
-      const usePgDirectorTick =
-        this.pgSpeedStrategy === "director-tick" && speedProvider?.id === "pg";
-      if (speedProvider && !usePgDirectorTick) {
+      if (speedProvider) {
         try {
           const response = await route.fetch();
           const body = await response.text();
