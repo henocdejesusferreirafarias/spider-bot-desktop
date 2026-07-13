@@ -6005,10 +6005,21 @@ export class BrowserRuntimeService {
   // canvas e sua remocao. O clique no canvas e o fallback para jogos sem loader DOM.
   let pgSawBlockingLayerAfterCanvas = false;
   let pgUserConfirmedReady = false;
-  // O runtime JDB guarda RAF/timers durante o boot. Instalamos wrappers dinamicos
-  // em 1x desde o inicio, mas so liberamos a taxa escolhida apos uma interacao
-  // entregue ao canvas — loaders DOM continuam acima dele e nao armam o speed.
-  let jdbUserConfirmedReady = !jdbGameDocument;
+  // O shell JDB monta o painel antes de remover o loader. Mantemos 1x enquanto
+  // esse loader estiver visivel e liberamos o speed quando os controles reais
+  // aparecem, sem depender de host, texto traduzido ou clique de aposta.
+  let jdbLoadingState = jdbGameDocument;
+  const isElementVisible = (element) => {
+    try {
+      if (!element || typeof window.getComputedStyle !== "function") return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' &&
+        Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+    } catch (e) {
+      return false;
+    }
+  };
   const isCanvasInteractiveAtCenter = (canvas) => {
     try {
       if (!canvas || typeof document.elementFromPoint !== "function") return false;
@@ -6043,10 +6054,22 @@ export class BrowserRuntimeService {
     writeAttr('data-rtc-game-ready', nextState ? '0' : '1');
     return changed;
   };
+  const refreshJdbLoadingState = () => {
+    if (!jdbGameDocument) return false;
+    let nextState = true;
+    try {
+      const controls = document.querySelector('#gameControlPanel,.spin-button');
+      const loader = document.querySelector('.loading-wrapper');
+      nextState = isElementVisible(loader) || !isElementVisible(controls);
+    } catch (e) {}
+    const changed = jdbLoadingState !== nextState;
+    jdbLoadingState = nextState;
+    return changed;
+  };
   const isPgLoadingOrInterstitial = () => pgLoadingState;
   const readDesiredRate = () => clamp(readAttr('data-rtc-speed') || initialSpeedRate);
   const readRate = () => (
-    isPgLoadingOrInterstitial() || (jdbGameDocument && !jdbUserConfirmedReady)
+    isPgLoadingOrInterstitial() || jdbLoadingState
       ? 1
       : readDesiredRate()
   );
@@ -6135,15 +6158,11 @@ export class BrowserRuntimeService {
   syncSpeed();
 
   if (jdbGameDocument) {
-    const confirmJdbReadyFromCanvasInteraction = (event) => {
-      try {
-        if (event.target && String(event.target.tagName || "").toLowerCase() === "canvas") {
-          jdbUserConfirmedReady = true;
-          syncSpeed();
-        }
-      } catch (e) {}
+    const refreshAndSyncJdbSpeed = () => {
+      if (refreshJdbLoadingState()) syncSpeed();
     };
-    try { document.addEventListener('pointerdown', confirmJdbReadyFromCanvasInteraction, true); } catch (e) {}
+    refreshAndSyncJdbSpeed();
+    nSI.call(window, refreshAndSyncJdbSpeed, 300);
   }
 
   if (isPgCocosFrame()) {
@@ -6239,7 +6258,6 @@ export class BrowserRuntimeService {
 
   nSI.call(window, () => {
     const r = readRate();
-    if (r === 1) return;
     try {
       for (const m of document.querySelectorAll('video,audio')) m.playbackRate = r;
       for (const an of (document.getAnimations ? document.getAnimations() : [])) an.playbackRate = r;

@@ -140,8 +140,12 @@ test("JDB installs dynamic clocks during early init even at 1x", () => {
   assert.match(script, /isJdbGameDocument/);
   assert.match(script, /const jdbGameDocument = isJdbGameDocument\(\)/);
   assert.match(script, /if \(jdbGameDocument\) return true/);
-  assert.match(script, /jdbUserConfirmedReady/);
+  assert.match(script, /jdbLoadingState/);
+  assert.match(script, /refreshJdbLoadingState/);
+  assert.match(script, /#gameControlPanel/);
+  assert.match(script, /\.loading-wrapper/);
   assert.match(script, /if \(jdbGameDocument\) installSpeed\(\)/);
+  assert.doesNotMatch(script, /const r = readRate\(\);\s*if \(r === 1\) return/);
   assert.match(script, /window\.Date = ScaledDate/);
   assert.match(
     script,
