@@ -71,6 +71,17 @@ const WG_PROFILE: ProviderTimingProfile = {
   speedRange: DEFAULT_SPEED_RANGE
 };
 
+// JDB abre o launcher em uma nova aba e o jogo em um iframe com hosts dinamicos.
+// A combinacao de parametros pertence ao launcher interno e foi observada em
+// jogos distintos (mType 8001 e 8048), sem depender do dominio de entrega.
+const JDB_PROFILE: ProviderTimingProfile = {
+  id: "jdb",
+  label: "JDB (HTML5/WebGL)",
+  gameFrameUrlPattern: /(?=[^#]*[?&]gVer=[^&#]+)(?=[^#]*[?&]gameType=\d+)(?=[^#]*[?&]mType=\d+)/i,
+  speedStrategy: "generic-timers",
+  speedRange: DEFAULT_SPEED_RANGE
+};
+
 // PP (Pragmatic Play) — PLACEHOLDER. TODO: preencher gameFrameUrlPattern a partir
 // da URL real do iframe de um jogo PP.
 const PP_PROFILE: ProviderTimingProfile = {
@@ -95,6 +106,7 @@ export const DEFAULT_PROVIDER_TIMING_PROFILE: ProviderTimingProfile = {
 export const PROVIDER_TIMING_PROFILES: readonly ProviderTimingProfile[] = [
   PG_PROFILE,
   WG_PROFILE,
+  JDB_PROFILE,
   PP_PROFILE
 ];
 

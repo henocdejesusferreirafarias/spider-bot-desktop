@@ -5917,8 +5917,20 @@ export class BrowserRuntimeService {
   const cocosDirectorTickPatterns = ${JSON.stringify(cocosDirectorTickFramePatternSources())}.map((s) => {
     try { return new RegExp(s, "i"); } catch (e) { return null; }
   }).filter(Boolean);
+  // A assinatura de query identifica o documento do jogo JDB mesmo quando uma
+  // variante o abre diretamente como pagina principal da nova aba.
+  const isJdbGameDocument = () => {
+    try {
+      const params = new URLSearchParams(window.location.search || "");
+      return params.has("gVer") && params.has("gameType") && params.has("mType");
+    } catch (e) {
+      return false;
+    }
+  };
+  const jdbGameDocument = isJdbGameDocument();
   const isKnownGameFrame = () => {
     try {
+      if (jdbGameDocument) return true;
       if (window.top === window) return false;
       const path = window.location.pathname || "";
       const href = window.location.href || "";
@@ -5986,6 +5998,10 @@ export class BrowserRuntimeService {
   // canvas e sua remocao. O clique no canvas e o fallback para jogos sem loader DOM.
   let pgSawBlockingLayerAfterCanvas = false;
   let pgUserConfirmedReady = false;
+  // O runtime JDB guarda RAF/timers durante o boot. Instalamos wrappers dinamicos
+  // em 1x desde o inicio, mas so liberamos a taxa escolhida apos uma interacao
+  // entregue ao canvas — loaders DOM continuam acima dele e nao armam o speed.
+  let jdbUserConfirmedReady = !jdbGameDocument;
   const isCanvasInteractiveAtCenter = (canvas) => {
     try {
       if (!canvas || typeof document.elementFromPoint !== "function") return false;
@@ -6022,7 +6038,11 @@ export class BrowserRuntimeService {
   };
   const isPgLoadingOrInterstitial = () => pgLoadingState;
   const readDesiredRate = () => clamp(readAttr('data-rtc-speed') || initialSpeedRate);
-  const readRate = () => (isPgLoadingOrInterstitial() ? 1 : readDesiredRate());
+  const readRate = () => (
+    isPgLoadingOrInterstitial() || (jdbGameDocument && !jdbUserConfirmedReady)
+      ? 1
+      : readDesiredRate()
+  );
   const syncGameSpeedRate = () => {
     try {
       window.__predatorGameSpeedRate = readRate();
@@ -6036,11 +6056,25 @@ export class BrowserRuntimeService {
   const nSI = window.setInterval;
   const nCI = window.clearInterval;
   const nRAF = window.requestAnimationFrame;
-  const nNow = Date.now;
+  const NativeDate = window.Date;
+  const nNow = NativeDate.now;
   const nPN = performance.now;
   const start = nNow();
   const scaled = (t) => Math.max(0, (Number(t) || 0) / readRate());
   const performanceStart = nPN.call(performance);
+  const virtualDateNow = () => Math.round(start + (nNow() - start) * readRate());
+  const ScaledDate = function(...args) {
+    if (!new.target) return new NativeDate(virtualDateNow()).toString();
+    return args.length === 0
+      ? Reflect.construct(NativeDate, [virtualDateNow()], new.target)
+      : Reflect.construct(NativeDate, args, new.target);
+  };
+  try {
+    Object.setPrototypeOf(ScaledDate, NativeDate);
+    ScaledDate.prototype = NativeDate.prototype;
+    Object.defineProperty(ScaledDate, 'name', { configurable: true, value: 'Date' });
+    Object.defineProperty(ScaledDate, 'now', { configurable: true, value: virtualDateNow });
+  } catch (e) {}
   let speedInstalled = false;
   const installSpeed = () => {
     if (speedInstalled) return;
@@ -6049,9 +6083,12 @@ export class BrowserRuntimeService {
     window.setInterval = (h, t, ...a) => nSI.call(window, h, scaled(t), ...a);
     if (nRAF) {
       window.requestAnimationFrame = (cb) =>
-        nRAF.call(window, (ts) => cb(start + (ts - start) * readRate()));
+        nRAF.call(window, (ts) => cb(performanceStart + (ts - performanceStart) * readRate()));
     }
-    try { Date.now = () => Math.round(start + (nNow() - start) * readRate()); } catch (e) {}
+    try {
+      if (jdbGameDocument) window.Date = ScaledDate;
+      else NativeDate.now = virtualDateNow;
+    } catch (e) {}
     try {
       Object.defineProperty(performance, 'now', {
         configurable: true,
@@ -6067,7 +6104,10 @@ export class BrowserRuntimeService {
     if (nRAF) {
       try { window.requestAnimationFrame = nRAF; } catch (e) {}
     }
-    try { Date.now = nNow; } catch (e) {}
+    try {
+      window.Date = NativeDate;
+      NativeDate.now = nNow;
+    } catch (e) {}
     try {
       Object.defineProperty(performance, 'now', { configurable: true, value: nPN });
     } catch (e) {}
@@ -6081,10 +6121,23 @@ export class BrowserRuntimeService {
       restoreSpeed();
       return;
     }
-    if (readRate() > 1) installSpeed();
+    if (jdbGameDocument) installSpeed();
+    else if (readRate() > 1) installSpeed();
     else restoreSpeed();
   };
   syncSpeed();
+
+  if (jdbGameDocument) {
+    const confirmJdbReadyFromCanvasInteraction = (event) => {
+      try {
+        if (event.target && String(event.target.tagName || "").toLowerCase() === "canvas") {
+          jdbUserConfirmedReady = true;
+          syncSpeed();
+        }
+      } catch (e) {}
+    };
+    try { document.addEventListener('pointerdown', confirmJdbReadyFromCanvasInteraction, true); } catch (e) {}
+  }
 
   if (isPgCocosFrame()) {
     let refreshPending = false;

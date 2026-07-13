@@ -133,6 +133,23 @@ test("PG only releases Speed Time after the shared ready signal", () => {
   assert.match(patchedBundle, /data-rtc-game-ready/);
 });
 
+test("JDB installs dynamic clocks during early init even at 1x", () => {
+  const { harness } = createMirrorHarness();
+  const script = harness.buildMainWorldControlsScript(1);
+
+  assert.match(script, /isJdbGameDocument/);
+  assert.match(script, /const jdbGameDocument = isJdbGameDocument\(\)/);
+  assert.match(script, /if \(jdbGameDocument\) return true/);
+  assert.match(script, /jdbUserConfirmedReady/);
+  assert.match(script, /if \(jdbGameDocument\) installSpeed\(\)/);
+  assert.match(script, /window\.Date = ScaledDate/);
+  assert.match(
+    script,
+    /performanceStart \+ \(ts - performanceStart\) \* readRate\(\)/
+  );
+  assert.doesNotMatch(script, /start \+ \(ts - start\) \* readRate\(\)/);
+});
+
 test("mirror capture script does not exclude child frames", () => {
   const { harness } = createMirrorHarness();
   const script = harness.buildMirrorCaptureScript(true);

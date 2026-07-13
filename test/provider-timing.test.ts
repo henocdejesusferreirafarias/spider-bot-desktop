@@ -48,3 +48,19 @@ test("WG Cocos pattern matches the observed launcher URL", () => {
   );
   assert.match(url.pathname, new RegExp(source, "i"));
 });
+
+test("JDB game frame resolves from its stable query signature on a dynamic host", () => {
+  const profile = resolveProviderByFrameUrl(
+    "https://dynamic-host.example/?isAPP=false&gVer=9716ef5&lang=pt&gameType=8&mType=8048&x=token"
+  );
+
+  assert.equal(profile?.id, "jdb");
+  assert.equal(profile?.speedStrategy, "generic-timers");
+});
+
+test("JDB timing does not claim an unrelated mType query", () => {
+  assert.equal(
+    resolveProviderByFrameUrl("https://example.com/?mType=8048"),
+    undefined
+  );
+});
