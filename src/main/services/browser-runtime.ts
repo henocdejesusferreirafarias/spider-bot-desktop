@@ -38,7 +38,8 @@ import {
   isKnownGameFrameUrl,
   knownGameFramePatternSources,
   patchGameSpeedScript,
-  resolveProviderByScriptUrl
+  resolveProviderByScriptUrl,
+  uhtDeltaTimeFramePatternSources
 } from "./provider-timing.js";
 import { AsyncSemaphore, resolveMaxConcurrentLaunches } from "./async-semaphore.js";
 import {
@@ -5924,6 +5925,9 @@ export class BrowserRuntimeService {
   const cocosDirectorTickPatterns = ${JSON.stringify(cocosDirectorTickFramePatternSources())}.map((s) => {
     try { return new RegExp(s, "i"); } catch (e) { return null; }
   }).filter(Boolean);
+  const uhtDeltaTimePatterns = ${JSON.stringify(uhtDeltaTimeFramePatternSources())}.map((s) => {
+    try { return new RegExp(s, "i"); } catch (e) { return null; }
+  }).filter(Boolean);
   // A assinatura de query identifica o documento do jogo JDB mesmo quando uma
   // variante o abre diretamente como pagina principal da nova aba.
   const isJdbGameDocument = () => {
@@ -5935,9 +5939,20 @@ export class BrowserRuntimeService {
     }
   };
   const jdbGameDocument = isJdbGameDocument();
+  const isUhtDeltaTimeDocument = () => {
+    try {
+      const path = window.location.pathname || "";
+      const href = window.location.href || "";
+      return uhtDeltaTimePatterns.some((pattern) => pattern.test(path) || pattern.test(href));
+    } catch (e) {
+      return false;
+    }
+  };
+  const uhtDeltaTimeDocument = isUhtDeltaTimeDocument();
   const isKnownGameFrame = () => {
     try {
       if (jdbGameDocument) return true;
+      if (uhtDeltaTimeDocument) return true;
       if (window.top === window) return false;
       const path = window.location.pathname || "";
       const href = window.location.href || "";
@@ -6067,9 +6082,10 @@ export class BrowserRuntimeService {
     return changed;
   };
   const isPgLoadingOrInterstitial = () => pgLoadingState;
+  const isUhtLoading = () => uhtDeltaTimeDocument && globalThis.loaderIsVisible !== false;
   const readDesiredRate = () => clamp(readAttr('data-rtc-speed') || initialSpeedRate);
   const readRate = () => (
-    isPgLoadingOrInterstitial() || jdbLoadingState
+    isPgLoadingOrInterstitial() || jdbLoadingState || isUhtLoading()
       ? 1
       : readDesiredRate()
   );
@@ -6151,6 +6167,10 @@ export class BrowserRuntimeService {
       restoreSpeed();
       return;
     }
+    if (uhtDeltaTimeDocument) {
+      restoreSpeed();
+      return;
+    }
     if (jdbGameDocument) installSpeed();
     else if (readRate() > 1) installSpeed();
     else restoreSpeed();
@@ -6163,6 +6183,39 @@ export class BrowserRuntimeService {
     };
     refreshAndSyncJdbSpeed();
     nSI.call(window, refreshAndSyncJdbSpeed, 300);
+  }
+
+  const installUhtDeltaTimeSpeed = () => {
+    try {
+      const time = globalThis.Time;
+      if (!time || typeof time.deltaTime !== "number") return false;
+      if (time.__predatorUhtDeltaTime) return true;
+      const descriptor = Object.getOwnPropertyDescriptor(time, "deltaTime");
+      if (!descriptor || !descriptor.configurable) return false;
+      let rawDelta = time.deltaTime;
+      Object.defineProperty(time, "deltaTime", {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get() { return rawDelta * readRate(); },
+        set(value) { rawDelta = Number(value) || 0; }
+      });
+      Object.defineProperty(time, "__predatorUhtDeltaTime", { value: true });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+  if (uhtDeltaTimeDocument) {
+    let attempts = 0;
+    const retryId = nSI.call(window, () => {
+      attempts += 1;
+      if (installUhtDeltaTimeSpeed() || attempts >= 300) {
+        nCI.call(window, retryId);
+      }
+    }, 50);
+    if (installUhtDeltaTimeSpeed()) {
+      nCI.call(window, retryId);
+    }
   }
 
   if (isPgCocosFrame()) {

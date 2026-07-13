@@ -154,6 +154,20 @@ test("JDB installs dynamic clocks during early init even at 1x", () => {
   assert.doesNotMatch(script, /start \+ \(ts - start\) \* readRate\(\)/);
 });
 
+test("PP scales only UHT deltaTime after its loader is gone", () => {
+  const { harness } = createMirrorHarness();
+  const script = harness.buildMainWorldControlsScript(5);
+
+  assert.match(script, /isUhtDeltaTimeDocument/);
+  assert.match(script, /loaderIsVisible !== false/);
+  assert.match(script, /__predatorUhtDeltaTime/);
+  assert.match(script, /rawDelta \* readRate\(\)/);
+  assert.match(
+    script,
+    /if \(uhtDeltaTimeDocument\) \{\s*restoreSpeed\(\);\s*return;/
+  );
+});
+
 test("mirror capture script does not exclude child frames", () => {
   const { harness } = createMirrorHarness();
   const script = harness.buildMirrorCaptureScript(true);
