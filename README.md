@@ -23,6 +23,17 @@ npm run check      # typecheck (electron + renderer)
 npm test           # unit tests
 ```
 
+## Speed Time
+
+O controle Speed Time suporta atualmente os provedores **PG, WG, JDB e PP**.
+Cada provedor usa um perfil de timing próprio, selecionado por sinais estáveis do
+documento do jogo em vez de depender dos domínios dinâmicos de entrega.
+
+Novos provedores serão adicionados conforme a necessidade. O registry e as
+estratégias ficam em `src/main/services/provider-timing.ts`; quando um engine já
+suportado puder ser reutilizado, a inclusão se limita ao perfil de dados. Engines
+com relógios diferentes exigem uma estratégia específica e validação manual.
+
 ## Build / release (Windows)
 
 ```powershell

@@ -5,6 +5,9 @@ import type { BrowserRuntimeService as BrowserRuntimeServiceType } from "../src/
 const { BrowserRuntimeService, projectMirrorFrameCoordinates } = await import(
   "../src/main/services/browser-runtime.js"
 );
+const { patchGameSpeedScript, resolveProviderByFrameUrl } = await import(
+  "../src/main/services/provider-timing.js"
+);
 const { AutomationRuntimeService, isPlausibleQrImageDimensions } = await import(
   "../src/main/services/automation-runtime.js"
 );
@@ -13,6 +16,7 @@ const { extractQrCode } = await import("../src/main/services/qr-dom.js");
 type MirrorRuntimeHarness = {
   applyMirrorStateToAllPages(enabled: boolean, strict: boolean): Promise<void>;
   buildMirrorCaptureScript(enabled: boolean): string;
+  buildMainWorldControlsScript(initialSpeedRate?: number): string;
   disableMirrorForUnavailableTargets(reason: string): void;
   handles: Map<string, { profileId: string; slotIndex: number }>;
   mirrorEnabled: boolean;
@@ -95,6 +99,73 @@ test("iframe coordinates are projected into the top-level viewport", () => {
 
   assert.equal(projected.xRatio, 0.3);
   assert.equal(projected.yRatio, 0.34375);
+});
+
+test("PG loading guard is reversible and has no Director tick experiment", () => {
+  const { harness } = createMirrorHarness();
+  const script = harness.buildMainWorldControlsScript(4);
+
+  assert.match(script, /pgLoadingState/);
+  assert.match(script, /new MutationObserver/);
+  assert.doesNotMatch(script, /__predatorPgSpeedUnlocked/);
+  assert.doesNotMatch(script, /__predatorPgSpeedGateReason/);
+  assert.doesNotMatch(script, /pgDirectorTickExperiment|cocos-director-tick-runtime/);
+});
+
+test("PG only releases Speed Time after the shared ready signal", () => {
+  const { harness } = createMirrorHarness();
+  const controlsScript = harness.buildMainWorldControlsScript(4);
+  const profile = resolveProviderByFrameUrl("https://m.j67z85nx4.com/1543462/index.html");
+  assert.ok(profile);
+
+  const patchedBundle = patchGameSpeedScript(
+    '"Director";"_timeScale";requestAnimationFrame();this._timeScale=1;',
+    4,
+    profile
+  );
+
+  assert.match(controlsScript, /elementFromPoint/);
+  assert.doesNotMatch(controlsScript, /tagName === "svg"|tagName === "img"/);
+  assert.match(controlsScript, /pgSawBlockingLayerAfterCanvas/);
+  assert.match(controlsScript, /pgUserConfirmedReady/);
+  assert.match(controlsScript, /addEventListener\('pointerdown'/);
+  assert.match(controlsScript, /data-rtc-game-ready/);
+  assert.match(patchedBundle, /data-rtc-game-ready/);
+});
+
+test("JDB installs dynamic clocks during early init even at 1x", () => {
+  const { harness } = createMirrorHarness();
+  const script = harness.buildMainWorldControlsScript(1);
+
+  assert.match(script, /isJdbGameDocument/);
+  assert.match(script, /const jdbGameDocument = isJdbGameDocument\(\)/);
+  assert.match(script, /if \(jdbGameDocument\) return true/);
+  assert.match(script, /jdbLoadingState/);
+  assert.match(script, /refreshJdbLoadingState/);
+  assert.match(script, /#gameControlPanel/);
+  assert.match(script, /\.loading-wrapper/);
+  assert.match(script, /if \(jdbGameDocument\) installSpeed\(\)/);
+  assert.doesNotMatch(script, /const r = readRate\(\);\s*if \(r === 1\) return/);
+  assert.match(script, /window\.Date = ScaledDate/);
+  assert.match(
+    script,
+    /performanceStart \+ \(ts - performanceStart\) \* readRate\(\)/
+  );
+  assert.doesNotMatch(script, /start \+ \(ts - start\) \* readRate\(\)/);
+});
+
+test("PP scales only UHT deltaTime after its loader is gone", () => {
+  const { harness } = createMirrorHarness();
+  const script = harness.buildMainWorldControlsScript(5);
+
+  assert.match(script, /isUhtDeltaTimeDocument/);
+  assert.match(script, /loaderIsVisible !== false/);
+  assert.match(script, /__predatorUhtDeltaTime/);
+  assert.match(script, /rawDelta \* readRate\(\)/);
+  assert.match(
+    script,
+    /if \(uhtDeltaTimeDocument\) \{\s*restoreSpeed\(\);\s*return;/
+  );
 });
 
 test("mirror capture script does not exclude child frames", () => {
