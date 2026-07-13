@@ -38,6 +38,7 @@ import {
   isKnownGameFrameUrl,
   knownGameFramePatternSources,
   patchGameSpeedScript,
+  resolveProviderByFrameUrl,
   resolveProviderByScriptUrl,
   uhtDeltaTimeFramePatternSources
 } from "./provider-timing.js";
@@ -2286,9 +2287,11 @@ export class BrowserRuntimeService {
     // motivo em vez de falhar calado. So age em frames de jogo reconhecidos --
     // nunca em telas de login/cadastro/deposito.
     page.on("framenavigated", (frame) => {
+      const provider = resolveProviderByFrameUrl(frame.url());
       if (!shouldMonitorGameLoadFrame({
         isMainFrame: frame === page.mainFrame(),
-        isKnownGameFrame: isKnownGameFrameUrl(frame.url())
+        isKnownGameFrame: provider !== undefined,
+        supportsAutomaticReload: provider?.supportsAutomaticFrameReload
       })) {
         return;
       }
@@ -2318,9 +2321,11 @@ export class BrowserRuntimeService {
     try {
       while (!page.isClosed() && !frame.isDetached()) {
         // Usuario saiu do jogo (voltou ao lobby): encerra o monitor.
+        const provider = resolveProviderByFrameUrl(frame.url());
         if (!shouldMonitorGameLoadFrame({
           isMainFrame: frame === page.mainFrame(),
-          isKnownGameFrame: isKnownGameFrameUrl(frame.url())
+          isKnownGameFrame: provider !== undefined,
+          supportsAutomaticReload: provider?.supportsAutomaticFrameReload
         })) {
           return;
         }

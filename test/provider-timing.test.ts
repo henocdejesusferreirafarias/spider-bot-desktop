@@ -56,6 +56,7 @@ test("JDB game frame resolves from its stable query signature on a dynamic host"
 
   assert.equal(profile?.id, "jdb");
   assert.equal(profile?.speedStrategy, "generic-timers");
+  assert.equal(profile?.supportsAutomaticFrameReload, false);
 });
 
 test("JDB timing does not claim an unrelated mType query", () => {

@@ -45,6 +45,9 @@ export interface ProviderTimingProfile {
   readonly engineBundleTokens?: readonly string[];
   readonly speedStrategy: EngineSpeedStrategy;
   readonly speedRange: { readonly min: number; readonly max: number };
+  // Alguns launchers usam tokens de navegacao descartaveis. Neles, recarregar
+  // automaticamente o frame nao recupera a carga e pode invalidar a sessao.
+  readonly supportsAutomaticFrameReload?: boolean;
 }
 
 const DEFAULT_SPEED_RANGE = { min: 1, max: 25 } as const;
@@ -83,7 +86,8 @@ const JDB_PROFILE: ProviderTimingProfile = {
   label: "JDB (HTML5/WebGL)",
   gameFrameUrlPattern: /(?=[^#]*[?&]gVer=[^&#]+)(?=[^#]*[?&]gameType=\d+)(?=[^#]*[?&]mType=\d+)/i,
   speedStrategy: "generic-timers",
-  speedRange: DEFAULT_SPEED_RANGE
+  speedRange: DEFAULT_SPEED_RANGE,
+  supportsAutomaticFrameReload: false
 };
 
 // PP usa hosts dinamicos, mas o documento real do engine UHT conserva este

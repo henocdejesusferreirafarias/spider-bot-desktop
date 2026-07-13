@@ -44,8 +44,13 @@ export type GameLoadOptions = {
 export function shouldMonitorGameLoadFrame(input: {
   isMainFrame: boolean;
   isKnownGameFrame: boolean;
+  supportsAutomaticReload?: boolean;
 }): boolean {
-  return !input.isMainFrame && input.isKnownGameFrame;
+  return (
+    !input.isMainFrame &&
+    input.isKnownGameFrame &&
+    input.supportsAutomaticReload !== false
+  );
 }
 
 // Decisao PURA de recuperacao de carga do jogo, a partir de sinais estruturais

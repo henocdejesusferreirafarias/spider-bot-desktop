@@ -99,3 +99,14 @@ test("recuperacao nunca recarrega a pagina principal que apenas hospeda o jogo",
     false
   );
 });
+
+test("recuperacao nao monitora provedor cujo frame nao aceita reload seguro", () => {
+  assert.equal(
+    shouldMonitorGameLoadFrame({
+      isMainFrame: false,
+      isKnownGameFrame: true,
+      supportsAutomaticReload: false
+    }),
+    false
+  );
+});
