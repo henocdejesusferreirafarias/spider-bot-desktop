@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   decideGameLoadRecovery,
-  GAME_LOADER_PATTERN
+  GAME_LOADER_PATTERN,
+  shouldMonitorGameLoadFrame
 } from "../src/main/services/game-load.js";
 
 // decideGameLoadRecovery: nucleo da recuperacao de carga do jogo. So age em
@@ -82,4 +83,19 @@ test("GAME_LOADER_PATTERN casa os textos de loader/lentidao conhecidos", () => {
   assert.match("A sua ligação à Internet está lenta", GAME_LOADER_PATTERN);
   assert.match("Atualizar", GAME_LOADER_PATTERN);
   assert.doesNotMatch("Rodada vencedora! Saldo: 100", GAME_LOADER_PATTERN);
+});
+
+test("recuperacao nunca recarrega a pagina principal que apenas hospeda o jogo", () => {
+  assert.equal(
+    shouldMonitorGameLoadFrame({ isMainFrame: true, isKnownGameFrame: true }),
+    false
+  );
+  assert.equal(
+    shouldMonitorGameLoadFrame({ isMainFrame: false, isKnownGameFrame: true }),
+    true
+  );
+  assert.equal(
+    shouldMonitorGameLoadFrame({ isMainFrame: false, isKnownGameFrame: false }),
+    false
+  );
 });

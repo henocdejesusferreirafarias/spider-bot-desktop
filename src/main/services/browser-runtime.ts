@@ -44,7 +44,8 @@ import { AsyncSemaphore, resolveMaxConcurrentLaunches } from "./async-semaphore.
 import {
   decideGameLoadRecovery,
   GAME_CANVAS_SELECTOR,
-  GAME_LOADER_PATTERN
+  GAME_LOADER_PATTERN,
+  shouldMonitorGameLoadFrame
 } from "./game-load.js";
 import {
   detectPlatformDescriptor,
@@ -2284,7 +2285,10 @@ export class BrowserRuntimeService {
     // motivo em vez de falhar calado. So age em frames de jogo reconhecidos --
     // nunca em telas de login/cadastro/deposito.
     page.on("framenavigated", (frame) => {
-      if (!isKnownGameFrameUrl(frame.url())) {
+      if (!shouldMonitorGameLoadFrame({
+        isMainFrame: frame === page.mainFrame(),
+        isKnownGameFrame: isKnownGameFrameUrl(frame.url())
+      })) {
         return;
       }
       void this.monitorGameFrameLoad(profileId, page, frame);
@@ -2313,7 +2317,10 @@ export class BrowserRuntimeService {
     try {
       while (!page.isClosed() && !frame.isDetached()) {
         // Usuario saiu do jogo (voltou ao lobby): encerra o monitor.
-        if (!isKnownGameFrameUrl(frame.url())) {
+        if (!shouldMonitorGameLoadFrame({
+          isMainFrame: frame === page.mainFrame(),
+          isKnownGameFrame: isKnownGameFrameUrl(frame.url())
+        })) {
           return;
         }
         const probe = await frame

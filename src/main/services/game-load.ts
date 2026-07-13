@@ -41,6 +41,13 @@ export type GameLoadOptions = {
   maxReloadAttempts?: number;
 };
 
+export function shouldMonitorGameLoadFrame(input: {
+  isMainFrame: boolean;
+  isKnownGameFrame: boolean;
+}): boolean {
+  return !input.isMainFrame && input.isKnownGameFrame;
+}
+
 // Decisao PURA de recuperacao de carga do jogo, a partir de sinais estruturais
 // (nao de espera fixa). Regras:
 //  - canvas presente E sem loader -> jogo comecou: "ready" (NUNCA recarrega um
