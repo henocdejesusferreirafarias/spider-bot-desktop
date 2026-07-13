@@ -5981,6 +5981,11 @@ export class BrowserRuntimeService {
   // Manter esse estado separado evita consultar DOM a cada frame/timer e permite
   // restaurar os relogios nativos durante reconexao, carregamento ou erro.
   let pgLoadingState = isPgCocosFrame();
+  // Um canvas pode aparecer antes de o loader grafico ser montado. No primeiro
+  // boot, so liberamos o Speed Time depois de observar um bloqueio sobre um
+  // canvas e sua remocao. O clique no canvas e o fallback para jogos sem loader DOM.
+  let pgSawBlockingLayerAfterCanvas = false;
+  let pgUserConfirmedReady = false;
   const isCanvasInteractiveAtCenter = (canvas) => {
     try {
       if (!canvas || typeof document.elementFromPoint !== "function") return false;
@@ -6000,10 +6005,13 @@ export class BrowserRuntimeService {
       const text = String(document.body && document.body.innerText || "");
       const loadingPattern = /A\\s*carregar|A\\s*iniciar\\s*sess[aã]o|INICIAR|Retorno\\s+para\\s+o\\s+Jogador|Internet\\s+est[aá]\\s+lenta|lig[aá]?[cç][aã]o\\s+[àa]\\s+Internet\\s+est[aá]\\s+lenta|Atualizar|Aguardar|Jogos\\s+PG\\s+Oficiais|Ignorar|Aceitar|verifica/i;
       const canvas = document.querySelector('#GameCanvas,canvas.gameCanvas,canvas');
-      if (!document.body || !canvas) {
-      } else if (loadingPattern.test(text)) {
-      } else if (!isCanvasInteractiveAtCenter(canvas)) {
-      } else {
+      const canvasInteractive = Boolean(canvas && isCanvasInteractiveAtCenter(canvas));
+      const loaderVisible = loadingPattern.test(text);
+      const blockedAfterCanvas = Boolean(canvas) && (!canvasInteractive || loaderVisible);
+      if (blockedAfterCanvas) {
+        pgSawBlockingLayerAfterCanvas = true;
+      }
+      if (document.body && canvas && canvasInteractive && !loaderVisible && (pgSawBlockingLayerAfterCanvas || pgUserConfirmedReady)) {
         nextState = false;
       }
     } catch (e) {}
@@ -6083,6 +6091,15 @@ export class BrowserRuntimeService {
     const refreshAndSyncSpeed = () => {
       if (refreshPgLoadingState()) syncSpeed();
     };
+    const confirmPgReadyFromCanvasInteraction = (event) => {
+      try {
+        const canvas = document.querySelector('#GameCanvas,canvas.gameCanvas,canvas');
+        if (canvas && event.target === canvas && isCanvasInteractiveAtCenter(canvas)) {
+          pgUserConfirmedReady = true;
+          refreshAndSyncSpeed();
+        }
+      } catch (e) {}
+    };
     const schedulePgLoadingRefresh = () => {
       if (refreshPending) return;
       refreshPending = true;
@@ -6099,6 +6116,7 @@ export class BrowserRuntimeService {
         subtree: true
       });
     } catch (e) {}
+    try { document.addEventListener('pointerdown', confirmPgReadyFromCanvasInteraction, true); } catch (e) {}
     nSI.call(window, refreshAndSyncSpeed, 300);
   }
 

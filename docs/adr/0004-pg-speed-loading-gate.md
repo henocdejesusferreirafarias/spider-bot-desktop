@@ -12,6 +12,8 @@ O experimento alternativo de `Director.tick` não era compatível com o runtime 
 
 Manter um estado local de loading apenas para frames PG. O estado é recalculado pela presença do canvas, por mensagens conhecidas de carregamento/intersticial e pela condição estrutural de o próprio canvas ser a camada interativa no seu centro, com atualização por `MutationObserver` com debounce de 80 ms e uma verificação nativa a cada 300 ms.
 
+No primeiro boot, um canvas interativo isolado não libera a aceleração: o estado só é liberado depois que uma camada bloqueadora foi observada sobre um canvas e desapareceu. Isso evita a janela em que o canvas surge antes do loader. Para jogos que entram diretamente no canvas sem camada DOM observável, o primeiro `pointerdown` entregue ao canvas libera a aceleração.
+
 Quando o estado muda para loading, `syncSpeed()` restaura os relógios nativos. Quando o jogo está pronto, o script publica `data-rtc-game-ready=1` e reaplica a velocidade escolhida pelo usuário. O getter `_timeScale` do bundle PG consome esse mesmo sinal e falha fechado em 1x enquanto ele não existir. Nenhuma consulta ao DOM é feita no caminho por frame de timer, RAF ou `Date`.
 
 ## Consequências
