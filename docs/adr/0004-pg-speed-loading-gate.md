@@ -4,13 +4,15 @@
 
 O Speed Time de PG acelera os relógios genéricos do navegador para o frame do jogo. Após a primeira tela jogável, um desbloqueio permanente fazia com que telas posteriores de carregamento, reconexão ou erro também fossem aceleradas. Isso podia antecipar timeouts internos e levar o jogo a acusar falha de conexão.
 
+Também foi observado que alguns jogos PG criam o canvas antes de concluir a carga e exibem um loader gráfico em SVG sobre ele. Portanto, a presença do canvas, isoladamente, não é um sinal de prontidão.
+
 O experimento alternativo de `Director.tick` não era compatível com o runtime PG observado e foi removido, junto com sua flag e telemetria temporárias.
 
 ## Decisão
 
-Manter um estado local de loading apenas para frames PG. O estado é recalculado pela presença do canvas e por mensagens conhecidas de carregamento/intersticial, com atualização por `MutationObserver` com debounce de 80 ms e uma verificação nativa a cada 300 ms.
+Manter um estado local de loading apenas para frames PG. O estado é recalculado pela presença do canvas, por mensagens conhecidas de carregamento/intersticial e por um indicador gráfico SVG/IMG central sobre o canvas, com atualização por `MutationObserver` com debounce de 80 ms e uma verificação nativa a cada 300 ms.
 
-Quando o estado muda para loading, `syncSpeed()` restaura os relógios nativos. Quando o canvas volta a estar disponível sem tela de loading, `syncSpeed()` reaplica a velocidade escolhida pelo usuário. Nenhuma consulta ao DOM é feita no caminho por frame de timer, RAF ou `Date`.
+Quando o estado muda para loading, `syncSpeed()` restaura os relógios nativos. Quando o jogo está pronto, o script publica `data-rtc-game-ready=1` e reaplica a velocidade escolhida pelo usuário. O getter `_timeScale` do bundle PG consome esse mesmo sinal e falha fechado em 1x enquanto ele não existir. Nenhuma consulta ao DOM é feita no caminho por frame de timer, RAF ou `Date`.
 
 ## Consequências
 

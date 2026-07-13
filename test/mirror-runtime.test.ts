@@ -5,6 +5,9 @@ import type { BrowserRuntimeService as BrowserRuntimeServiceType } from "../src/
 const { BrowserRuntimeService, projectMirrorFrameCoordinates } = await import(
   "../src/main/services/browser-runtime.js"
 );
+const { patchGameSpeedScript, resolveProviderByFrameUrl } = await import(
+  "../src/main/services/provider-timing.js"
+);
 const { AutomationRuntimeService, isPlausibleQrImageDimensions } = await import(
   "../src/main/services/automation-runtime.js"
 );
@@ -107,6 +110,23 @@ test("PG loading guard is reversible and has no Director tick experiment", () =>
   assert.doesNotMatch(script, /__predatorPgSpeedUnlocked/);
   assert.doesNotMatch(script, /__predatorPgSpeedGateReason/);
   assert.doesNotMatch(script, /pgDirectorTickExperiment|cocos-director-tick-runtime/);
+});
+
+test("PG only releases Speed Time after the shared ready signal", () => {
+  const { harness } = createMirrorHarness();
+  const controlsScript = harness.buildMainWorldControlsScript(4);
+  const profile = resolveProviderByFrameUrl("https://m.j67z85nx4.com/1543462/index.html");
+  assert.ok(profile);
+
+  const patchedBundle = patchGameSpeedScript(
+    '"Director";"_timeScale";requestAnimationFrame();this._timeScale=1;',
+    4,
+    profile
+  );
+
+  assert.match(controlsScript, /elementsFromPoint/);
+  assert.match(controlsScript, /data-rtc-game-ready/);
+  assert.match(patchedBundle, /data-rtc-game-ready/);
 });
 
 test("mirror capture script does not exclude child frames", () => {

@@ -5981,20 +5981,48 @@ export class BrowserRuntimeService {
   // Manter esse estado separado evita consultar DOM a cada frame/timer e permite
   // restaurar os relogios nativos durante reconexao, carregamento ou erro.
   let pgLoadingState = isPgCocosFrame();
+  const isCanvasCoveredAtCenter = (canvas) => {
+    try {
+      if (!canvas || typeof document.elementsFromPoint !== "function") return false;
+      const canvasRect = canvas.getBoundingClientRect();
+      if (canvasRect.width < 1 || canvasRect.height < 1) return true;
+      const x = canvasRect.left + canvasRect.width / 2;
+      const y = canvasRect.top + canvasRect.height / 2;
+      const stack = document.elementsFromPoint(x, y);
+      const canvasIndex = stack.indexOf(canvas);
+      if (canvasIndex < 1) return false;
+      return stack.slice(0, canvasIndex).some((element) => {
+        const style = window.getComputedStyle(element);
+        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+        const rect = element.getBoundingClientRect();
+        const tagName = String(element.tagName || "").toLowerCase();
+        return (
+          (tagName === "svg" || tagName === "img") &&
+          rect.width >= canvasRect.width * 0.2 &&
+          rect.height >= canvasRect.height * 0.08
+        );
+      });
+    } catch (e) {
+      return false;
+    }
+  };
   const refreshPgLoadingState = () => {
     if (!isPgCocosFrame()) return false;
     let nextState = true;
     try {
       const text = String(document.body && document.body.innerText || "");
       const loadingPattern = /A\\s*carregar|A\\s*iniciar\\s*sess[aã]o|INICIAR|Retorno\\s+para\\s+o\\s+Jogador|Internet\\s+est[aá]\\s+lenta|lig[aá]?[cç][aã]o\\s+[àa]\\s+Internet\\s+est[aá]\\s+lenta|Atualizar|Aguardar|Jogos\\s+PG\\s+Oficiais|Ignorar|Aceitar|verifica/i;
-      if (!document.body || !document.querySelector('#GameCanvas,canvas.gameCanvas,canvas')) {
+      const canvas = document.querySelector('#GameCanvas,canvas.gameCanvas,canvas');
+      if (!document.body || !canvas) {
       } else if (loadingPattern.test(text)) {
+      } else if (isCanvasCoveredAtCenter(canvas)) {
       } else {
         nextState = false;
       }
     } catch (e) {}
     const changed = pgLoadingState !== nextState;
     pgLoadingState = nextState;
+    writeAttr('data-rtc-game-ready', nextState ? '0' : '1');
     return changed;
   };
   const isPgLoadingOrInterstitial = () => pgLoadingState;

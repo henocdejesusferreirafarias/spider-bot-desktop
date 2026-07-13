@@ -159,8 +159,8 @@ function clampToRange(rate: number, profile: ProviderTimingProfile): number {
 }
 
 // Estrategia Cocos/PG: substitui `this._timeScale = 1` por um getter que le o
-// fator de velocidade (data-rtc-speed / data-pg-speed-rate / localStorage) e
-// respeita telas de loading. Migrado 1:1 de browser-runtime.patchPgGameSpeedScript.
+// fator de velocidade somente depois que o script do mundo principal marca o
+// frame como pronto. O bundle falha fechado em 1x enquanto o loading existir.
 function patchCocosTimeScale(body: string, rate: number, profile: ProviderTimingProfile): string {
   const speedRate = clampToRange(rate, profile);
   const { min, max } = profile.speedRange;
@@ -173,7 +173,7 @@ function patchCocosTimeScale(body: string, rate: number, profile: ProviderTiming
   }
 
   const gameSpeedGetter =
-    `Object.defineProperty(this,"_timeScale",{configurable:true,get:function(){try{var d=globalThis.document;if(!d||!d.body)return 1;var text=String(d.body.innerText||"");var loading=/A\\s*carregar|A\\s*iniciar\\s*sess[aã]o|INICIAR|Retorno\\s+para\\s+o\\s+Jogador|Internet\\s+est[aá]\\s+lenta|lig[aá]?[cç][aã]o\\s+[àa]\\s+Internet\\s+est[aá]\\s+lenta|Aparentemente|Atualizar|Aguardar|Jogos\\s+PG\\s+Oficiais|Ignorar|Aceitar|verifica|Desative\\s+p[aá]ginas\\s+inativas/i.test(text);if(loading||!d.querySelector("#GameCanvas,canvas.gameCanvas,canvas"))return 1;var root=d.documentElement;var v=root&&(root.getAttribute("data-rtc-speed")||root.getAttribute("data-pg-speed-rate"));if(!v&&globalThis.localStorage)v=globalThis.localStorage.getItem("__pg_speed_rate");var n=Number(v);return Math.max(${min},Math.min(${max},Number.isFinite(n)?n:${JSON.stringify(speedRate)}))}catch(e){return 1}},set:function(v){try{this.__predatorOriginalTimeScale=v}catch(e){}}})`;
+    `Object.defineProperty(this,"_timeScale",{configurable:true,get:function(){try{var d=globalThis.document;var root=d&&d.documentElement;if(!root||root.getAttribute("data-rtc-game-ready")!=="1")return 1;var v=root.getAttribute("data-rtc-speed")||root.getAttribute("data-pg-speed-rate");if(!v&&globalThis.localStorage)v=globalThis.localStorage.getItem("__pg_speed_rate");var n=Number(v);return Math.max(${min},Math.min(${max},Number.isFinite(n)?n:${JSON.stringify(speedRate)}))}catch(e){return 1}},set:function(v){try{this.__predatorOriginalTimeScale=v}catch(e){}}})`;
   const patched = body
     .replace(/this\["_timeScale"\]\s*=\s*1/g, gameSpeedGetter)
     .replace(/this\['_timeScale'\]\s*=\s*1/g, gameSpeedGetter)
