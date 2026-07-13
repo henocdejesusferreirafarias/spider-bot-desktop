@@ -5981,27 +5981,14 @@ export class BrowserRuntimeService {
   // Manter esse estado separado evita consultar DOM a cada frame/timer e permite
   // restaurar os relogios nativos durante reconexao, carregamento ou erro.
   let pgLoadingState = isPgCocosFrame();
-  const isCanvasCoveredAtCenter = (canvas) => {
+  const isCanvasInteractiveAtCenter = (canvas) => {
     try {
-      if (!canvas || typeof document.elementsFromPoint !== "function") return false;
+      if (!canvas || typeof document.elementFromPoint !== "function") return false;
       const canvasRect = canvas.getBoundingClientRect();
-      if (canvasRect.width < 1 || canvasRect.height < 1) return true;
+      if (canvasRect.width < 1 || canvasRect.height < 1) return false;
       const x = canvasRect.left + canvasRect.width / 2;
       const y = canvasRect.top + canvasRect.height / 2;
-      const stack = document.elementsFromPoint(x, y);
-      const canvasIndex = stack.indexOf(canvas);
-      if (canvasIndex < 1) return false;
-      return stack.slice(0, canvasIndex).some((element) => {
-        const style = window.getComputedStyle(element);
-        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
-        const rect = element.getBoundingClientRect();
-        const tagName = String(element.tagName || "").toLowerCase();
-        return (
-          (tagName === "svg" || tagName === "img") &&
-          rect.width >= canvasRect.width * 0.2 &&
-          rect.height >= canvasRect.height * 0.08
-        );
-      });
+      return document.elementFromPoint(x, y) === canvas;
     } catch (e) {
       return false;
     }
@@ -6015,7 +6002,7 @@ export class BrowserRuntimeService {
       const canvas = document.querySelector('#GameCanvas,canvas.gameCanvas,canvas');
       if (!document.body || !canvas) {
       } else if (loadingPattern.test(text)) {
-      } else if (isCanvasCoveredAtCenter(canvas)) {
+      } else if (!isCanvasInteractiveAtCenter(canvas)) {
       } else {
         nextState = false;
       }

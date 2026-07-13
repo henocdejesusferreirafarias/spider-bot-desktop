@@ -124,7 +124,8 @@ test("PG only releases Speed Time after the shared ready signal", () => {
     profile
   );
 
-  assert.match(controlsScript, /elementsFromPoint/);
+  assert.match(controlsScript, /elementFromPoint/);
+  assert.doesNotMatch(controlsScript, /tagName === "svg"|tagName === "img"/);
   assert.match(controlsScript, /data-rtc-game-ready/);
   assert.match(patchedBundle, /data-rtc-game-ready/);
 });
