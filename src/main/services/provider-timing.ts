@@ -22,7 +22,11 @@
 
 import type { Frame, Page } from "patchright";
 
-export type EngineSpeedStrategy = "cocos-timescale" | "cocos-director-tick" | "generic-timers";
+export type EngineSpeedStrategy =
+  | "cocos-timescale"
+  | "cocos-director-tick"
+  | "uht-delta-time"
+  | "generic-timers";
 
 export interface ProviderTimingProfile {
   readonly id: string;
@@ -82,13 +86,13 @@ const JDB_PROFILE: ProviderTimingProfile = {
   speedRange: DEFAULT_SPEED_RANGE
 };
 
-// PP (Pragmatic Play) — PLACEHOLDER. TODO: preencher gameFrameUrlPattern a partir
-// da URL real do iframe de um jogo PP.
+// PP usa hosts dinamicos, mas o documento real do engine UHT conserva este
+// pathname. O wrapper /gs2c/playGame.do fica fora do gate de Speed Time.
 const PP_PROFILE: ProviderTimingProfile = {
   id: "pp",
-  label: "Pragmatic Play",
-  gameFrameUrlPattern: /gamesstatic|pragmaticplay|\/pp\/[^/]+\/index\.html$/i, // TODO: confirmar com URL real
-  speedStrategy: "generic-timers",
+  label: "Pragmatic Play (UHT)",
+  gameFrameUrlPattern: /\/gs2c\/html5Game\.do$/i,
+  speedStrategy: "uht-delta-time",
   speedRange: DEFAULT_SPEED_RANGE
 };
 
@@ -205,6 +209,8 @@ export function patchGameSpeedScript(body: string, rate: number, profile: Provid
   switch (profile.speedStrategy) {
     case "cocos-timescale":
       return patchCocosTimeScale(body, rate, profile);
+    case "cocos-director-tick":
+    case "uht-delta-time":
     case "generic-timers":
     default:
       return body;
@@ -222,6 +228,13 @@ export function knownGameFramePatternSources(): string[] {
 export function cocosDirectorTickFramePatternSources(): string[] {
   return PROVIDER_TIMING_PROFILES
     .filter((profile) => profile.speedStrategy === "cocos-director-tick")
+    .map((profile) => profile.gameFrameUrlPattern.source);
+}
+
+// Padroes cujo runtime expoe o delta global do engine UHT.
+export function uhtDeltaTimeFramePatternSources(): string[] {
+  return PROVIDER_TIMING_PROFILES
+    .filter((profile) => profile.speedStrategy === "uht-delta-time")
     .map((profile) => profile.gameFrameUrlPattern.source);
 }
 
