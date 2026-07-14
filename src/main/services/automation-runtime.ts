@@ -862,7 +862,16 @@ export class AutomationRuntimeService {
       }
 
       step = "withdrawal-management";
-      const management = await programmaticWithdrawalManagementAction(spa);
+      let management = await programmaticWithdrawalManagementAction(spa);
+      const managementDeadline = Date.now() + PIX_MS(8000);
+      while (
+        !management.ok &&
+        management.reason === "management-action-absent" &&
+        Date.now() < managementDeadline
+      ) {
+        await session.page.waitForTimeout(200).catch(() => undefined);
+        management = await programmaticWithdrawalManagementAction(spa);
+      }
       if (!management.ok) {
         throw new Error(`gestao de saques indisponivel: ${management.reason ?? "desconhecido"} (${management.diag ?? "sem diagnostico"})`);
       }

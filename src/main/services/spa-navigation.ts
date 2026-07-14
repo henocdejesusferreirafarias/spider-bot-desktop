@@ -944,8 +944,14 @@ export async function programmaticWithdrawalManagementAction(
         }
       }
 
-      const highestScore = candidates.reduce((score, candidate) => Math.max(score, candidate.score), 0);
-      const best = candidates.filter((candidate) => candidate.score === highestScore);
+        const highestScore = candidates.reduce((score, candidate) => Math.max(score, candidate.score), 0);
+        const best = Array.from(
+          new Map(
+            candidates
+              .filter((candidate) => candidate.score === highestScore)
+              .map((candidate) => [candidate.listener, candidate])
+          ).values()
+        );
       if (best.length === 0) {
         return { ok: false, reason: "management-action-absent", diag: "candidates=0" };
       }
