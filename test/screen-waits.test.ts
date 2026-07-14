@@ -3,7 +3,8 @@ import test from "node:test";
 import type { Frame, Page } from "patchright";
 import {
   waitForDepositSurface,
-  waitForProfileSurface
+  waitForProfileSurface,
+  waitForWithdrawalManagementDestination
 } from "../src/main/services/screen-waits.js";
 
 // A camada de esperas condicionais (screen-waits) faz polling de predicados de
@@ -59,4 +60,13 @@ test("waitForDepositSurface: retorna true assim que a superficie de deposito apa
 test("waitForDepositSurface: retorna a checagem final (false) no timeout, sem lancar", async () => {
   const page = fakePage(async () => false);
   assert.equal(await waitForDepositSurface(page, 30), false);
+});
+
+test("waitForWithdrawalManagementDestination: retorna setup assim que a superficie e confirmada", async () => {
+  const page = fakePage(async () => true);
+
+  assert.equal(
+    await waitForWithdrawalManagementDestination(page, 2000),
+    "needs_withdrawal_password"
+  );
 });

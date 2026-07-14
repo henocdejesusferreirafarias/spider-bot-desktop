@@ -6,6 +6,8 @@ import {
   hasWithdrawalPasswordSetupSurface,
   hasWithdrawalAccountSurface,
   hasWithdrawalRequestSurface,
+  classifyWithdrawalManagementDestination,
+  type WithdrawalManagementDestination,
   hasVisibleNumberKeyboard,
   hasDepositSurface,
   hasProfileSurface
@@ -103,6 +105,23 @@ export async function waitForWithdrawalRequestSurface(page: Page, timeoutMs: num
   }
 
   return hasWithdrawalRequestSurface(page);
+}
+
+// Espera por um destino confirmado apos a Gestao de saques. O timeout e apenas
+// teto de seguranca; sucesso exige uma superficie real, nunca somente a rota.
+export async function waitForWithdrawalManagementDestination(
+  page: Page,
+  timeoutMs: number
+): Promise<WithdrawalManagementDestination> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const destination = await classifyWithdrawalManagementDestination(page);
+    if (destination !== "unknown") {
+      return destination;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return classifyWithdrawalManagementDestination(page);
 }
 
 export async function waitForAddPixModal(page: Page, timeoutMs: number): Promise<boolean> {

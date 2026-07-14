@@ -581,6 +581,46 @@ export async function hasExistingWithdrawalPasswordModal(page: Page): Promise<bo
     .catch(() => false);
 }
 
+export type WithdrawalManagementDestination =
+  | "needs_withdrawal_password"
+  | "withdrawal_ready"
+  | "unknown";
+
+export function decideWithdrawalManagementDestination(input: {
+  hasPasswordSetupSurface: boolean;
+  hasWithdrawalAccountSurface: boolean;
+  hasWithdrawalRequestSurface: boolean;
+}): WithdrawalManagementDestination {
+  if (input.hasPasswordSetupSurface) {
+    return "needs_withdrawal_password";
+  }
+  if (input.hasWithdrawalAccountSurface || input.hasWithdrawalRequestSurface) {
+    return "withdrawal_ready";
+  }
+  return "unknown";
+}
+
+// Classifica o estado apos o listener de Gestao de saques. A URL nunca e
+// suficiente por si: exige superficie de setup ou de saque renderizada.
+export async function classifyWithdrawalManagementDestination(
+  page: Page
+): Promise<WithdrawalManagementDestination> {
+  const [
+    passwordSetupSurface,
+    withdrawalAccountSurface,
+    withdrawalRequestSurface
+  ] = await Promise.all([
+    hasWithdrawalPasswordSetupSurface(page),
+    hasWithdrawalAccountSurface(page),
+    hasWithdrawalRequestSurface(page)
+  ]);
+  return decideWithdrawalManagementDestination({
+    hasPasswordSetupSurface: passwordSetupSurface,
+    hasWithdrawalAccountSurface: withdrawalAccountSurface,
+    hasWithdrawalRequestSurface: withdrawalRequestSurface
+  });
+}
+
 export async function hasVisibleNumberKeyboard(page: Page): Promise<boolean> {
   const frame = resolveContentFrame(page);
   return frame

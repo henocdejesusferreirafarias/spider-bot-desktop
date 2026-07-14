@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Frame, Page } from "patchright";
 import {
+  decideWithdrawalManagementDestination,
   hasDepositSurface,
   isDetachedDepositRouteState,
   decideRegistrationCompletion
@@ -183,4 +184,37 @@ test("hasDepositSurface: retorna false quando o evaluate rejeita (guard do catch
     }
   } as unknown as Page;
   assert.equal(await hasDepositSurface(page), false);
+});
+
+test("Withdrawal Management destination requires the password setup surface", () => {
+  assert.equal(
+    decideWithdrawalManagementDestination({
+      hasPasswordSetupSurface: true,
+      hasWithdrawalAccountSurface: true,
+      hasWithdrawalRequestSurface: true
+    }),
+    "needs_withdrawal_password"
+  );
+});
+
+test("Withdrawal Management destination accepts a real withdrawal surface", () => {
+  assert.equal(
+    decideWithdrawalManagementDestination({
+      hasPasswordSetupSurface: false,
+      hasWithdrawalAccountSurface: true,
+      hasWithdrawalRequestSurface: false
+    }),
+    "withdrawal_ready"
+  );
+});
+
+test("Withdrawal Management destination stays unknown without a confirmed surface", () => {
+  assert.equal(
+    decideWithdrawalManagementDestination({
+      hasPasswordSetupSurface: false,
+      hasWithdrawalAccountSurface: false,
+      hasWithdrawalRequestSurface: false
+    }),
+    "unknown"
+  );
 });
