@@ -545,6 +545,44 @@ test("Withdrawal Management invokes the unique live Vue listener", async () => {
   assert.equal(calls, 1);
 });
 
+test("Withdrawal Management prefers the specific management action over generic withdrawals", async () => {
+  let managementCalls = 0;
+  let genericWithdrawalCalls = 0;
+  const vueEventMap = Symbol("_vei");
+  const management = {
+    [vueEventMap]: {
+      onClick: Object.assign(() => undefined, {
+        value: () => {
+          managementCalls += 1;
+        }
+      })
+    },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Gestão de saques"
+  };
+  const genericWithdrawal = {
+    [vueEventMap]: {
+      onClick: Object.assign(() => undefined, {
+        value: () => {
+          genericWithdrawalCalls += 1;
+        }
+      })
+    },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Saques"
+  };
+  const page = {
+    evaluate: async (callback: () => unknown) =>
+      withRuntimeDocument([genericWithdrawal, management], callback)
+  } as unknown as Page;
+
+  const result = await programmaticWithdrawalManagementAction(page);
+
+  assert.equal(result.ok, true);
+  assert.equal(managementCalls, 1);
+  assert.equal(genericWithdrawalCalls, 0);
+});
+
 test("Withdrawal Management deduplicates nested elements with the same Vue listener", async () => {
   let calls = 0;
   const vueEventMap = Symbol("_vei");

@@ -881,6 +881,7 @@ export async function programmaticWithdrawalManagementAction(
       };
       const alias = /gestao\s*(?:de\s*)?saques?|saques?|withdraw(?:al)?|cash\s*out/;
       const exactAlias = /^(?:gestao\s*(?:de\s*)?saques?|saques?|withdraw(?:al)?|cash\s*out)$/;
+      const managementAlias = /(?:gestao|management)\s*(?:de\s*)?(?:saques?|withdraw(?:al)?|cash\s*out)/;
       const runtime = globalThis as unknown as {
         MouseEvent?: new (type: string, init: { bubbles: boolean; cancelable: boolean; view: unknown }) => unknown;
         document: { querySelectorAll: (selector: string) => ArrayLike<RuntimeElement> };
@@ -936,7 +937,12 @@ export async function programmaticWithdrawalManagementAction(
               label,
               listener: listener as (...args: unknown[]) => unknown,
               listenerKey: listenerKey ?? "onClick",
-              score: (exactAlias.test(label) ? 200 : 100) + (alias.test(attrs) ? 20 : 0)
+              score:
+                (managementAlias.test(label)
+                  ? 300
+                  : exactAlias.test(label)
+                    ? 200
+                    : 100) + (managementAlias.test(attrs) ? 30 : alias.test(attrs) ? 20 : 0)
             });
             break;
           }
