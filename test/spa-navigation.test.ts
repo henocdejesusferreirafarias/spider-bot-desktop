@@ -4,6 +4,7 @@ import type { Page } from "patchright";
 import {
   programmaticDeposit,
   programmaticPixUiAction,
+  programmaticWithdrawalManagementAction,
   waitForSpaRouter
 } from "../src/main/services/spa-navigation.js";
 
@@ -516,6 +517,58 @@ test("PIX registration submits its form without pressing the confirm button", as
 
   assert.equal(result.ok, true);
   assert.equal(submitCalls, 1);
+});
+
+test("Withdrawal Management invokes the unique live Vue listener", async () => {
+  let calls = 0;
+  const vueEventMap = Symbol("_vei");
+  const invoker = Object.assign(() => undefined, {
+    value: (event: { type?: string }) => {
+      assert.equal(event.type, "click");
+      calls += 1;
+    }
+  });
+  const element = {
+    [vueEventMap]: { onClick: invoker },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Gestão de saques"
+  };
+  const page = {
+    evaluate: async (callback: () => unknown) =>
+      withRuntimeDocument([element], callback)
+  } as unknown as Page;
+
+  const result = await programmaticWithdrawalManagementAction(page);
+
+  assert.equal(result.ok, true);
+  assert.match(result.diag ?? "", /vue-listener/);
+  assert.equal(calls, 1);
+});
+
+test("Withdrawal Management refuses ambiguous live Vue listeners", async () => {
+  let calls = 0;
+  const vueEventMap = Symbol("_vei");
+  const makeElement = () => ({
+    [vueEventMap]: {
+      onClick: Object.assign(() => undefined, {
+        value: () => {
+          calls += 1;
+        }
+      })
+    },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Gestão de saques"
+  });
+  const page = {
+    evaluate: async (callback: () => unknown) =>
+      withRuntimeDocument([makeElement(), makeElement()], callback)
+  } as unknown as Page;
+
+  const result = await programmaticWithdrawalManagementAction(page);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "management-action-ambiguous");
+  assert.equal(calls, 0);
 });
 
 // waitForSpaRouter substitui os loops de probe inline (waitForTimeout fixo) por uma

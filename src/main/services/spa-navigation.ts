@@ -835,6 +835,156 @@ export interface ProgrammaticPixUiResult {
   diag?: string;
 }
 
+export interface ProgrammaticWithdrawalManagementResult {
+  ok: boolean;
+  reason?:
+    | "management-action-absent"
+    | "management-action-ambiguous"
+    | "management-listener-failed";
+  diag?: string;
+}
+
+// Aciona a mesma acao viva que o usuario seleciona no Perfil para abrir a
+// gestao de saques. A referencia do listener e efemera, por isso ela e
+// descoberta novamente no documento atual em cada chamada.
+export async function programmaticWithdrawalManagementAction(
+  spa: SpaHandle
+): Promise<ProgrammaticWithdrawalManagementResult> {
+  return spa
+    .evaluate(() => {
+      type Rec = Record<PropertyKey, unknown>;
+      type RuntimeElement = Rec & {
+        getBoundingClientRect?: () => { height: number; width: number };
+        parentElement?: RuntimeElement | null;
+        textContent?: string | null;
+      };
+      const isObj = (value: unknown): value is Rec =>
+        Boolean(value) && (typeof value === "object" || typeof value === "function");
+      const read = (target: unknown, key: PropertyKey): unknown => {
+        if (!isObj(target)) return undefined;
+        try {
+          return target[key];
+        } catch {
+          return undefined;
+        }
+      };
+      const normalize = (value: unknown) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element: RuntimeElement): boolean => {
+        const rect = element.getBoundingClientRect?.();
+        return !rect || (rect.width > 8 && rect.height > 8);
+      };
+      const alias = /gestao\s*(?:de\s*)?saques?|saques?|withdraw(?:al)?|cash\s*out/;
+      const exactAlias = /^(?:gestao\s*(?:de\s*)?saques?|saques?|withdraw(?:al)?|cash\s*out)$/;
+      const runtime = globalThis as unknown as {
+        MouseEvent?: new (type: string, init: { bubbles: boolean; cancelable: boolean; view: unknown }) => unknown;
+        document: { querySelectorAll: (selector: string) => ArrayLike<RuntimeElement> };
+      };
+      const candidates: Array<{
+        element: RuntimeElement;
+        label: string;
+        listener: (...args: unknown[]) => unknown;
+        listenerKey: string;
+        score: number;
+      }> = [];
+      const seen = new Set<RuntimeElement>();
+
+      for (const labelElement of Array.from(runtime.document.querySelectorAll("body, body *"))) {
+        if (!visible(labelElement)) continue;
+        const label = normalize(labelElement.textContent);
+        const attrs = normalize(
+          [
+            read(labelElement, "id"),
+            read(labelElement, "className"),
+            read(labelElement, "role"),
+            read(labelElement, "ariaLabel"),
+            read(labelElement, "title")
+          ].join(" ")
+        );
+        if (!alias.test(`${label} ${attrs}`)) continue;
+
+        let element: RuntimeElement | null | undefined = labelElement;
+        for (let depth = 0; element && depth < 7; depth += 1) {
+          if (seen.has(element)) {
+            element = element.parentElement;
+            continue;
+          }
+          let listener: unknown;
+          let listenerKey: string | undefined;
+          for (const key of Reflect.ownKeys(element)) {
+            const holder = read(element, key);
+            const onClick = read(holder, "onClick") ?? read(holder, "onclick");
+            if (typeof onClick === "function") {
+              listener = read(onClick, "value") ?? onClick;
+              listenerKey = String(key);
+              break;
+            }
+          }
+          if (listener === undefined && typeof read(element, "onclick") === "function") {
+            listener = read(element, "onclick");
+            listenerKey = "onclick";
+          }
+          if (typeof listener === "function") {
+            seen.add(element);
+            candidates.push({
+              element,
+              label,
+              listener,
+              listenerKey: listenerKey ?? "onClick",
+              score: (exactAlias.test(label) ? 200 : 100) + (alias.test(attrs) ? 20 : 0)
+            });
+            break;
+          }
+          element = element.parentElement;
+        }
+      }
+
+      const highestScore = candidates.reduce((score, candidate) => Math.max(score, candidate.score), 0);
+      const best = candidates.filter((candidate) => candidate.score === highestScore);
+      if (best.length === 0) {
+        return { ok: false, reason: "management-action-absent", diag: "candidates=0" };
+      }
+      if (best.length !== 1) {
+        return {
+          ok: false,
+          reason: "management-action-ambiguous",
+          diag: `candidates=${best.length} labels=${best.map((candidate) => candidate.label).join("|")}`
+        };
+      }
+
+      const candidate = best[0];
+      if (!candidate) {
+        return { ok: false, reason: "management-action-absent", diag: "candidate=missing" };
+      }
+      const event = runtime.MouseEvent
+        ? new runtime.MouseEvent("click", { bubbles: true, cancelable: true, view: globalThis })
+        : { type: "click" };
+      try {
+        Reflect.apply(candidate.listener, candidate.element, [event]);
+        return {
+          ok: true,
+          diag: `vue-listener=${candidate.listenerKey} label=${candidate.label}`
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: "management-listener-failed",
+          diag: String(error)
+        };
+      }
+    }, undefined, MAIN_WORLD)
+    .catch((error) => ({
+      ok: false,
+      reason: "management-listener-failed",
+      diag: String(error)
+    }));
+}
+
 // Payload opcional para acoes que precisam de dados (ex.: os digitos do telefone que
 // deve aparecer na lista de contas para a acao verifyPixAccountListed).
 export interface ProgrammaticPixUiPayload {
