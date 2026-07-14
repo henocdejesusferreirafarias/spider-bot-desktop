@@ -934,7 +934,7 @@ export async function programmaticWithdrawalManagementAction(
             candidates.push({
               element,
               label,
-              listener,
+              listener: listener as (...args: unknown[]) => unknown,
               listenerKey: listenerKey ?? "onClick",
               score: (exactAlias.test(label) ? 200 : 100) + (alias.test(attrs) ? 20 : 0)
             });
@@ -980,9 +980,9 @@ export async function programmaticWithdrawalManagementAction(
     }, undefined, MAIN_WORLD)
     .catch((error) => ({
       ok: false,
-      reason: "management-listener-failed",
+      reason: "management-listener-failed" as const,
       diag: String(error)
-    }));
+    })) as Promise<ProgrammaticWithdrawalManagementResult>;
 }
 
 // Payload opcional para acoes que precisam de dados (ex.: os digitos do telefone que
