@@ -52,6 +52,7 @@ import {
   fillWithdrawalPasswordSetup,
 } from "./withdrawal-password-setup.js";
 import { programmaticPixAddAction } from "./pix-add-action.js";
+import { waitForUniqueWithdrawalPasswordModalSurface } from "./withdrawal-password-modal-context.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -953,7 +954,14 @@ export class AutomationRuntimeService {
       if (!withdrawalPassword) {
         throw new Error("senha de saque reservada ausente");
       }
-      const entered = await fillExistingWithdrawalPassword(spa, withdrawalPassword);
+      const modalSurface = await waitForUniqueWithdrawalPasswordModalSurface(
+        session.page,
+        PIX_MS(4000),
+      );
+      if (!modalSurface.ok) {
+        throw new Error(`contexto do modal de senha indisponivel (${modalSurface.reason}; ${modalSurface.diag})`);
+      }
+      const entered = await fillExistingWithdrawalPassword(modalSurface.surface, withdrawalPassword);
       if (!entered.ok || !entered.passwordEntered) {
         throw new Error(`senha de saque nao confirmou preenchimento (${entered.reason ?? "desconhecido"}${entered.diag ? `; ${entered.diag}` : ""})`);
       }
