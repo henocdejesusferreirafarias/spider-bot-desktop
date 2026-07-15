@@ -14,6 +14,13 @@ export interface WithdrawalPasswordSetupResult {
   diag?: string;
 }
 
+export interface WithdrawalPasswordEntryResult {
+  ok: boolean;
+  passwordEntered: boolean;
+  reason?: WithdrawalPasswordSetupResult["reason"];
+  diag?: string;
+}
+
 export interface WithdrawalPasswordConfirmationResult {
   ok: boolean;
   reason?: "surface-invalid" | "confirm-action-absent" | "confirm-action-ambiguous" | "confirm-action-failed" | "destination-not-confirmed";
@@ -27,7 +34,10 @@ type FieldResult = {
   diag?: string;
 };
 
-async function activateFirstWithdrawalPasswordField(spa: SpaHandle): Promise<FieldResult> {
+async function activateFirstWithdrawalPasswordField(
+  spa: SpaHandle,
+  expectedFieldCount: number,
+): Promise<FieldResult> {
   const isReady = () => spa.evaluate(() => {
     const visible = (element: Element) => {
       const rect = element.getBoundingClientRect();
@@ -38,7 +48,7 @@ async function activateFirstWithdrawalPasswordField(spa: SpaHandle): Promise<Fie
       .filter((element): element is HTMLElement => visible(element));
     const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
       .find((element) => visible(element));
-    return fields.length === 2 && Boolean(keyboard && visible(keyboard)) && Boolean(
+    return fields.length === expectedFieldCount && Boolean(keyboard && visible(keyboard)) && Boolean(
       fields[0]?.querySelector(".ui-password-input__item--focus")
     );
   }, undefined, WITHDRAWAL_PASSWORD_MAIN_WORLD).catch(() => false);
@@ -67,12 +77,13 @@ async function fillFocusedField(
   spa: SpaHandle,
   expectedFieldIndex: number,
   password: string,
+  expectedFieldCount: number,
 ): Promise<FieldResult> {
   // Uma transacao por PIN, deliberadamente igual ao probe que funcionou no
   // DevTools. Separar cada tecla em varios evaluate() cruzava mundos/turnos do
   // Vue e fazia o segundo campo perder a continuidade do teclado virtual.
   return spa.evaluate(
-    async ({ expectedFieldIndex: fieldIndex, password: pin }): Promise<FieldResult> => {
+    async ({ expectedFieldIndex: fieldIndex, password: pin, expectedFieldCount }): Promise<FieldResult> => {
       const visible = (element: Element) => {
         const rect = element.getBoundingClientRect();
         const style = globalThis.getComputedStyle(element);
@@ -83,7 +94,7 @@ async function fillFocusedField(
       const keyboards = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"));
       const keyboardIndex = keyboards.findIndex((element) => visible(element));
       const field = fields[fieldIndex];
-      if (!field || fields.length !== 2 || keyboards.length === 0) {
+      if (!field || fields.length !== expectedFieldCount || keyboards.length === 0) {
         return { ok: false, filled: false, reason: "surface-invalid", diag: `fields=${fields.length} keyboards=${keyboards.length} visibleKeyboard=${keyboardIndex} field=${fieldIndex}` };
       }
       const cells = Array.from(field.querySelectorAll<HTMLElement>(".ui-password-input__item"));
@@ -175,7 +186,7 @@ async function fillFocusedField(
         ? { ok: true, filled: true }
         : { ok: false, filled: false, reason: "digit-unconfirmed", diag: `field=${fieldIndex} final=${filledCount()}` };
     },
-    { expectedFieldIndex, password },
+    { expectedFieldIndex, password, expectedFieldCount },
     WITHDRAWAL_PASSWORD_MAIN_WORLD,
   ).catch((error): FieldResult => ({ ok: false, filled: false, reason: "surface-invalid", diag: String(error) }));
 }
@@ -188,17 +199,39 @@ export async function fillWithdrawalPasswordSetup(
   if (!/^\d{6}$/.test(password)) {
     return { ok: false, firstFieldFilled: false, secondFieldFilled: false, reason: "surface-invalid", diag: "password-format" };
   }
-  const activation = await activateFirstWithdrawalPasswordField(spa);
+  const activation = await activateFirstWithdrawalPasswordField(spa, 2);
   if (!activation.ok) {
     return { ok: false, firstFieldFilled: false, secondFieldFilled: false, reason: activation.reason, diag: activation.diag };
   }
-  const first = await fillFocusedField(spa, 0, password);
+  const first = await fillFocusedField(spa, 0, password, 2);
   if (!first.ok) return { ok: false, firstFieldFilled: false, secondFieldFilled: false, reason: first.reason, diag: first.diag };
   await onStage("first-field-filled");
-  const second = await fillFocusedField(spa, 1, password);
+  const second = await fillFocusedField(spa, 1, password, 2);
   if (!second.ok) return { ok: false, firstFieldFilled: true, secondFieldFilled: false, reason: second.reason, diag: second.diag };
   await onStage("second-field-filled");
   return { ok: true, firstFieldFilled: true, secondFieldFilled: true };
+}
+
+// Preenche somente o PIN solicitado pelo modal de inclusao de chave PIX. A
+// proxima acao continua fora desta funcao para que o envio seja uma etapa
+// verificavel e idempotente por si so.
+export async function fillExistingWithdrawalPassword(
+  spa: SpaHandle,
+  password: string,
+): Promise<WithdrawalPasswordEntryResult> {
+  if (!/^\d{6}$/.test(password)) {
+    return { ok: false, passwordEntered: false, reason: "surface-invalid", diag: "password-format" };
+  }
+
+  const activation = await activateFirstWithdrawalPasswordField(spa, 1);
+  if (!activation.ok) {
+    return { ok: false, passwordEntered: false, reason: activation.reason, diag: activation.diag };
+  }
+
+  const filled = await fillFocusedField(spa, 0, password, 1);
+  return filled.ok
+    ? { ok: true, passwordEntered: true }
+    : { ok: false, passwordEntered: false, reason: filled.reason, diag: filled.diag };
 }
 
 // Confirma uma unica vez a tela de definicao ja preenchida. A persistencia na

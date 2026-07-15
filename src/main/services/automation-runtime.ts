@@ -48,6 +48,7 @@ import {
 import type { PlatformDescriptor } from "./spa-navigation.js";
 import {
   confirmAndVerifyWithdrawalPasswordSetup,
+  fillExistingWithdrawalPassword,
   fillWithdrawalPasswordSetup,
 } from "./withdrawal-password-setup.js";
 import { programmaticPixAddAction } from "./pix-add-action.js";
@@ -844,7 +845,7 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" = "profile";
+    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" | "pix-enter-password" = "profile";
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -890,7 +891,7 @@ export class AutomationRuntimeService {
       if (entryDestination === "unknown") {
         throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
       }
-      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" = entryDestination;
+      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" = entryDestination;
       if (resultStatus === "needs_withdrawal_password") {
         step = "withdrawal-password";
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
@@ -947,7 +948,16 @@ export class AutomationRuntimeService {
       if (!(await waitForExistingWithdrawalPasswordModal(session.page, PIX_MS(12000)))) {
         throw new Error(`prompt de senha de saque nao confirmado (${await describeSpaState(spa)})`);
       }
-      resultStatus = "withdrawal_password_required";
+      step = "pix-enter-password";
+      const withdrawalPassword = this.database.getPersistedProfileWithdrawalPassword(profile.id);
+      if (!withdrawalPassword) {
+        throw new Error("senha de saque reservada ausente");
+      }
+      const entered = await fillExistingWithdrawalPassword(spa, withdrawalPassword);
+      if (!entered.ok || !entered.passwordEntered) {
+        throw new Error(`senha de saque nao confirmou preenchimento (${entered.reason ?? "desconhecido"}${entered.diag ? `; ${entered.diag}` : ""})`);
+      }
+      resultStatus = "withdrawal_password_entered";
 
       this.database.updateRun(run.id, {
         status: "succeeded",

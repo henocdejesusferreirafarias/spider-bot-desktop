@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "patchright";
 import * as withdrawalPasswordSetup from "../src/main/services/withdrawal-password-setup.js";
-import { fillWithdrawalPasswordSetup } from "../src/main/services/withdrawal-password-setup.js";
+import { fillExistingWithdrawalPassword, fillWithdrawalPasswordSetup } from "../src/main/services/withdrawal-password-setup.js";
 
 type FakeCell = {
   textContent: string;
@@ -11,13 +11,13 @@ type FakeCell = {
   querySelector: () => null;
 };
 
-function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean; listenerBoundKeyboard?: "hidden" | "visible" }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
+function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean; listenerBoundKeyboard?: "hidden" | "visible" }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalGetComputedStyle = globalThis.getComputedStyle;
   const originalTouch = (globalThis as { Touch?: unknown }).Touch;
   const originalTouchEvent = (globalThis as { TouchEvent?: unknown }).TouchEvent;
   const partiallyFilled = options.partiallyFilled ?? false;
-  const fields = [0, 1].map(() => {
+  const fields = Array.from({ length: options.fieldCount ?? 2 }, () => {
     const cells: FakeCell[] = Array.from({ length: 6 }, (_, index) => ({
       textContent: partiallyFilled && index === 0 ? "9" : "",
       classList: { contains: (name) => name === "ui-password-input__item--focus" && index === 0 },
@@ -333,5 +333,24 @@ test("preenche cada PIN em uma unica transacao da pagina", async () => {
 
     assert.equal(result.ok, true);
     assert.equal(evaluateWorlds().length, 3);
+  });
+});
+
+test("preenche o PIN existente em um unico grid e confirma seis avancos", async () => {
+  await withPasswordSurface({ fieldCount: 1 }, async (page, touchCount) => {
+    const result = await fillExistingWithdrawalPassword(page, "102345");
+
+    assert.deepEqual(result, { ok: true, passwordEntered: true });
+    assert.equal(touchCount(), 6);
+  });
+});
+
+test("recusa PIN existente quando o grid unico ja esta parcial", async () => {
+  await withPasswordSurface({ fieldCount: 1, partiallyFilled: true }, async (page, touchCount) => {
+    const result = await fillExistingWithdrawalPassword(page, "102345");
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "field-partially-filled");
+    assert.equal(touchCount(), 0);
   });
 });

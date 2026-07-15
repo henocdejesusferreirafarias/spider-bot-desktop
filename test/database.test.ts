@@ -185,6 +185,20 @@ test("ensureProfileWithdrawalPassword reuses a persisted password containing zer
   assert.equal(db.ensureProfileWithdrawalPassword(profile.id), "102345");
 });
 
+test("getPersistedProfileWithdrawalPassword nao gera senha quando ela esta ausente", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Missing persisted withdrawal password",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+
+  assert.equal(db.getPersistedProfileWithdrawalPassword(profile.id), undefined);
+  assert.equal(db.getPersistedProfileWithdrawalPassword(profile.id), undefined);
+});
+
 test("createProxy round-trips mode and usernameSuffixTemplate", () => {
   const db = new PredatorDatabase(createPaths(), plainStore);
 

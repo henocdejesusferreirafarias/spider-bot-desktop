@@ -2332,6 +2332,11 @@ export class PredatorDatabase {
     });
   }
 
+  getPersistedProfileWithdrawalPassword(profileId: string): string | undefined {
+    const password = this.ensureProfileAccount(profileId).withdrawalPassword;
+    return password && isAcceptedWithdrawalPassword(password) ? password : undefined;
+  }
+
   ensureProfileWithdrawalPassword(profileId: string): string {
     const current = this.ensureProfileAccount(profileId).withdrawalPassword;
     if (current && isAcceptedWithdrawalPassword(current)) {
