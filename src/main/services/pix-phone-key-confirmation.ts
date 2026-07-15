@@ -159,8 +159,7 @@ export async function inspectPixReceivingAccounts(surface: SpaHandle): Promise<P
 }
 
 function hasUniqueSource(snapshot: PixReceivingAccountSnapshot): boolean {
-  return snapshot.routeActive10
-    && snapshot.visiblePixFormModals === 1
+  return snapshot.visiblePixFormModals === 1
     && snapshot.sourceActions === 1
     && snapshot.modalIndex !== undefined
     && snapshot.buttonIndex !== undefined;

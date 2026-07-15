@@ -100,6 +100,26 @@ test("confirmation waits for modal disappearance and a compatible PIX PHONE card
   assert.equal(fake.clicks(), 1);
 });
 
+test("confirmation trusts the already-validated form when its local router handle is absent", async () => {
+  const fake = fakeSurface([
+    snapshot({ routeActive10: false }),
+    snapshot({ routeActive10: false }),
+    snapshot({
+      routeActive10: false,
+      visiblePixFormModals: 0,
+      sourceActions: 0,
+      modalIndex: undefined,
+      buttonIndex: undefined,
+      accounts: [{ kind: "pix-phone", maskedPhone: "41***690" }],
+    }),
+  ]);
+
+  const result = await confirmPixPhoneSubmission(fake.surface, "41980042690", 300);
+
+  assert.equal(result.result, "confirmed");
+  assert.equal(fake.clicks(), 1);
+});
+
 test("confirmation makes one scoped click and leaves ambiguous output pending", async () => {
   const fake = fakeSurface([
     snapshot(),
