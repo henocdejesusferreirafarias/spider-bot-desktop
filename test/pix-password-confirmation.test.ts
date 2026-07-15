@@ -4,6 +4,7 @@ import type { Page } from "patchright";
 import type { SpaHandle } from "../src/main/services/spa-navigation.js";
 import {
   confirmExistingWithdrawalPassword,
+  formatPixAddFormDiagnostics,
   inspectPixAddForm,
   waitForPixAddForm,
 } from "../src/main/services/pix-password-confirmation.js";
@@ -24,7 +25,7 @@ type FakeElement = {
 function element(
   classes: string[],
   children: Record<string, FakeElement[]> = {},
-  options: { text?: string; disabled?: boolean } = {},
+  options: { text?: string; disabled?: boolean; hidden?: boolean } = {},
 ): FakeElement {
   return {
     textContent: options.text ?? "",
@@ -32,14 +33,14 @@ function element(
     classList: { contains: (name) => classes.includes(name) },
     getAttribute: (name) => name === "disabled" && options.disabled ? "" : null,
     hasAttribute: (name) => name === "disabled" && Boolean(options.disabled),
-    getBoundingClientRect: () => ({ width: 300, height: 40 }),
+    getBoundingClientRect: () => ({ width: options.hidden ? 0 : 300, height: options.hidden ? 0 : 40 }),
     querySelectorAll: (selector) => children[selector] ?? [],
     querySelector: (selector) => children[selector]?.[0] ?? null,
   };
 }
 
 function withPinConfirmationSurface<T>(
-  options: { filledCells: number; buttons: FakeButton[] },
+  options: { filledCells: number; buttons: FakeButton[]; hiddenLeadingModal?: boolean },
   callback: (surface: SpaHandle, clicks: () => number) => Promise<T>,
 ): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -63,23 +64,38 @@ function withPinConfirmationSurface<T>(
       ".ui-button": buttons,
     },
   );
+  const hiddenLeadingModal = element(["ui-popup", "ui-dialog"], {}, { hidden: true });
   Object.defineProperty(globalThis, "document", {
     configurable: true,
-    value: { querySelectorAll: (selector: string) => selector === ".ui-popup.ui-dialog" ? [modal] : [] },
+    value: {
+      querySelectorAll: (selector: string) => selector === ".ui-popup.ui-dialog"
+        ? options.hiddenLeadingModal ? [hiddenLeadingModal, modal] : [modal]
+        : [],
+    },
   });
   Object.defineProperty(globalThis, "getComputedStyle", {
     configurable: true,
     value: () => ({ display: "block", visibility: "visible" }),
   });
 
+  let selectedModalIndex = -1;
+  const expectedModalIndex = options.hiddenLeadingModal ? 1 : 0;
   const surface = {
     evaluate: async (fn: () => unknown) => fn(),
     locator: () => ({
-      nth: () => ({
+      nth: (modalIndex: number) => {
+        selectedModalIndex = modalIndex;
+        return {
         locator: () => ({
-          nth: () => ({ click: async () => { clicks += 1; } }),
+          nth: () => ({
+            click: async () => {
+              if (selectedModalIndex !== expectedModalIndex) throw new Error("locator targeted hidden modal");
+              clicks += 1;
+            },
+          }),
         }),
-      }),
+      };
+      },
     }),
   } as unknown as SpaHandle;
 
@@ -94,6 +110,19 @@ test("confirma uma vez o PIN completo no modal resolvido", async () => {
   await withPinConfirmationSurface({
     filledCells: 6,
     buttons: [{ text: "Próximo" }],
+  }, async (surface, clicks) => {
+    const result = await confirmExistingWithdrawalPassword(surface);
+
+    assert.deepEqual(result, { ok: true });
+    assert.equal(clicks(), 1);
+  });
+});
+
+test("preserva o indice global quando um modal PIN oculto antecede o modal ativo", async () => {
+  await withPinConfirmationSurface({
+    filledCells: 6,
+    buttons: [{ text: "Próximo" }],
+    hiddenLeadingModal: true,
   }, async (surface, clicks) => {
     const result = await confirmExistingWithdrawalPassword(surface);
 
@@ -315,4 +344,23 @@ test("nao confirma destino incompleto ao esgotar o teto", async () => {
     assert.equal(result.visiblePinGrids, 1);
     assert.equal(waits(), 0);
   });
+});
+
+test("formata diagnostico do formulario PIX somente com sinais estruturais", () => {
+  const diagnostic = formatPixAddFormDiagnostics({
+    routeActive10: true,
+    visiblePinGrids: 0,
+    visibleKeyboards: 0,
+    visibleDialogs: 1,
+    visibleInputs: 2,
+    visibleSelectors: 1,
+    enabledPrimaryActions: 1,
+    hasPixSemantic: true,
+    ready: false,
+  });
+
+  assert.equal(
+    diagnostic,
+    "active10=true pinGrids=0 keyboards=0 dialogs=1 inputs=2 selectors=1 actions=1 pixSemantic=true",
+  );
 });

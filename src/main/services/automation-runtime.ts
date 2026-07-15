@@ -53,6 +53,11 @@ import {
 } from "./withdrawal-password-setup.js";
 import { programmaticPixAddAction } from "./pix-add-action.js";
 import { waitForUniqueWithdrawalPasswordModalSurface } from "./withdrawal-password-modal-context.js";
+import {
+  confirmExistingWithdrawalPassword,
+  formatPixAddFormDiagnostics,
+  waitForPixAddForm,
+} from "./pix-password-confirmation.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -846,7 +851,7 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" | "pix-enter-password" = "profile";
+    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" | "pix-enter-password" | "pix-password-confirmation" = "profile";
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -892,7 +897,7 @@ export class AutomationRuntimeService {
       if (entryDestination === "unknown") {
         throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
       }
-      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" = entryDestination;
+      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" | "pix_add_form_ready" = entryDestination;
       if (resultStatus === "needs_withdrawal_password") {
         step = "withdrawal-password";
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
@@ -965,7 +970,18 @@ export class AutomationRuntimeService {
       if (!entered.ok || !entered.passwordEntered) {
         throw new Error(`senha de saque nao confirmou preenchimento (${entered.reason ?? "desconhecido"}${entered.diag ? `; ${entered.diag}` : ""})`);
       }
-      resultStatus = "withdrawal_password_entered";
+      step = "pix-password-confirmation";
+      const confirmation = await confirmExistingWithdrawalPassword(modalSurface.surface);
+      if (!confirmation.ok) {
+        throw new Error(
+          `confirmacao da senha de saque indisponivel (${confirmation.reason ?? "desconhecido"}${confirmation.diag ? `; ${confirmation.diag}` : ""})`,
+        );
+      }
+      const pixAddForm = await waitForPixAddForm(modalSurface.surface, PIX_MS(12000));
+      if (!pixAddForm.ready) {
+        throw new Error(`formulario PIX nao confirmado (${formatPixAddFormDiagnostics(pixAddForm)})`);
+      }
+      resultStatus = "pix_add_form_ready";
 
       this.database.updateRun(run.id, {
         status: "succeeded",

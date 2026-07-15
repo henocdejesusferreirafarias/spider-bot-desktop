@@ -52,9 +52,9 @@ async function inspectSourceAction(surface: SpaHandle): Promise<SourceActionInsp
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
-    const roots = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-popup.ui-dialog"))
-      .filter((root) => visible(root));
+    const roots = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-popup.ui-dialog"));
     const sources = roots.flatMap((root, modalIndex) => {
+      if (!visible(root)) return [];
       const grids = Array.from(root.querySelectorAll<HTMLElement>(".ui-password-input"))
         .filter((grid) => visible(grid));
       if (grids.length !== 1) return [];
@@ -195,4 +195,17 @@ export async function waitForPixAddForm(
     await surface.waitForTimeout(180).catch(() => undefined);
   }
   return inspectPixAddForm(surface, isWithdrawalActive10(await getCurrentRoute(surface)));
+}
+
+export function formatPixAddFormDiagnostics(signals: PixAddFormSignals): string {
+  return [
+    `active10=${signals.routeActive10}`,
+    `pinGrids=${signals.visiblePinGrids}`,
+    `keyboards=${signals.visibleKeyboards}`,
+    `dialogs=${signals.visibleDialogs}`,
+    `inputs=${signals.visibleInputs}`,
+    `selectors=${signals.visibleSelectors}`,
+    `actions=${signals.enabledPrimaryActions}`,
+    `pixSemantic=${signals.hasPixSemantic}`,
+  ].join(" ");
 }
