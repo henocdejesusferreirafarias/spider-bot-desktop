@@ -810,6 +810,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
                   onDelete={app.deletePixPhoneKey}
                   onUpdate={app.updatePixPhoneKey}
                   pixKeys={app.snapshot.pixPhoneKeys}
+                  profiles={app.snapshot.profiles}
                 />
               </SectionCard>
             )}
