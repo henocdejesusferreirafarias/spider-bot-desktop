@@ -79,6 +79,7 @@ import {
   waitForDepositSurface,
   waitForProfileSurface,
   waitForWithdrawalManagementDestination,
+  waitForWithdrawalPasswordConfirmationDestination,
 } from "./screen-waits.js";
 import {
   extractQrCode,
@@ -901,7 +902,7 @@ export class AutomationRuntimeService {
         const confirmationPage = session.page;
         const confirmation = await confirmAndVerifyWithdrawalPasswordSetup(
           spa,
-          () => waitForWithdrawalManagementDestination(confirmationPage, PIX_MS(12000)),
+          () => waitForWithdrawalPasswordConfirmationDestination(confirmationPage, PIX_MS(12000)),
         );
         if (!confirmation.ok) {
           throw new Error(`senha de saque nao confirmou cadastro (${confirmation.reason ?? "desconhecido"}${confirmation.diag ? `; ${confirmation.diag}` : ""})`);

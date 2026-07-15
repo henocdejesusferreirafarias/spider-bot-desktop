@@ -4,7 +4,8 @@ import type { Frame, Page } from "patchright";
 import {
   waitForDepositSurface,
   waitForProfileSurface,
-  waitForWithdrawalManagementDestination
+  waitForWithdrawalManagementDestination,
+  waitForWithdrawalPasswordConfirmationDestination,
 } from "../src/main/services/screen-waits.js";
 
 // A camada de esperas condicionais (screen-waits) faz polling de predicados de
@@ -26,6 +27,18 @@ function fakePage(evaluate: () => Promise<boolean>): Page {
     evaluate,
     waitForTimeout: async () => undefined
   } as unknown as Page;
+}
+
+function fakeDestinationPage(destinations: Array<"needs_withdrawal_password" | "withdrawal_ready" | "unknown">): Page {
+  let evaluations = 0;
+  return fakePage(async () => {
+    const destination = destinations[Math.min(Math.floor(evaluations / 3), destinations.length - 1)]!;
+    const signal = evaluations % 3;
+    evaluations += 1;
+    if (destination === "needs_withdrawal_password") return signal === 0;
+    if (destination === "withdrawal_ready") return signal === 1;
+    return false;
+  });
 }
 
 test("waitForProfileSurface: retorna true assim que a superficie aparece", async () => {
@@ -68,5 +81,18 @@ test("waitForWithdrawalManagementDestination: retorna setup assim que a superfic
   assert.equal(
     await waitForWithdrawalManagementDestination(page, 2000),
     "needs_withdrawal_password"
+  );
+});
+
+test("waitForWithdrawalPasswordConfirmationDestination: ignora setup transitorio ate o saque aparecer", async () => {
+  const page = fakeDestinationPage([
+    "needs_withdrawal_password",
+    "needs_withdrawal_password",
+    "withdrawal_ready",
+  ]);
+
+  assert.equal(
+    await waitForWithdrawalPasswordConfirmationDestination(page, 2000),
+    "withdrawal_ready",
   );
 });

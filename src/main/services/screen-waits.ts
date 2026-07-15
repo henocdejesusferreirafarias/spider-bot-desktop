@@ -124,6 +124,24 @@ export async function waitForWithdrawalManagementDestination(
   return classifyWithdrawalManagementDestination(page);
 }
 
+// Depois do submit da senha, `needs_withdrawal_password` representa a tela
+// anterior enquanto a SPA carrega. Diferente da entrada pela Gestao de saques,
+// somente a superficie de saque confirma que o submit foi aceito.
+export async function waitForWithdrawalPasswordConfirmationDestination(
+  page: Page,
+  timeoutMs: number,
+): Promise<WithdrawalManagementDestination> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const destination = await classifyWithdrawalManagementDestination(page);
+    if (destination === "withdrawal_ready") {
+      return destination;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return classifyWithdrawalManagementDestination(page);
+}
+
 export async function waitForAddPixModal(page: Page, timeoutMs: number): Promise<boolean> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
