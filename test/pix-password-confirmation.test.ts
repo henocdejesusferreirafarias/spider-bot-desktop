@@ -40,12 +40,20 @@ function element(
 }
 
 function withPinConfirmationSurface<T>(
-  options: { filledCells: number; buttons: FakeButton[]; hiddenLeadingModal?: boolean; serializedEvaluate?: boolean },
-  callback: (surface: SpaHandle, clicks: () => number) => Promise<T>,
+  options: {
+    filledCells: number;
+    buttons: FakeButton[];
+    hiddenLeadingModal?: boolean;
+    serializedEvaluate?: boolean;
+    stabilizeOnInspection?: number;
+    throwAfterClick?: boolean;
+  },
+  callback: (surface: SpaHandle, clicks: () => number, inspections: () => number) => Promise<T>,
 ): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalGetComputedStyle = globalThis.getComputedStyle;
   let clicks = 0;
+  let sourceInspections = 0;
   const cells = Array.from({ length: 6 }, (_, index) => element(
     ["ui-password-input__item"],
     {},
@@ -69,7 +77,9 @@ function withPinConfirmationSurface<T>(
     configurable: true,
     value: {
       querySelectorAll: (selector: string) => selector === ".ui-popup.ui-dialog"
-        ? options.hiddenLeadingModal ? [hiddenLeadingModal, modal] : [modal]
+        ? sourceInspections >= (options.stabilizeOnInspection ?? 1)
+          ? options.hiddenLeadingModal ? [hiddenLeadingModal, modal] : [modal]
+          : []
         : [],
     },
   });
@@ -82,6 +92,7 @@ function withPinConfirmationSurface<T>(
   const expectedModalIndex = options.hiddenLeadingModal ? 1 : 0;
   const surface = {
     evaluate: async (fn: () => unknown) => {
+      if (String(fn).includes("confirmLabels")) sourceInspections += 1;
       if (options.serializedEvaluate && String(fn).includes("CONFIRM_LABELS")) {
         throw new Error("page callback captured main-process state");
       }
@@ -96,15 +107,17 @@ function withPinConfirmationSurface<T>(
             click: async () => {
               if (selectedModalIndex !== expectedModalIndex) throw new Error("locator targeted hidden modal");
               clicks += 1;
+              if (options.throwAfterClick) throw new Error("target detached after dispatch");
             },
           }),
         }),
       };
       },
     }),
+    waitForTimeout: async () => undefined,
   } as unknown as SpaHandle;
 
-  return callback(surface, () => clicks).finally(() => {
+  return callback(surface, () => clicks, () => sourceInspections).finally(() => {
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
     else delete (globalThis as { document?: unknown }).document;
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: originalGetComputedStyle });
@@ -118,7 +131,34 @@ test("confirma uma vez o PIN completo no modal resolvido", async () => {
   }, async (surface, clicks) => {
     const result = await confirmExistingWithdrawalPassword(surface);
 
-    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(result, { ok: true, actionAttempted: true, clickRejected: false });
+    assert.equal(clicks(), 1);
+  });
+});
+
+test("mantem a tentativa unica quando o locator rejeita apos disparar o clique", async () => {
+  await withPinConfirmationSurface({
+    filledCells: 6,
+    buttons: [{ text: "Próximo" }],
+    throwAfterClick: true,
+  }, async (surface, clicks) => {
+    const result = await confirmExistingWithdrawalPassword(surface);
+
+    assert.equal(result.actionAttempted, true);
+    assert.equal(result.clickRejected, true);
+    assert.equal(clicks(), 1);
+  });
+});
+
+test("aguarda duas leituras iguais antes de confirmar o PIN", async () => {
+  await withPinConfirmationSurface({
+    filledCells: 6,
+    buttons: [{ text: "Próximo" }],
+  }, async (surface, clicks, inspections) => {
+    const result = await confirmExistingWithdrawalPassword(surface);
+
+    assert.equal(inspections(), 2);
+    assert.equal(result.actionAttempted, true);
     assert.equal(clicks(), 1);
   });
 });
@@ -131,7 +171,7 @@ test("preserva o indice global quando um modal PIN oculto antecede o modal ativo
   }, async (surface, clicks) => {
     const result = await confirmExistingWithdrawalPassword(surface);
 
-    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(result, { ok: true, actionAttempted: true, clickRejected: false });
     assert.equal(clicks(), 1);
   });
 });
@@ -144,7 +184,7 @@ test("nao captura rotulos de confirmacao fora do mundo da pagina", async () => {
   }, async (surface, clicks) => {
     const result = await confirmExistingWithdrawalPassword(surface);
 
-    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(result, { ok: true, actionAttempted: true, clickRejected: false });
     assert.equal(clicks(), 1);
   });
 });

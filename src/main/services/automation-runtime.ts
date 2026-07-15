@@ -972,14 +972,16 @@ export class AutomationRuntimeService {
       }
       step = "pix-password-confirmation";
       const confirmation = await confirmExistingWithdrawalPassword(modalSurface.surface);
-      if (!confirmation.ok) {
+      if (!confirmation.actionAttempted) {
         throw new Error(
           `confirmacao da senha de saque indisponivel (${confirmation.reason ?? "desconhecido"}${confirmation.diag ? `; ${confirmation.diag}` : ""})`,
         );
       }
       const pixAddForm = await waitForPixAddForm(modalSurface.surface, PIX_MS(12000));
       if (!pixAddForm.ready) {
-        throw new Error(`formulario PIX nao confirmado (${formatPixAddFormDiagnostics(pixAddForm)})`);
+        throw new Error(
+          `formulario PIX nao confirmado (clickRejected=${confirmation.clickRejected}; ${formatPixAddFormDiagnostics(pixAddForm)})`,
+        );
       }
       resultStatus = "pix_add_form_ready";
 

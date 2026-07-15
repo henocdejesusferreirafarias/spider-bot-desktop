@@ -1,6 +1,7 @@
 import { getCurrentRoute, type RouteInfo, type SpaHandle } from "./spa-navigation.js";
 
 const WITHDRAWAL_PASSWORD_MAIN_WORLD = false;
+const SOURCE_STABILITY_TIMEOUT_MS = 4_000;
 
 export type PixPasswordConfirmationReason =
   | "source-invalid"
@@ -11,6 +12,8 @@ export type PixPasswordConfirmationReason =
 
 export interface PixPasswordConfirmationResult {
   ok: boolean;
+  actionAttempted: boolean;
+  clickRejected: boolean;
   reason?: PixPasswordConfirmationReason;
   diag?: string;
 }
@@ -36,6 +39,20 @@ interface SourceActionInspection {
 
 function sourceDiagnostics(inspection: SourceActionInspection): string {
   return `sourceModals=${inspection.sourceModals} sourceActions=${inspection.sourceActions}`;
+}
+
+function isUniqueSourceAction(inspection: SourceActionInspection): boolean {
+  return inspection.sourceModals === 1
+    && inspection.sourceActions === 1
+    && inspection.modalIndex !== undefined
+    && inspection.buttonIndex !== undefined;
+}
+
+function isSameSourceAction(left: SourceActionInspection, right: SourceActionInspection): boolean {
+  return isUniqueSourceAction(left)
+    && isUniqueSourceAction(right)
+    && left.modalIndex === right.modalIndex
+    && left.buttonIndex === right.buttonIndex;
 }
 
 async function inspectSourceAction(surface: SpaHandle): Promise<SourceActionInspection> {
@@ -86,18 +103,31 @@ async function inspectSourceAction(surface: SpaHandle): Promise<SourceActionInsp
   }, undefined, WITHDRAWAL_PASSWORD_MAIN_WORLD).catch(() => ({ sourceModals: 0, sourceActions: 0 }));
 }
 
+async function waitForStableSourceAction(surface: SpaHandle): Promise<SourceActionInspection> {
+  const deadline = Date.now() + SOURCE_STABILITY_TIMEOUT_MS;
+  let previous: SourceActionInspection | undefined;
+  let latest = await inspectSourceAction(surface);
+  while (Date.now() < deadline) {
+    if (previous && isSameSourceAction(previous, latest)) return latest;
+    previous = isUniqueSourceAction(latest) ? latest : undefined;
+    await surface.waitForTimeout(180).catch(() => undefined);
+    latest = await inspectSourceAction(surface);
+  }
+  return latest;
+}
+
 export async function confirmExistingWithdrawalPassword(
   surface: SpaHandle,
 ): Promise<PixPasswordConfirmationResult> {
-  const inspection = await inspectSourceAction(surface);
+  const inspection = await waitForStableSourceAction(surface);
   if (inspection.sourceModals !== 1) {
-    return { ok: false, reason: "source-invalid", diag: sourceDiagnostics(inspection) };
+    return { ok: false, actionAttempted: false, clickRejected: false, reason: "source-invalid", diag: sourceDiagnostics(inspection) };
   }
   if (inspection.sourceActions === 0) {
-    return { ok: false, reason: "confirm-action-absent", diag: sourceDiagnostics(inspection) };
+    return { ok: false, actionAttempted: false, clickRejected: false, reason: "confirm-action-absent", diag: sourceDiagnostics(inspection) };
   }
   if (inspection.sourceActions !== 1 || inspection.modalIndex === undefined || inspection.buttonIndex === undefined) {
-    return { ok: false, reason: "confirm-action-ambiguous", diag: sourceDiagnostics(inspection) };
+    return { ok: false, actionAttempted: false, clickRejected: false, reason: "confirm-action-ambiguous", diag: sourceDiagnostics(inspection) };
   }
 
   try {
@@ -107,9 +137,9 @@ export async function confirmExistingWithdrawalPassword(
       .locator(".ui-button")
       .nth(inspection.buttonIndex)
       .click({ timeout: 1_500 });
-    return { ok: true };
+    return { ok: true, actionAttempted: true, clickRejected: false };
   } catch {
-    return { ok: false, reason: "confirm-action-failed", diag: sourceDiagnostics(inspection) };
+    return { ok: true, actionAttempted: true, clickRejected: true, diag: sourceDiagnostics(inspection) };
   }
 }
 
