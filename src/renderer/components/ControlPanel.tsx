@@ -90,11 +90,12 @@ function summarizePixRegistrationResults(results: PixKeyRegistrationControlResul
   const passwordFilled = results.filter((result) => result.status === "withdrawal_password_filled").length;
   const withdrawalReady = results.filter((result) => result.status === "withdrawal_ready").length;
   const pixReceivingReady = results.filter((result) => result.status === "pix_receiving_ready").length;
+  const passwordRequired = results.filter((result) => result.status === "withdrawal_password_required").length;
   const failed = results.filter((result) => result.status === "failed").length;
   if (failed > 0) {
-    return `${needsPassword} aguardando senha, ${passwordFilled} senha(s) preenchida(s), ${withdrawalReady} saque(s) pronto(s), ${pixReceivingReady} conta(s) PIX pronta(s), ${failed} falha(s).`;
+    return `${needsPassword} aguardando senha, ${passwordFilled} senha(s) preenchida(s), ${withdrawalReady} saque(s) pronto(s), ${pixReceivingReady} conta(s) PIX pronta(s), ${passwordRequired} senha(s) de saque solicitada(s), ${failed} falha(s).`;
   }
-  return `${needsPassword} tela(s) aguardando senha; ${passwordFilled} senha(s) preenchida(s); ${withdrawalReady} tela(s) de saque pronta(s); ${pixReceivingReady} conta(s) PIX pronta(s).`;
+  return `${needsPassword} tela(s) aguardando senha; ${passwordFilled} senha(s) preenchida(s); ${withdrawalReady} tela(s) de saque pronta(s); ${pixReceivingReady} conta(s) PIX pronta(s); ${passwordRequired} senha(s) de saque solicitada(s).`;
 }
 
 function summarizeWithdrawalPreparationResults(results: WithdrawalPreparationControlResult[]): string {

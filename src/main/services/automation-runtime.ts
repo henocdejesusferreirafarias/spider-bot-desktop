@@ -50,6 +50,7 @@ import {
   confirmAndVerifyWithdrawalPasswordSetup,
   fillWithdrawalPasswordSetup,
 } from "./withdrawal-password-setup.js";
+import { programmaticPixAddAction } from "./pix-add-action.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -67,6 +68,7 @@ import {
   detectLoginErrorMessage,
   detectRegistrationErrorMessage,
   hasWithdrawalPasswordSetupSurface,
+  hasExistingWithdrawalPasswordModal,
   hasWithdrawalPasswordRequiredCallToAction,
   hasVisibleNumberKeyboard,
   detectRegistrationUiFamily,
@@ -83,6 +85,7 @@ import {
   waitForWithdrawalManagementDestination,
   waitForWithdrawalPasswordConfirmationDestination,
   waitForPixReceivingAccountSurface,
+  waitForExistingWithdrawalPasswordModal,
 } from "./screen-waits.js";
 import {
   extractQrCode,
@@ -841,7 +844,7 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" = "profile";
+    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" = "profile";
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -887,7 +890,7 @@ export class AutomationRuntimeService {
       if (entryDestination === "unknown") {
         throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
       }
-      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" = entryDestination;
+      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" = entryDestination;
       if (resultStatus === "needs_withdrawal_password") {
         step = "withdrawal-password";
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
@@ -931,6 +934,20 @@ export class AutomationRuntimeService {
         );
       }
       resultStatus = "pix_receiving_ready";
+
+      step = "pix-add-password";
+      if (!(await hasExistingWithdrawalPasswordModal(session.page))) {
+        const opened = await programmaticPixAddAction(spa);
+        if (!opened.ok) {
+          throw new Error(
+            `acao PIX adicionar indisponivel (${opened.reason ?? "desconhecido"}; ${opened.diag ?? "sem diagnostico"})`,
+          );
+        }
+      }
+      if (!(await waitForExistingWithdrawalPasswordModal(session.page, PIX_MS(12000)))) {
+        throw new Error(`prompt de senha de saque nao confirmado (${await describeSpaState(spa)})`);
+      }
+      resultStatus = "withdrawal_password_required";
 
       this.database.updateRun(run.id, {
         status: "succeeded",
