@@ -945,7 +945,7 @@ export class AutomationRuntimeService {
       step = "pix-add-password";
       if (!(await hasExistingWithdrawalPasswordModal(session.page))) {
         const opened = await programmaticPixAddAction(spa);
-        if (!opened.ok) {
+        if (!opened.actionAttempted) {
           throw new Error(
             `acao PIX adicionar indisponivel (${opened.reason ?? "desconhecido"}; ${opened.diag ?? "sem diagnostico"})`,
           );

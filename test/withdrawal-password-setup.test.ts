@@ -200,6 +200,7 @@ function withConfirmationSurface<T>(
   });
   const page = {
     evaluate: async (fn: () => unknown) => fn(),
+    waitForTimeout: async () => undefined,
   } as unknown as Page;
   return callback(page, () => confirmations).finally(() => {
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
@@ -228,7 +229,7 @@ test("confirma uma unica acao semantica apos os dois PINs", async () => {
   await withConfirmationSurface({ pinCount: [6, 6], confirmControls: 1 }, async (page, confirmCount) => {
     const result = await confirmWithdrawalPasswordSetup!(page);
 
-    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(result, { ok: true, actionAttempted: true, actionRejected: false });
     assert.equal(confirmCount(), 1);
   });
 });
@@ -271,7 +272,7 @@ test("confirmacao da senha exige destino de saque", async () => {
   await withConfirmationSurface({ pinCount: [6, 6], confirmControls: 1 }, async (page, confirmCount) => {
     const result = await confirmAndVerifyWithdrawalPasswordSetup!(page, async () => "withdrawal_ready");
 
-    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(result, { ok: true, actionAttempted: true, actionRejected: false });
     assert.equal(confirmCount(), 1);
   });
 });

@@ -10,9 +10,10 @@ type RuntimeElement = {
   textContent: string;
 };
 
-function fakePage(elements: RuntimeElement[]): Page {
+function fakePage(elements: RuntimeElement[], onEvaluate?: () => void): Page {
   return {
     evaluate: async (callback: () => unknown) => {
+      onEvaluate?.();
       const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
       Object.defineProperty(globalThis, "document", {
         configurable: true,
@@ -28,11 +29,13 @@ function fakePage(elements: RuntimeElement[]): Page {
         }
       }
     },
+    waitForTimeout: async () => undefined,
   } as unknown as Page;
 }
 
 test("PIX add invokes the unique live listener once", async () => {
   let calls = 0;
+  let evaluations = 0;
   const listener = Object.assign(() => undefined, {
     value: () => {
       calls += 1;
@@ -44,9 +47,37 @@ test("PIX add invokes the unique live listener once", async () => {
     textContent: "PIX Adicionar",
   };
 
-  const result = await programmaticPixAddAction(fakePage([element]));
+  const result = await programmaticPixAddAction(fakePage([element], () => { evaluations += 1; }));
 
   assert.equal(result.ok, true);
+  assert.equal(result.actionAttempted, true);
+  assert.equal(result.actionRejected, false);
+  assert.equal(calls, 1);
+  assert.equal(evaluations, 3, "duas leituras estaveis e um unico disparo");
+});
+
+test("PIX add preserva a tentativa quando o listener rejeita depois de abrir", async () => {
+  let calls = 0;
+  const listener = Object.assign(() => undefined, {
+    value: () => {
+      calls += 1;
+      throw new Error("modal detached after dispatch");
+    },
+  });
+  const element: RuntimeElement = {
+    _vei: { onClick: listener },
+    getBoundingClientRect: () => ({ width: 320, height: 44 }),
+    textContent: "PIX Adicionar",
+  };
+
+  const result = await programmaticPixAddAction(fakePage([element]));
+
+  assert.deepEqual(result, {
+    ok: true,
+    actionAttempted: true,
+    actionRejected: true,
+    diag: "action-rejected=true",
+  });
   assert.equal(calls, 1);
 });
 

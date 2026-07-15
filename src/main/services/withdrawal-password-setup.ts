@@ -23,8 +23,9 @@ export interface WithdrawalPasswordEntryResult {
 
 export interface WithdrawalPasswordConfirmationResult {
   ok: boolean;
-  actionRejected?: boolean;
-  reason?: "surface-invalid" | "confirm-action-absent" | "confirm-action-ambiguous" | "confirm-action-failed" | "destination-not-confirmed";
+  actionAttempted: boolean;
+  actionRejected: boolean;
+  reason?: "surface-invalid" | "confirm-action-absent" | "confirm-action-ambiguous" | "destination-not-confirmed";
   diag?: string;
 }
 
@@ -272,11 +273,93 @@ export async function fillExistingWithdrawalPassword(
     : { ok: false, passwordEntered: false, reason: filled.reason, diag: filled.diag };
 }
 
-// Confirma uma unica vez a tela de definicao ja preenchida. A persistencia na
-// plataforma e deliberadamente confirmada pelo chamador, depois da transicao.
+type WithdrawalPasswordConfirmationSource = {
+  ok: boolean;
+  key?: string;
+  reason?: WithdrawalPasswordConfirmationResult["reason"];
+  diag?: string;
+};
+
+async function inspectWithdrawalPasswordConfirmationSource(
+  spa: SpaHandle,
+): Promise<WithdrawalPasswordConfirmationSource> {
+  return spa.evaluate(
+    (): WithdrawalPasswordConfirmationSource => {
+      const visible = (element: Element) => {
+        const rect = element.getBoundingClientRect();
+        const style = globalThis.getComputedStyle(element);
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 8 && rect.height > 8;
+      };
+      const normalize = (value: string | null | undefined) => (value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const fields = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-password-input"))
+        .filter((element): element is HTMLElement => visible(element));
+      const filledCount = (field: HTMLElement) => Array.from(
+        field.querySelectorAll<HTMLElement>(".ui-password-input__item"),
+      ).filter((item) => {
+        if (item.textContent?.trim()) return true;
+        const marker = item.querySelector<HTMLElement>("i");
+        return Boolean(marker && globalThis.getComputedStyle(marker).visibility !== "hidden");
+      }).length;
+      if (
+        fields.length !== 2 ||
+        fields.some((field) => field.querySelectorAll(".ui-password-input__item").length !== 6) ||
+        fields.some((field) => filledCount(field) !== 6)
+      ) {
+        return { ok: false, reason: "surface-invalid", diag: `fields=${fields.length} filled=${fields.map(filledCount).join(",")}` };
+      }
+      const controls = Array.from(globalThis.document.querySelectorAll<HTMLElement>(
+        "button,[role='button'],.ui-button,input[type='submit'],div,span",
+      )).filter((element) => visible(element) && ["confirmar", "confirm"].includes(
+        normalize(element.getAttribute("aria-label") || element.textContent),
+      ));
+      const leafControls = controls.filter((candidate) => !controls.some((other) =>
+        other !== candidate && candidate.contains(other),
+      ));
+      if (leafControls.length === 0) return { ok: false, reason: "confirm-action-absent", diag: "controls=0" };
+      if (leafControls.length !== 1) return { ok: false, reason: "confirm-action-ambiguous", diag: `controls=${leafControls.length}` };
+      return { ok: true, key: `fields=${fields.length};filled=${fields.map(filledCount).join(",")};control=${controls.indexOf(leafControls[0]!)}` };
+    },
+    undefined,
+    WITHDRAWAL_PASSWORD_MAIN_WORLD,
+  ).catch((error): WithdrawalPasswordConfirmationSource => ({
+    ok: false,
+    reason: "surface-invalid",
+    diag: `inspect-error=${String(error)}`,
+  }));
+}
+
+async function waitForStableWithdrawalPasswordConfirmationSource(
+  spa: SpaHandle,
+): Promise<WithdrawalPasswordConfirmationSource> {
+  const deadline = Date.now() + 4000;
+  let previous: WithdrawalPasswordConfirmationSource | undefined;
+  let latest: WithdrawalPasswordConfirmationSource | undefined;
+  while (Date.now() < deadline) {
+    const current = await inspectWithdrawalPasswordConfirmationSource(spa);
+    latest = current;
+    if (!current.ok) return current;
+    if (previous?.ok && previous.key === current.key) return current;
+    previous = current;
+    await spa.waitForTimeout(180).catch(() => undefined);
+  }
+  return { ok: false, reason: "surface-invalid", diag: `source-not-stable; ${latest?.diag ?? "source-unavailable"}` };
+}
+
+// Confirma uma unica vez a tela de definicao ja preenchida. A origem precisa
+// existir de forma estavel por duas leituras antes do disparo; a persistencia
+// continua confirmada pelo chamador depois da transicao.
 export async function confirmWithdrawalPasswordSetup(
   spa: SpaHandle,
 ): Promise<WithdrawalPasswordConfirmationResult> {
+  const source = await waitForStableWithdrawalPasswordConfirmationSource(spa);
+  if (!source.ok) {
+    return { ok: false, actionAttempted: false, actionRejected: false, reason: source.reason, diag: source.diag };
+  }
   return spa.evaluate(
     async (): Promise<WithdrawalPasswordConfirmationResult> => {
       type RecordLike = Record<PropertyKey, unknown>;
@@ -307,6 +390,8 @@ export async function confirmWithdrawalPasswordSetup(
       ) {
         return {
           ok: false,
+          actionAttempted: false,
+          actionRejected: false,
           reason: "surface-invalid",
           diag: `fields=${fields.length} filled=${fields.map(filledCount).join(",")}`,
         };
@@ -325,10 +410,10 @@ export async function confirmWithdrawalPasswordSetup(
         other !== candidate && candidate.contains(other),
       ));
       if (leafControls.length === 0) {
-        return { ok: false, reason: "confirm-action-absent", diag: "controls=0" };
+        return { ok: false, actionAttempted: false, actionRejected: false, reason: "confirm-action-absent", diag: "controls=0" };
       }
       if (leafControls.length !== 1) {
-        return { ok: false, reason: "confirm-action-ambiguous", diag: `controls=${leafControls.length}` };
+        return { ok: false, actionAttempted: false, actionRejected: false, reason: "confirm-action-ambiguous", diag: `controls=${leafControls.length}` };
       }
 
       const control = leafControls[0]!;
@@ -346,22 +431,24 @@ export async function confirmWithdrawalPasswordSetup(
         if (typeof listener !== "function") continue;
         try {
           await Reflect.apply(listener, propSet, [event]);
-          return { ok: true };
+          return { ok: true, actionAttempted: true, actionRejected: false };
         } catch (error) {
-          return { ok: true, actionRejected: true, diag: `action-rejected=${String(error).length > 0}` };
+          return { ok: true, actionAttempted: true, actionRejected: true, diag: `action-rejected=${String(error).length > 0}` };
         }
       }
       try {
         control.dispatchEvent(event);
-        return { ok: true };
+        return { ok: true, actionAttempted: true, actionRejected: false };
       } catch (error) {
-        return { ok: true, actionRejected: true, diag: `action-rejected=${String(error).length > 0}` };
+        return { ok: true, actionAttempted: true, actionRejected: true, diag: `action-rejected=${String(error).length > 0}` };
       }
     },
     undefined,
     WITHDRAWAL_PASSWORD_MAIN_WORLD,
   ).catch((error): WithdrawalPasswordConfirmationResult => ({
     ok: false,
+    actionAttempted: false,
+    actionRejected: false,
     reason: "surface-invalid",
     diag: String(error),
   }));
@@ -372,13 +459,13 @@ export async function confirmAndVerifyWithdrawalPasswordSetup(
   waitForDestination: () => Promise<"needs_withdrawal_password" | "withdrawal_ready" | "unknown">,
 ): Promise<WithdrawalPasswordConfirmationResult> {
   const confirmation = await confirmWithdrawalPasswordSetup(spa);
-  if (!confirmation.ok) return confirmation;
+  if (!confirmation.actionAttempted) return confirmation;
 
   try {
     const destination = await waitForDestination();
-    if (destination === "withdrawal_ready") return { ok: true };
-    return { ok: false, reason: "destination-not-confirmed", diag: `destination=${destination}` };
+    if (destination === "withdrawal_ready") return { ...confirmation, ok: true };
+    return { ...confirmation, ok: false, reason: "destination-not-confirmed", diag: `destination=${destination}` };
   } catch (error) {
-    return { ok: false, reason: "destination-not-confirmed", diag: `wait-error=${String(error)}` };
+    return { ...confirmation, ok: false, reason: "destination-not-confirmed", diag: `wait-error=${String(error)}` };
   }
 }
