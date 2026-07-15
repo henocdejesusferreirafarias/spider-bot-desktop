@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Frame, Page } from "patchright";
 import {
   decideWithdrawalManagementDestination,
+  decidePixReceivingAccountSignals,
   hasDepositSurface,
   isDetachedDepositRouteState,
   decideRegistrationCompletion
@@ -216,5 +217,43 @@ test("Withdrawal Management destination stays unknown without a confirmed surfac
       hasWithdrawalRequestSurface: false
     }),
     "unknown"
+  );
+});
+
+test("PIX receiving signals: active=10 sem superficie nao fica pronto", () => {
+  assert.deepEqual(
+    decidePixReceivingAccountSignals({
+      routeActive10: true,
+      hasReceivingAccountArea: false,
+      hasPixAddAction: false,
+    }),
+    {
+      routeActive10: true,
+      hasReceivingAccountArea: false,
+      hasPixAddAction: false,
+      ready: false,
+    },
+  );
+});
+
+test("PIX receiving signals: superficie sem active=10 nao fica pronta", () => {
+  assert.equal(
+    decidePixReceivingAccountSignals({
+      routeActive10: false,
+      hasReceivingAccountArea: true,
+      hasPixAddAction: true,
+    }).ready,
+    false,
+  );
+});
+
+test("PIX receiving signals: tres sinais confirmam a aba", () => {
+  assert.equal(
+    decidePixReceivingAccountSignals({
+      routeActive10: true,
+      hasReceivingAccountArea: true,
+      hasPixAddAction: true,
+    }).ready,
+    true,
   );
 });

@@ -6,6 +6,7 @@ import {
   waitForProfileSurface,
   waitForWithdrawalManagementDestination,
   waitForWithdrawalPasswordConfirmationDestination,
+  waitForPixReceivingAccountSurface,
 } from "../src/main/services/screen-waits.js";
 
 // A camada de esperas condicionais (screen-waits) faz polling de predicados de
@@ -19,7 +20,7 @@ function fakeFrame(url = "https://p.example/"): Frame {
 
 // resolveContentFrame(page) devolve a propria page quando so ha o main frame, entao
 // o predicado (hasProfileSurface/hasDepositSurface) chama page.evaluate diretamente.
-function fakePage(evaluate: () => Promise<boolean>): Page {
+function fakePage(evaluate: () => Promise<unknown>): Page {
   const main = fakeFrame();
   return {
     frames: () => [main],
@@ -27,6 +28,17 @@ function fakePage(evaluate: () => Promise<boolean>): Page {
     evaluate,
     waitForTimeout: async () => undefined
   } as unknown as Page;
+}
+
+function fakePixReceivingPage(
+  states: Array<{ hasReceivingAccountArea: boolean; hasPixAddAction: boolean }>,
+): Page {
+  let index = 0;
+  return fakePage(async () => {
+    const state = states[Math.min(index, states.length - 1)]!;
+    index += 1;
+    return state;
+  });
 }
 
 function fakeDestinationPage(destinations: Array<"needs_withdrawal_password" | "withdrawal_ready" | "unknown">): Page {
@@ -94,5 +106,24 @@ test("waitForWithdrawalPasswordConfirmationDestination: ignora setup transitorio
   assert.equal(
     await waitForWithdrawalPasswordConfirmationDestination(page, 2000),
     "withdrawal_ready",
+  );
+});
+
+test("waitForPixReceivingAccountSurface: ignora sinais parciais ate a aba PIX estar pronta", async () => {
+  const page = fakePixReceivingPage([
+    { hasReceivingAccountArea: false, hasPixAddAction: false },
+    { hasReceivingAccountArea: true, hasPixAddAction: false },
+    { hasReceivingAccountArea: true, hasPixAddAction: true },
+  ]);
+  const readRoute = async () => ({
+    name: "withdraw",
+    path: "/home/withdraw",
+    fullPath: "/home/withdraw?active=10",
+    query: { active: "10" },
+  });
+
+  assert.equal(
+    (await waitForPixReceivingAccountSurface(page, readRoute, 2000)).ready,
+    true,
   );
 });

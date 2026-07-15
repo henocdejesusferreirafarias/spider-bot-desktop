@@ -1,5 +1,6 @@
 import type { Page } from "patchright";
 import { resolveContentFrame, type BrowserRuntimeWindow } from "./automation-dom.js";
+import type { RouteInfo } from "./spa-navigation.js";
 import {
   hasActiveSession,
   isLoginFormVisible,
@@ -8,6 +9,8 @@ import {
   hasWithdrawalRequestSurface,
   classifyWithdrawalManagementDestination,
   type WithdrawalManagementDestination,
+  readPixReceivingAccountSignals,
+  type PixReceivingAccountSignals,
   hasVisibleNumberKeyboard,
   hasDepositSurface,
   hasProfileSurface
@@ -140,6 +143,22 @@ export async function waitForWithdrawalPasswordConfirmationDestination(
     await page.waitForTimeout(180).catch(() => null);
   }
   return classifyWithdrawalManagementDestination(page);
+}
+
+export async function waitForPixReceivingAccountSurface(
+  page: Page,
+  readRoute: () => Promise<RouteInfo | null>,
+  timeoutMs: number,
+): Promise<PixReceivingAccountSignals> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const signals = await readPixReceivingAccountSignals(page, await readRoute());
+    if (signals.ready) {
+      return signals;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return readPixReceivingAccountSignals(page, await readRoute());
 }
 
 export async function waitForAddPixModal(page: Page, timeoutMs: number): Promise<boolean> {

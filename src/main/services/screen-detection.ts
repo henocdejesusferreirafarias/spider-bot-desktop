@@ -1,4 +1,5 @@
 import type { Frame, Page } from "patchright";
+import type { RouteInfo } from "./spa-navigation.js";
 import {
   PATCHRIGHT_MAIN_WORLD,
   resolveContentFrame,
@@ -585,6 +586,75 @@ export type WithdrawalManagementDestination =
   | "needs_withdrawal_password"
   | "withdrawal_ready"
   | "unknown";
+
+export interface PixReceivingAccountSignals {
+  routeActive10: boolean;
+  hasReceivingAccountArea: boolean;
+  hasPixAddAction: boolean;
+  ready: boolean;
+}
+
+export function decidePixReceivingAccountSignals(
+  input: Omit<PixReceivingAccountSignals, "ready">,
+): PixReceivingAccountSignals {
+  return {
+    ...input,
+    ready:
+      input.routeActive10 &&
+      input.hasReceivingAccountArea &&
+      input.hasPixAddAction,
+  };
+}
+
+export async function readPixReceivingAccountSignals(
+  page: Page,
+  route: RouteInfo | null,
+): Promise<PixReceivingAccountSignals> {
+  const domSignals = await resolveContentFrame(page)
+    .evaluate(() => {
+      const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+      const normalize = (value: string | null | undefined) =>
+        (value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const isVisible = (element: BrowserRuntimeElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = runtimeWindow.getComputedStyle(element);
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || "1") > 0.01 &&
+          rect.width > 8 &&
+          rect.height > 8 &&
+          rect.right > 0 &&
+          rect.bottom > 0 &&
+          rect.left < runtimeWindow.innerWidth &&
+          rect.top < runtimeWindow.innerHeight
+        );
+      };
+      const bodyText = normalize(runtimeWindow.document.body?.innerText);
+      const hasReceivingAccountArea = /conta para recebimento|receiving account/.test(bodyText);
+      const hasPixAddAction = Array.from(
+        runtimeWindow.document.querySelectorAll(
+          "button,[role='button'],a,.ui-button,.ui-cell,div,span,li",
+        ),
+      ).some((element) => {
+        if (!isVisible(element)) return false;
+        const text = normalize(element.textContent);
+        return text.length > 0 && text.length <= 100 && /pix/.test(text) && /adicionar|add/.test(text);
+      });
+      return { hasReceivingAccountArea, hasPixAddAction };
+    })
+    .catch(() => ({ hasReceivingAccountArea: false, hasPixAddAction: false }));
+
+  return decidePixReceivingAccountSignals({
+    routeActive10: route?.query.active === "10",
+    ...domSignals,
+  });
+}
 
 export function decideWithdrawalManagementDestination(input: {
   hasPasswordSetupSurface: boolean;
