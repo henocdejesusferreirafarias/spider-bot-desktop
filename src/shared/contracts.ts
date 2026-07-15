@@ -462,8 +462,8 @@ export interface PixKeyRegistrationControlResult {
   pixType: PixRegistrationType;
   profileId: string;
   profileName: string;
-  status: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" | "pix_add_form_ready" | "pix_add_form_filled" | "failed";
-  step?: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" | "pix-enter-password" | "pix-password-confirmation" | "pix-add-form-fill";
+  status: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" | "pix_add_form_ready" | "pix_add_form_filled" | "pix_already_registered" | "pix_key_registered" | "pix_key_pending_confirmation" | "pix_key_conflict" | "failed";
+  step?: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-preflight" | "pix-add-password" | "pix-enter-password" | "pix-password-confirmation" | "pix-add-form-fill" | "pix-submit" | "pix-submission-confirmation";
 }
 
 export interface WithdrawalPreparationControlRequest {

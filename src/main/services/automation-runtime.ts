@@ -59,6 +59,8 @@ import {
   waitForPixAddForm,
 } from "./pix-password-confirmation.js";
 import { fillPixPhoneAddForm } from "./pix-add-form-fill.js";
+import { confirmPixPhoneSubmission, inspectPixReceivingAccounts } from "./pix-phone-key-confirmation.js";
+import { decidePixPhonePreflight } from "./pix-phone-key-lifecycle.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -852,7 +854,8 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" | "pix-enter-password" | "pix-password-confirmation" | "pix-add-form-fill" = "profile";
+    let step: PixKeyRegistrationControlResult["step"] = "profile";
+    let reservedPhoneKeyId: string | undefined;
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -898,7 +901,7 @@ export class AutomationRuntimeService {
       if (entryDestination === "unknown") {
         throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
       }
-      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" | "pix_add_form_ready" | "pix_add_form_filled" = entryDestination;
+      let resultStatus: PixKeyRegistrationControlResult["status"] = entryDestination;
       if (resultStatus === "needs_withdrawal_password") {
         step = "withdrawal-password";
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
@@ -942,6 +945,58 @@ export class AutomationRuntimeService {
         );
       }
       resultStatus = "pix_receiving_ready";
+
+      step = "pix-preflight";
+      const pendingPhoneKey = this.database.findPendingPixPhoneKey(profile.id);
+      const accountSnapshot = await inspectPixReceivingAccounts(spa);
+      const preflight = decidePixPhonePreflight({
+        pendingKeyId: pendingPhoneKey?.id,
+        phoneNumber: pendingPhoneKey?.phoneNumber,
+        accounts: accountSnapshot.accounts,
+      });
+      if (preflight === "manual-account") {
+        resultStatus = "pix_already_registered";
+        this.database.updateRun(run.id, {
+          status: "succeeded",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "warning", `[${profile.name}] Cadastro PIX ignorado: a plataforma ja possui uma conta para recebimento.`);
+        return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
+      }
+      if (preflight === "pending-used") {
+        if (!pendingPhoneKey || !this.database.markPixPhoneKeyUsed(pendingPhoneKey.id, { profileId: profile.id })) {
+          throw new Error("nao foi possivel confirmar a chave PIX pendente como cadastrada");
+        }
+        resultStatus = "pix_key_registered";
+        this.database.updateRun(run.id, {
+          status: "succeeded",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "success", `[${profile.name}] Chave PIX pendente confirmada pela conta de recebimento.`);
+        return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
+      }
+      if (preflight === "conflict" || preflight === "insufficient-evidence") {
+        resultStatus = "pix_key_conflict";
+        this.database.updateRun(run.id, {
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "error", `[${profile.name}] Chave PIX pendente requer revisao (${preflight}).`);
+        return { error: preflight, pixType, profileId: profile.id, profileName: profile.name, status: resultStatus, step };
+      }
+      const phoneKey = pendingPhoneKey ?? this.database.reservePixPhoneKey(profile.id, run.id);
+      if (!phoneKey) {
+        throw new Error("chave PIX PHONE disponivel ausente para este perfil");
+      }
+      if (phoneKey.status === "reserved") {
+        reservedPhoneKeyId = phoneKey.id;
+      }
 
       step = "pix-add-password";
       if (!(await hasExistingWithdrawalPasswordModal(session.page))) {
@@ -989,10 +1044,6 @@ export class AutomationRuntimeService {
       step = "pix-add-form-fill";
       const account = this.database.getOrCreateProfileAccount(profile.id);
       const cpf = this.database.resolveCpfForProfile(profile.id);
-      const phoneKey = this.database.reservePixPhoneKey(profile.id, run.id);
-      if (!phoneKey) {
-        throw new Error("chave PIX PHONE reservada ausente para este perfil");
-      }
       const formFill = await fillPixPhoneAddForm(spa, {
         realName: account.realName,
         phoneNumber: phoneKey.phoneNumber,
@@ -1005,6 +1056,38 @@ export class AutomationRuntimeService {
       }
       resultStatus = "pix_add_form_filled";
 
+      if (phoneKey.status === "reserved") {
+        if (!this.database.markPixPhoneKeyPendingConfirmation(phoneKey.id, { profileId: profile.id, runId: run.id })) {
+          throw new Error("nao foi possivel proteger a chave PIX antes da confirmacao");
+        }
+        reservedPhoneKeyId = undefined;
+      }
+      step = "pix-submit";
+      const submission = await confirmPixPhoneSubmission(spa, phoneKey.phoneNumber, PIX_MS(12000));
+      step = "pix-submission-confirmation";
+      if (submission.result === "confirmed") {
+        if (!this.database.markPixPhoneKeyUsed(phoneKey.id, { profileId: profile.id })) {
+          throw new Error("a chave PIX foi listada, mas nao foi possivel registra-la como cadastrada");
+        }
+        resultStatus = "pix_key_registered";
+      } else if (submission.result === "conflict") {
+        resultStatus = "pix_key_conflict";
+      } else {
+        resultStatus = "pix_key_pending_confirmation";
+      }
+
+      if (resultStatus === "pix_key_conflict" || resultStatus === "pix_key_pending_confirmation") {
+        this.database.updateRun(run.id, {
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        const reason = submission.reason ?? "confirmacao-inconclusiva";
+        this.log(run.id, "error", `[${profile.name}] Cadastro PIX requer revisao (${resultStatus}; ${reason}).`);
+        return { error: reason, pixType, profileId: profile.id, profileName: profile.name, status: resultStatus, step };
+      }
+
       this.database.updateRun(run.id, {
         status: "succeeded",
         finishedAt: new Date().toISOString(),
@@ -1014,6 +1097,9 @@ export class AutomationRuntimeService {
       this.log(run.id, "success", `[${profile.name}] Formulario PIX preenchido: ${resultStatus}.`);
       return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
     } catch (error) {
+      if (reservedPhoneKeyId) {
+        this.database.releasePixPhoneKeyReservation(reservedPhoneKeyId, run.id);
+      }
       const message = error instanceof Error ? error.message : "erro inesperado";
       this.database.updateRun(run.id, { status: "failed", finishedAt: new Date().toISOString(), metrics: { manual: true, pixType, pixWithdrawalEntry: "failed", durationMs: Date.now() - new Date(run.startedAt).getTime() } });
       this.database.updateProfileStatus(profile.id, "active");
