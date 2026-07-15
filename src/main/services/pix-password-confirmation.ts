@@ -1,7 +1,6 @@
 import { getCurrentRoute, type RouteInfo, type SpaHandle } from "./spa-navigation.js";
 
 const WITHDRAWAL_PASSWORD_MAIN_WORLD = false;
-const CONFIRM_LABELS = new Set(["proximo", "confirmar", "next", "continue"]);
 
 export type PixPasswordConfirmationReason =
   | "source-invalid"
@@ -52,6 +51,7 @@ async function inspectSourceAction(surface: SpaHandle): Promise<SourceActionInsp
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
+    const confirmLabels = new Set(["proximo", "confirmar", "next", "continue"]);
     const roots = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-popup.ui-dialog"));
     const sources = roots.flatMap((root, modalIndex) => {
       if (!visible(root)) return [];
@@ -68,7 +68,7 @@ async function inspectSourceAction(surface: SpaHandle): Promise<SourceActionInsp
       const actions = Array.from(root.querySelectorAll<HTMLElement>(".ui-button"))
         .filter((action) => visible(action))
         .filter((action) => !action.hasAttribute("disabled"))
-        .filter((action) => CONFIRM_LABELS.has(normalize(action.textContent)));
+        .filter((action) => confirmLabels.has(normalize(action.textContent)));
       return [{ modalIndex, actionIndexes: actions.map((action) =>
         Array.from(root.querySelectorAll<HTMLElement>(".ui-button")).indexOf(action),
       ) }];

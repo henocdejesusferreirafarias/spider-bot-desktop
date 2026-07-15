@@ -40,7 +40,7 @@ function element(
 }
 
 function withPinConfirmationSurface<T>(
-  options: { filledCells: number; buttons: FakeButton[]; hiddenLeadingModal?: boolean },
+  options: { filledCells: number; buttons: FakeButton[]; hiddenLeadingModal?: boolean; serializedEvaluate?: boolean },
   callback: (surface: SpaHandle, clicks: () => number) => Promise<T>,
 ): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -81,7 +81,12 @@ function withPinConfirmationSurface<T>(
   let selectedModalIndex = -1;
   const expectedModalIndex = options.hiddenLeadingModal ? 1 : 0;
   const surface = {
-    evaluate: async (fn: () => unknown) => fn(),
+    evaluate: async (fn: () => unknown) => {
+      if (options.serializedEvaluate && String(fn).includes("CONFIRM_LABELS")) {
+        throw new Error("page callback captured main-process state");
+      }
+      return fn();
+    },
     locator: () => ({
       nth: (modalIndex: number) => {
         selectedModalIndex = modalIndex;
@@ -123,6 +128,19 @@ test("preserva o indice global quando um modal PIN oculto antecede o modal ativo
     filledCells: 6,
     buttons: [{ text: "Próximo" }],
     hiddenLeadingModal: true,
+  }, async (surface, clicks) => {
+    const result = await confirmExistingWithdrawalPassword(surface);
+
+    assert.deepEqual(result, { ok: true });
+    assert.equal(clicks(), 1);
+  });
+});
+
+test("nao captura rotulos de confirmacao fora do mundo da pagina", async () => {
+  await withPinConfirmationSurface({
+    filledCells: 6,
+    buttons: [{ text: "Próximo" }],
+    serializedEvaluate: true,
   }, async (surface, clicks) => {
     const result = await confirmExistingWithdrawalPassword(surface);
 
