@@ -167,7 +167,43 @@ test("reservePixPhoneKey returns a user-provided key when the pool has one and m
   assert.equal(reserved.assignedProfileId, profile.id);
 
   const second = db.reservePixPhoneKey(profile.id);
-  assert.equal(second, undefined);
+  assert.ok(second);
+  assert.equal(second.id, reserved.id);
+});
+
+test("reservePixPhoneKey preserva a mesma chave reservada apos reabrir o banco", () => {
+  const paths = createPaths();
+  const db = new PredatorDatabase(paths, plainStore);
+  const profile = db.createProfile({
+    name: "Persistent Pix Reservation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  const secondProfile = db.createProfile({
+    name: "Other Pix Reservation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777\n11988886666");
+  const reserved = db.reservePixPhoneKey(profile.id);
+  assert.ok(reserved);
+  db.close();
+
+  const reopened = new PredatorDatabase(paths, plainStore);
+  const otherReservation = reopened.reservePixPhoneKey(secondProfile.id);
+  assert.ok(otherReservation);
+  assert.notEqual(otherReservation.id, reserved.id);
+  const resumed = reopened.reservePixPhoneKey(profile.id);
+
+  assert.ok(resumed);
+  assert.equal(resumed.id, reserved.id);
+  assert.equal(resumed.status, "reserved");
+  assert.equal(resumed.assignedProfileId, profile.id);
+  reopened.close();
 });
 
 test("ensureProfileWithdrawalPassword reuses a persisted password containing zero", () => {

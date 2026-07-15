@@ -891,7 +891,6 @@ export class PredatorDatabase {
     this.initializeSchema();
     this.seedIfEmpty();
     this.ensureProfileArtifacts();
-    this.releaseInterruptedPixPhoneKeyReservations();
     this.recoverInterruptedRuns();
   }
 
@@ -2240,6 +2239,17 @@ export class PredatorDatabase {
   }
 
   reservePixPhoneKey(profileId: string): PixPhoneKeyRecord | undefined {
+    const existing = this.db
+      .prepare(`
+        SELECT * FROM pix_phone_keys
+        WHERE status = 'reserved' AND assigned_profile_id = ?
+        ORDER BY assigned_at ASC LIMIT 1
+      `)
+      .get(profileId) as PixPhoneKeyRow | undefined;
+    if (existing) {
+      return this.getPixPhoneKey(existing.id);
+    }
+
     const row = this.db
       .prepare("SELECT * FROM pix_phone_keys WHERE status = 'available' ORDER BY created_at ASC LIMIT 1")
       .get() as PixPhoneKeyRow | undefined;
@@ -2429,14 +2439,6 @@ export class PredatorDatabase {
       this.ensureProfileAccount(profile.id);
       this.ensureSystemAutomation(profile.id);
     }
-  }
-
-  private releaseInterruptedPixPhoneKeyReservations(): void {
-    this.db.prepare(`
-      UPDATE pix_phone_keys
-      SET status = 'available', assigned_profile_id = NULL, assigned_at = NULL, updated_at = ?
-      WHERE status = 'reserved'
-    `).run(new Date().toISOString());
   }
 
   private getPixPhoneKey(pixKeyId: string): PixPhoneKeyRecord {
