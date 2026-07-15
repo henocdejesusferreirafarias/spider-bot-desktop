@@ -60,6 +60,7 @@ function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initia
       dispatchEvent: (event: { type: string }) => {
         if (event.type === "touchend") {
           activeTouch = false;
+          queueMicrotask(flushPendingDigit);
           return true;
         }
         if (event.type !== "touchstart" || activeTouch) return true;
@@ -188,6 +189,15 @@ test("executa a interacao da senha no contexto principal da pagina", async () =>
 
     assert.equal(result.ok, true);
     assert.equal(evaluateWorlds().length > 0, true);
-    assert.equal(evaluateWorlds().every((mainWorld) => mainWorld), true, JSON.stringify(evaluateWorlds()));
+    assert.equal(evaluateWorlds().every((isolatedContext) => !isolatedContext), true, JSON.stringify(evaluateWorlds()));
+  });
+});
+
+test("preenche cada PIN em uma unica transacao da pagina", async () => {
+  await withPasswordSurface({}, async (page, _touchCount, _focusTapCount, evaluateWorlds) => {
+    const result = await fillWithdrawalPasswordSetup(page, "102345", async () => undefined);
+
+    assert.equal(result.ok, true);
+    assert.equal(evaluateWorlds().length, 3);
   });
 });

@@ -1,7 +1,8 @@
 import type { SpaHandle } from "./spa-navigation.js";
 
-// O teclado Vue aceita a sequencia de touch somente no contexto da propria pagina.
-const WITHDRAWAL_PASSWORD_MAIN_WORLD = true;
+// O terceiro argumento de `evaluate` e `isolatedContext`: `false` executa no
+// contexto principal, onde o componente Vue e o teclado virtual realmente vivem.
+const WITHDRAWAL_PASSWORD_MAIN_WORLD = false;
 
 export type WithdrawalPasswordSetupStage = "first-field-filled" | "second-field-filled";
 
@@ -61,8 +62,11 @@ async function fillFocusedField(
   expectedFieldIndex: number,
   password: string,
 ): Promise<FieldResult> {
-  const readState = () => spa.evaluate(
-    (): { ok: boolean; activeIndex: number; filledCounts: number[]; reason?: FieldResult["reason"]; diag?: string } => {
+  // Uma transacao por PIN, deliberadamente igual ao probe que funcionou no
+  // DevTools. Separar cada tecla em varios evaluate() cruzava mundos/turnos do
+  // Vue e fazia o segundo campo perder a continuidade do teclado virtual.
+  return spa.evaluate(
+    async ({ expectedFieldIndex: fieldIndex, password: pin }): Promise<FieldResult> => {
       const visible = (element: Element) => {
         const rect = element.getBoundingClientRect();
         const style = globalThis.getComputedStyle(element);
@@ -72,78 +76,67 @@ async function fillFocusedField(
         .filter((element): element is HTMLElement => visible(element));
       const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
         .find((element) => visible(element));
-      if (!keyboard || !visible(keyboard) || fields.length !== 2) {
-        return { ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: `fields=${fields.length} keyboard=${Boolean(keyboard)}` };
+      const field = fields[fieldIndex];
+      if (!keyboard || !field || fields.length !== 2) {
+        return { ok: false, filled: false, reason: "surface-invalid", diag: `fields=${fields.length} keyboard=${Boolean(keyboard)} field=${fieldIndex}` };
       }
-      const cells = fields.map((field) => Array.from(field.querySelectorAll<HTMLElement>(".ui-password-input__item")));
-      if (cells.some((items) => items.length !== 6)) {
-        return { ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: `cells=${cells.map((items) => items.length).join(",")}` };
+      const cells = Array.from(field.querySelectorAll<HTMLElement>(".ui-password-input__item"));
+      if (cells.length !== pin.length) {
+        return { ok: false, filled: false, reason: "surface-invalid", diag: `field=${fieldIndex} cells=${cells.length}` };
       }
-      const filledCount = (items: HTMLElement[]) => items.filter((item) => {
+      const filledCount = () => cells.filter((item) => {
         if (item.textContent?.trim()) return true;
         const marker = item.querySelector<HTMLElement>("i");
         return Boolean(marker && globalThis.getComputedStyle(marker).visibility !== "hidden");
       }).length;
-      const activeIndex = cells.findIndex((items) => items.some((item) => item.classList.contains("ui-password-input__item--focus")));
-      return { ok: true, activeIndex, filledCounts: cells.map(filledCount) };
-    },
-    undefined,
-    WITHDRAWAL_PASSWORD_MAIN_WORLD,
-  ).catch((error): { ok: false; activeIndex: number; filledCounts: number[]; reason: "surface-invalid"; diag: string } => ({
-    ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: String(error)
-  }));
+      if (filledCount() !== 0) {
+        return { ok: false, filled: false, reason: "field-partially-filled", diag: `field=${fieldIndex} filled=${filledCount()}` };
+      }
+      if (!field.querySelector(".ui-password-input__item--focus")) {
+        return { ok: false, filled: false, reason: "field-not-focused", diag: `field=${fieldIndex}` };
+      }
 
-  const dispatchDigit = (digit: string, identifier: number) => spa.evaluate(
-    ({ digit, identifier }): FieldResult => {
-      const visible = (element: Element) => {
-        const rect = element.getBoundingClientRect();
-        const style = globalThis.getComputedStyle(element);
-        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 8 && rect.height > 8;
-      };
-      const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
-        .find((element) => visible(element));
-      if (!keyboard) return { ok: false, filled: false, reason: "surface-invalid", diag: "visible-keyboard-absent" };
-      const key = Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
-        .find((element) => element.textContent?.trim() === digit);
-      if (!key) return { ok: false, filled: false, reason: "surface-invalid", diag: `digit-key=${digit}` };
-      const rect = key.getBoundingClientRect();
-      const touch = new Touch({ identifier, target: key, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
-      key.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
-      key.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
-      return { ok: true, filled: false };
+      for (const [digitIndex, digit] of [...pin].entries()) {
+        const key = Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
+          .find((element) => element.textContent?.trim() === digit);
+        if (!key) {
+          return { ok: false, filled: false, reason: "surface-invalid", diag: `digit-key=${digit}` };
+        }
+        const before = filledCount();
+        const rect = key.getBoundingClientRect();
+        const touch = new Touch({
+          identifier: digitIndex + 1,
+          target: key,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2,
+        });
+        key.dispatchEvent(new TouchEvent("touchstart", {
+          bubbles: true,
+          cancelable: true,
+          touches: [touch],
+          targetTouches: [touch],
+          changedTouches: [touch],
+        }));
+        key.dispatchEvent(new TouchEvent("touchend", {
+          bubbles: true,
+          cancelable: true,
+          touches: [],
+          targetTouches: [],
+          changedTouches: [touch],
+        }));
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        const after = filledCount();
+        if (after !== before + 1) {
+          return { ok: false, filled: false, reason: "digit-unconfirmed", diag: `field=${fieldIndex} digit=${digitIndex} before=${before} after=${after}` };
+        }
+      }
+      return filledCount() === pin.length
+        ? { ok: true, filled: true }
+        : { ok: false, filled: false, reason: "digit-unconfirmed", diag: `field=${fieldIndex} final=${filledCount()}` };
     },
-    { digit, identifier },
+    { expectedFieldIndex, password },
     WITHDRAWAL_PASSWORD_MAIN_WORLD,
   ).catch((error): FieldResult => ({ ok: false, filled: false, reason: "surface-invalid", diag: String(error) }));
-
-  for (let digitIndex = 0; digitIndex < password.length; digitIndex += 1) {
-    const before = await readState();
-    if (!before.ok) return { ok: false, filled: false, reason: before.reason, diag: before.diag };
-    if (before.activeIndex !== expectedFieldIndex) {
-      return { ok: false, filled: false, reason: "field-not-focused", diag: `active=${before.activeIndex} expected=${expectedFieldIndex}` };
-    }
-    if (before.filledCounts[expectedFieldIndex] !== digitIndex) {
-      return { ok: false, filled: false, reason: "field-partially-filled", diag: `filled=${before.filledCounts[expectedFieldIndex]} expected=${digitIndex}` };
-    }
-
-    const dispatched = await dispatchDigit(password[digitIndex]!, digitIndex + 1);
-    if (!dispatched.ok) return dispatched;
-
-    const deadline = Date.now() + 1800;
-    let accepted = false;
-    while (Date.now() < deadline) {
-      const after = await readState();
-      if (!after.ok) return { ok: false, filled: false, reason: after.reason, diag: after.diag };
-      if (after.filledCounts[expectedFieldIndex] === digitIndex + 1) {
-        accepted = true;
-        break;
-      }
-      await spa.waitForTimeout(80).catch(() => undefined);
-    }
-    if (!accepted) return { ok: false, filled: false, reason: "digit-unconfirmed", diag: `digit-index=${digitIndex}` };
-  }
-
-  return { ok: true, filled: true };
 }
 
 export async function fillWithdrawalPasswordSetup(
