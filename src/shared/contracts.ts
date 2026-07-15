@@ -78,7 +78,7 @@ export type AutomationStatus =
   | "cancelled";
 export type AutomationKind = "account-registration";
 export type ProfileAccountStatus = "generated" | "registered" | "failed";
-export type PixPhoneKeyStatus = "available" | "reserved" | "used";
+export type PixPhoneKeyStatus = "available" | "reserved" | "pending_confirmation" | "used";
 export type PixRegistrationType = "PHONE";
 export type ActivityLevel = "info" | "success" | "warning" | "error";
 export type AppSection =
@@ -206,6 +206,10 @@ export interface PixPhoneKeyRecord {
   status: PixPhoneKeyStatus;
   assignedProfileId?: string;
   assignedAt?: string;
+  reservationRunId?: string;
+  pendingProfileId?: string;
+  pendingRunId?: string;
+  pendingAt?: string;
   usedProfileId?: string;
   usedAccountId?: string;
   usedAt?: string;

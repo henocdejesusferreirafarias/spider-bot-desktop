@@ -989,7 +989,7 @@ export class AutomationRuntimeService {
       step = "pix-add-form-fill";
       const account = this.database.getOrCreateProfileAccount(profile.id);
       const cpf = this.database.resolveCpfForProfile(profile.id);
-      const phoneKey = this.database.reservePixPhoneKey(profile.id);
+      const phoneKey = this.database.reservePixPhoneKey(profile.id, run.id);
       if (!phoneKey) {
         throw new Error("chave PIX PHONE reservada ausente para este perfil");
       }

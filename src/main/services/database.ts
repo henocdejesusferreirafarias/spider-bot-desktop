@@ -222,6 +222,10 @@ interface PixPhoneKeyRow {
   status: PixPhoneKeyRecord["status"];
   assigned_profile_id: string | null;
   assigned_at: string | null;
+  reservation_run_id: string | null;
+  pending_profile_id: string | null;
+  pending_run_id: string | null;
+  pending_at: string | null;
   used_profile_id: string | null;
   used_account_id: string | null;
   used_at: string | null;
@@ -892,6 +896,7 @@ export class PredatorDatabase {
     this.seedIfEmpty();
     this.ensureProfileArtifacts();
     this.recoverInterruptedRuns();
+    this.recoverInactivePixPhoneKeyReservations([]);
   }
 
   close(): void {
@@ -907,6 +912,7 @@ export class PredatorDatabase {
     this.createSchema();
     this.ensureProfileAccountOptionalColumns();
     this.ensureProxyOptionalColumns();
+    this.ensurePixPhoneKeyLifecycleColumns();
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
   }
 
@@ -1041,6 +1047,10 @@ export class PredatorDatabase {
         status TEXT NOT NULL,
         assigned_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
         assigned_at TEXT,
+        reservation_run_id TEXT,
+        pending_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
+        pending_run_id TEXT,
+        pending_at TEXT,
         used_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
         used_account_id TEXT,
         used_at TEXT,
@@ -2103,7 +2113,7 @@ export class PredatorDatabase {
 
   listPixPhoneKeys(): PixPhoneKeyRecord[] {
     return (this.db
-      .prepare("SELECT * FROM pix_phone_keys WHERE status = 'available' ORDER BY created_at ASC")
+      .prepare("SELECT * FROM pix_phone_keys ORDER BY created_at ASC")
       .all() as unknown as PixPhoneKeyRow[]).map((row) => this.mapPixPhoneKey(row));
   }
 
@@ -2135,25 +2145,7 @@ export class PredatorDatabase {
         .get(phoneHash) as { id: string; status: PixPhoneKeyRecord["status"] } | undefined;
 
       if (existing) {
-        if (existing.status !== "used") {
-          skipped.push(phoneNumber);
-          continue;
-        }
-
-        this.db.prepare(`
-          UPDATE pix_phone_keys
-          SET phone_number_enc = ?,
-              status = 'available',
-              assigned_profile_id = NULL,
-              assigned_at = NULL,
-              used_profile_id = NULL,
-              used_account_id = NULL,
-              used_at = NULL,
-              updated_at = ?
-          WHERE id = ?
-        `).run(encryptedPhoneNumber, now, existing.id);
-
-        created.push(this.getPixPhoneKey(existing.id));
+        skipped.push(phoneNumber);
         continue;
       }
 
@@ -2161,8 +2153,9 @@ export class PredatorDatabase {
       this.db.prepare(`
         INSERT INTO pix_phone_keys (
           id, phone_number_enc, phone_hash, status, assigned_profile_id,
-          assigned_at, used_profile_id, used_account_id, used_at, created_at, updated_at
-        ) VALUES (?, ?, ?, 'available', NULL, NULL, NULL, NULL, NULL, ?, ?)
+          assigned_at, reservation_run_id, pending_profile_id, pending_run_id, pending_at,
+          used_profile_id, used_account_id, used_at, created_at, updated_at
+        ) VALUES (?, ?, ?, 'available', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
       `).run(id, encryptedPhoneNumber, phoneHash, now, now);
 
       created.push(this.getPixPhoneKey(id));
@@ -2186,7 +2179,12 @@ export class PredatorDatabase {
   }
 
   deletePixPhoneKey(pixKeyId: string): void {
-    this.db.prepare("DELETE FROM pix_phone_keys WHERE id = ?").run(pixKeyId);
+    const result = this.db
+      .prepare("DELETE FROM pix_phone_keys WHERE id = ? AND status = 'available'")
+      .run(pixKeyId);
+    if (result.changes !== 1) {
+      throw new Error("Somente chaves PIX disponiveis podem ser excluidas.");
+    }
   }
 
   // Consome uma chave reservada APOS a confirmacao real do cadastro: em vez de apagar a
@@ -2196,13 +2194,55 @@ export class PredatorDatabase {
   markPixPhoneKeyUsed(
     pixKeyId: string,
     opts: { profileId: string; accountId?: string }
-  ): void {
+  ): boolean {
     const now = new Date().toISOString();
-    this.db.prepare(`
+    return this.db.prepare(`
       UPDATE pix_phone_keys
-      SET status = 'used', used_profile_id = ?, used_account_id = ?, used_at = ?, updated_at = ?
-      WHERE id = ? AND status = 'reserved'
-    `).run(opts.profileId, opts.accountId ?? null, now, now, pixKeyId);
+      SET status = 'used',
+          assigned_profile_id = NULL,
+          assigned_at = NULL,
+          reservation_run_id = NULL,
+          pending_profile_id = NULL,
+          pending_run_id = NULL,
+          pending_at = NULL,
+          used_profile_id = ?,
+          used_account_id = ?,
+          used_at = ?,
+          updated_at = ?
+      WHERE id = ? AND status = 'pending_confirmation' AND pending_profile_id = ?
+    `).run(opts.profileId, opts.accountId ?? null, now, now, pixKeyId, opts.profileId).changes === 1;
+  }
+
+  markPixPhoneKeyPendingConfirmation(
+    pixKeyId: string,
+    input: { profileId: string; runId: string }
+  ): boolean {
+    const now = new Date().toISOString();
+    return this.db.prepare(`
+      UPDATE pix_phone_keys
+      SET status = 'pending_confirmation',
+          assigned_profile_id = NULL,
+          assigned_at = NULL,
+          reservation_run_id = NULL,
+          pending_profile_id = ?,
+          pending_run_id = ?,
+          pending_at = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND status = 'reserved'
+        AND assigned_profile_id = ?
+        AND reservation_run_id = ?
+    `).run(input.profileId, input.runId, now, now, pixKeyId, input.profileId, input.runId).changes === 1;
+  }
+
+  findPendingPixPhoneKey(profileId: string): PixPhoneKeyRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT * FROM pix_phone_keys
+      WHERE status = 'pending_confirmation' AND pending_profile_id = ?
+      ORDER BY pending_at ASC
+      LIMIT 1
+    `).get(profileId) as PixPhoneKeyRow | undefined;
+    return row ? this.mapPixPhoneKey(row) : undefined;
   }
 
   updatePixPhoneKeyPhoneNumber(pixKeyId: string, input: string): PixPhoneKeyRecord {
@@ -2222,10 +2262,7 @@ export class PredatorDatabase {
       .get(phoneHash, pixKeyId) as { id: string; status: PixPhoneKeyRecord["status"] } | undefined;
 
     if (duplicate) {
-      if (duplicate.status !== "used") {
-        throw new Error("Esta chave PIX telefone ja esta cadastrada.");
-      }
-      this.db.prepare("DELETE FROM pix_phone_keys WHERE id = ?").run(duplicate.id);
+      throw new Error("Esta chave PIX telefone ja esta cadastrada.");
     }
 
     const encryptedPhoneNumber = this.secureStore.encrypt(phoneNumber) ?? phoneNumber;
@@ -2238,14 +2275,14 @@ export class PredatorDatabase {
     return this.getPixPhoneKey(pixKeyId);
   }
 
-  reservePixPhoneKey(profileId: string): PixPhoneKeyRecord | undefined {
+  reservePixPhoneKey(profileId: string, runId: string): PixPhoneKeyRecord | undefined {
     const existing = this.db
       .prepare(`
         SELECT * FROM pix_phone_keys
-        WHERE status = 'reserved' AND assigned_profile_id = ?
+        WHERE status = 'reserved' AND assigned_profile_id = ? AND reservation_run_id = ?
         ORDER BY assigned_at ASC LIMIT 1
       `)
-      .get(profileId) as PixPhoneKeyRow | undefined;
+      .get(profileId, runId) as PixPhoneKeyRow | undefined;
     if (existing) {
       return this.getPixPhoneKey(existing.id);
     }
@@ -2261,19 +2298,43 @@ export class PredatorDatabase {
     const now = new Date().toISOString();
     this.db.prepare(`
       UPDATE pix_phone_keys
-      SET status = 'reserved', assigned_profile_id = ?, assigned_at = ?, updated_at = ?
+      SET status = 'reserved',
+          assigned_profile_id = ?,
+          assigned_at = ?,
+          reservation_run_id = ?,
+          updated_at = ?
       WHERE id = ? AND status = 'available'
-    `).run(profileId, now, now, row.id);
+    `).run(profileId, now, runId, now, row.id);
 
     return this.getPixPhoneKey(row.id);
   }
 
-  releasePixPhoneKeyReservation(pixKeyId: string): void {
-    this.db.prepare(`
+  releasePixPhoneKeyReservation(pixKeyId: string, runId: string): boolean {
+    return this.db.prepare(`
       UPDATE pix_phone_keys
-      SET status = 'available', assigned_profile_id = NULL, assigned_at = NULL, updated_at = ?
-      WHERE id = ? AND status = 'reserved'
-    `).run(new Date().toISOString(), pixKeyId);
+      SET status = 'available',
+          assigned_profile_id = NULL,
+          assigned_at = NULL,
+          reservation_run_id = NULL,
+          updated_at = ?
+      WHERE id = ? AND status = 'reserved' AND reservation_run_id = ?
+    `).run(new Date().toISOString(), pixKeyId, runId).changes === 1;
+  }
+
+  recoverInactivePixPhoneKeyReservations(activeRunIds: readonly string[]): number {
+    const now = new Date().toISOString();
+    const inactiveClause = activeRunIds.length
+      ? `reservation_run_id IS NULL OR reservation_run_id NOT IN (${activeRunIds.map(() => "?").join(", ")})`
+      : "1 = 1";
+    return Number(this.db.prepare(`
+      UPDATE pix_phone_keys
+      SET status = 'available',
+          assigned_profile_id = NULL,
+          assigned_at = NULL,
+          reservation_run_id = NULL,
+          updated_at = ?
+      WHERE status = 'reserved' AND (${inactiveClause})
+    `).run(now, ...activeRunIds).changes);
   }
 
   getOrCreateProfileAccount(profileId: string): ProfileAccountRecord {
@@ -2340,6 +2401,23 @@ export class PredatorDatabase {
     return this.updateProfileAccountPixData(profileId, {
       withdrawalPassword: normalized
     });
+  }
+
+  private ensurePixPhoneKeyLifecycleColumns(): void {
+    const rows = this.db.prepare("PRAGMA table_info(pix_phone_keys)").all() as Array<{ name: string }>;
+    const existing = new Set(rows.map((row) => row.name));
+    const columns: Array<{ name: string; definition: string }> = [
+      { name: "reservation_run_id", definition: "reservation_run_id TEXT" },
+      { name: "pending_profile_id", definition: "pending_profile_id TEXT" },
+      { name: "pending_run_id", definition: "pending_run_id TEXT" },
+      { name: "pending_at", definition: "pending_at TEXT" }
+    ];
+
+    for (const column of columns) {
+      if (!existing.has(column.name)) {
+        this.db.exec(`ALTER TABLE pix_phone_keys ADD COLUMN ${column.definition};`);
+      }
+    }
   }
 
   getPersistedProfileWithdrawalPassword(profileId: string): string | undefined {
@@ -2987,6 +3065,10 @@ export class PredatorDatabase {
       status: row.status,
       assignedProfileId: row.assigned_profile_id ?? undefined,
       assignedAt: row.assigned_at ?? undefined,
+      reservationRunId: row.reservation_run_id ?? undefined,
+      pendingProfileId: row.pending_profile_id ?? undefined,
+      pendingRunId: row.pending_run_id ?? undefined,
+      pendingAt: row.pending_at ?? undefined,
       usedProfileId: row.used_profile_id ?? undefined,
       usedAccountId: row.used_account_id ?? undefined,
       usedAt: row.used_at ?? undefined,

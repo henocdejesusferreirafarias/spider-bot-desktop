@@ -142,7 +142,7 @@ test("reservePixPhoneKey returns undefined when no user-provided keys are availa
     color: "#d6d6d6"
   });
 
-  const reserved = db.reservePixPhoneKey(profile.id);
+  const reserved = db.reservePixPhoneKey(profile.id, "run-empty");
   assert.equal(reserved, undefined);
 });
 
@@ -160,18 +160,18 @@ test("reservePixPhoneKey returns a user-provided key when the pool has one and m
   assert.equal(imported.created.length, 1);
   assert.equal(imported.invalid.length, 0);
 
-  const reserved = db.reservePixPhoneKey(profile.id);
+  const reserved = db.reservePixPhoneKey(profile.id, "run-first");
   assert.ok(reserved);
   assert.equal(reserved.status, "reserved");
   assert.equal(reserved.phoneNumber, "11988887777");
   assert.equal(reserved.assignedProfileId, profile.id);
 
-  const second = db.reservePixPhoneKey(profile.id);
+  const second = db.reservePixPhoneKey(profile.id, "run-first");
   assert.ok(second);
   assert.equal(second.id, reserved.id);
 });
 
-test("reservePixPhoneKey preserva a mesma chave reservada apos reabrir o banco", () => {
+test("reabrir o banco libera uma reserva PIX vinculada a uma execucao interrompida", () => {
   const paths = createPaths();
   const db = new PredatorDatabase(paths, plainStore);
   const profile = db.createProfile({
@@ -189,21 +189,113 @@ test("reservePixPhoneKey preserva a mesma chave reservada apos reabrir o banco",
     color: "#d6d6d6"
   });
   db.addPixPhoneKeys("11988887777\n11988886666");
-  const reserved = db.reservePixPhoneKey(profile.id);
+  const reserved = db.reservePixPhoneKey(profile.id, "run-interrupted");
   assert.ok(reserved);
   db.close();
 
   const reopened = new PredatorDatabase(paths, plainStore);
-  const otherReservation = reopened.reservePixPhoneKey(secondProfile.id);
+  const otherReservation = reopened.reservePixPhoneKey(secondProfile.id, "run-next");
   assert.ok(otherReservation);
-  assert.notEqual(otherReservation.id, reserved.id);
-  const resumed = reopened.reservePixPhoneKey(profile.id);
+  assert.equal(otherReservation.id, reserved.id);
+  const resumed = reopened.reservePixPhoneKey(profile.id, "run-resumed");
 
   assert.ok(resumed);
-  assert.equal(resumed.id, reserved.id);
+  assert.notEqual(resumed.id, reserved.id);
   assert.equal(resumed.status, "reserved");
   assert.equal(resumed.assignedProfileId, profile.id);
   reopened.close();
+});
+
+test("PIX key releases a run-scoped reservation after an unsubmitted failure", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Released Pix Reservation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777");
+
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.equal(key?.status, "reserved");
+  db.releasePixPhoneKeyReservation(key!.id, "run-other");
+  assert.equal(db.listPixPhoneKeys().find((candidate) => candidate.id === key!.id)?.status, "reserved");
+  db.releasePixPhoneKeyReservation(key!.id, "run-a");
+
+  assert.equal(db.listPixPhoneKeys().find((candidate) => candidate.id === key!.id)?.status, "available");
+});
+
+test("PIX key survives an ambiguous final click as pending and becomes used only after confirmation", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Pending Pix Confirmation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777");
+
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+  assert.equal(db.findPendingPixPhoneKey(profile.id)?.status, "pending_confirmation");
+  assert.equal(db.markPixPhoneKeyUsed(key.id, { profileId: profile.id }), true);
+  assert.equal(db.listPixPhoneKeys().find((candidate) => candidate.id === key.id)?.status, "used");
+});
+
+test("recovery releases only inactive reserved PIX keys and keeps pending keys", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Pix Recovery",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  const pendingProfile = db.createProfile({
+    name: "Pending Pix Recovery",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777\n11988886666");
+
+  const reserved = db.reservePixPhoneKey(profile.id, "run-reserved");
+  assert.ok(reserved);
+  const pending = db.reservePixPhoneKey(pendingProfile.id, "run-pending");
+  assert.ok(pending);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(pending.id, { profileId: pendingProfile.id, runId: "run-pending" }), true);
+
+  db.recoverInactivePixPhoneKeyReservations([]);
+
+  const records = db.listPixPhoneKeys();
+  assert.equal(records.find((candidate) => candidate.id === reserved.id)?.status, "available");
+  assert.equal(records.find((candidate) => candidate.id === pending.id)?.status, "pending_confirmation");
+});
+
+test("reimporting a used PIX key preserves its used audit state", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Used Pix Audit",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777");
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+  assert.equal(db.markPixPhoneKeyUsed(key.id, { profileId: profile.id }), true);
+
+  const imported = db.addPixPhoneKeys("11988887777");
+
+  assert.equal(imported.created.length, 0);
+  assert.equal(imported.skipped.length, 1);
+  assert.equal(db.listPixPhoneKeys().find((candidate) => candidate.id === key.id)?.status, "used");
 });
 
 test("ensureProfileWithdrawalPassword reuses a persisted password containing zero", () => {
