@@ -11,7 +11,7 @@ type FakeCell = {
   querySelector: () => null;
 };
 
-function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean; listenerBoundKeyboard?: "hidden" | "visible"; tapEffect?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
+function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean; listenerBoundKeyboard?: "hidden" | "visible"; tapEffect?: boolean; serializedEvaluate?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalGetComputedStyle = globalThis.getComputedStyle;
   const originalTouch = (globalThis as { Touch?: unknown }).Touch;
@@ -117,6 +117,14 @@ function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFir
   const page = {
     evaluate: async (fn: (payload: { expectedFieldIndex: number; password: string }) => unknown, payload: { expectedFieldIndex: number; password: string }, mainWorld?: boolean) => {
       evaluateWorlds.push(Boolean(mainWorld));
+      const source = String(fn);
+      if (
+        options.serializedEvaluate
+        && !source.includes("password")
+        && source.includes("expectedFieldCount")
+      ) {
+        throw new Error("page callback captured main-process state");
+      }
       const result = fn(payload);
       flushPendingDigit();
       return result;
@@ -363,5 +371,14 @@ test("registra o snapshot seguro quando o foco do PIN nao confirma", async () =>
     assert.equal(result.ok, false);
     assert.equal(result.reason, "field-not-focused");
     assert.match(result.diag ?? "", /fields=1 cells=6 filled=0 focused=0 keyboards=1 visibleKeyboards=0 keyboardKeys=0/);
+  });
+});
+
+test("nao captura a contagem de grids fora do mundo da pagina", async () => {
+  await withPasswordSurface({ fieldCount: 1, serializedEvaluate: true }, async (page, touchCount) => {
+    const result = await fillExistingWithdrawalPassword(page, "102345");
+
+    assert.deepEqual(result, { ok: true, passwordEntered: true });
+    assert.equal(touchCount(), 6);
   });
 });
