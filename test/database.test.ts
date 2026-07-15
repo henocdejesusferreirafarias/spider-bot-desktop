@@ -170,6 +170,21 @@ test("reservePixPhoneKey returns a user-provided key when the pool has one and m
   assert.equal(second, undefined);
 });
 
+test("ensureProfileWithdrawalPassword reuses a persisted password containing zero", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Recovery-safe password",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+
+  db.setProfileWithdrawalPassword(profile.id, "102345");
+
+  assert.equal(db.ensureProfileWithdrawalPassword(profile.id), "102345");
+});
+
 test("createProxy round-trips mode and usernameSuffixTemplate", () => {
   const db = new PredatorDatabase(createPaths(), plainStore);
 

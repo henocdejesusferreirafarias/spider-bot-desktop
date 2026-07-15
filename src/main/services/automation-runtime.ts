@@ -44,6 +44,7 @@ import {
   routerPush,
 } from "./spa-navigation.js";
 import type { PlatformDescriptor } from "./spa-navigation.js";
+import { fillWithdrawalPasswordSetup } from "./withdrawal-password-setup.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -833,7 +834,7 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" = "profile";
+    let step: "profile" | "withdrawal-management" | "withdrawal-password" = "profile";
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -875,19 +876,35 @@ export class AutomationRuntimeService {
       if (!management.ok) {
         throw new Error(`gestao de saques indisponivel: ${management.reason ?? "desconhecido"} (${management.diag ?? "sem diagnostico"})`);
       }
-      const destination = await waitForWithdrawalManagementDestination(session.page, PIX_MS(12000));
-      if (destination === "unknown") {
+      const entryDestination = await waitForWithdrawalManagementDestination(session.page, PIX_MS(12000));
+      if (entryDestination === "unknown") {
         throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
+      }
+      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" = entryDestination;
+      if (resultStatus === "needs_withdrawal_password") {
+        step = "withdrawal-password";
+        const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
+        const checkpoint = async (passwordStage: "reserved" | "first-field-filled" | "second-field-filled") => {
+          this.database.updateRun(run.id, {
+            metrics: { manual: true, pixType, pixWithdrawalEntry: entryDestination, pixWithdrawalPasswordStage: passwordStage }
+          });
+        };
+        await checkpoint("reserved");
+        const filled = await fillWithdrawalPasswordSetup(spa, withdrawalPassword, checkpoint);
+        if (!filled.ok || !filled.firstFieldFilled || !filled.secondFieldFilled) {
+          throw new Error(`senha de saque nao confirmou preenchimento (${filled.reason ?? "desconhecido"})`);
+        }
+        resultStatus = "withdrawal_password_filled";
       }
 
       this.database.updateRun(run.id, {
         status: "succeeded",
         finishedAt: new Date().toISOString(),
-        metrics: { manual: true, pixType, pixWithdrawalEntry: destination, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
       });
       this.database.updateProfileStatus(profile.id, "active");
-      this.log(run.id, "success", `[${profile.name}] Entrada PIX confirmada: ${destination}.`);
-      return { pixType, profileId: profile.id, profileName: profile.name, status: destination };
+      this.log(run.id, "success", `[${profile.name}] Entrada PIX confirmada: ${resultStatus}.`);
+      return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
     } catch (error) {
       const message = error instanceof Error ? error.message : "erro inesperado";
       this.database.updateRun(run.id, { status: "failed", finishedAt: new Date().toISOString(), metrics: { manual: true, pixType, pixWithdrawalEntry: "failed", durationMs: Date.now() - new Date(run.startedAt).getTime() } });

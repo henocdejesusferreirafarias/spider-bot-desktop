@@ -87,12 +87,13 @@ function summarizeDepositResults(results: ManualDepositControlResult[]): string 
 
 function summarizePixRegistrationResults(results: PixKeyRegistrationControlResult[]): string {
   const needsPassword = results.filter((result) => result.status === "needs_withdrawal_password").length;
+  const passwordFilled = results.filter((result) => result.status === "withdrawal_password_filled").length;
   const withdrawalReady = results.filter((result) => result.status === "withdrawal_ready").length;
   const failed = results.filter((result) => result.status === "failed").length;
   if (failed > 0) {
-    return `${needsPassword} aguardando senha, ${withdrawalReady} saque(s) pronto(s), ${failed} falha(s).`;
+    return `${needsPassword} aguardando senha, ${passwordFilled} senha(s) preenchida(s), ${withdrawalReady} saque(s) pronto(s), ${failed} falha(s).`;
   }
-  return `${needsPassword} tela(s) aguardando senha; ${withdrawalReady} tela(s) de saque pronta(s).`;
+  return `${needsPassword} tela(s) aguardando senha; ${passwordFilled} senha(s) preenchida(s); ${withdrawalReady} tela(s) de saque pronta(s).`;
 }
 
 function summarizeWithdrawalPreparationResults(results: WithdrawalPreparationControlResult[]): string {

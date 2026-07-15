@@ -2334,7 +2334,7 @@ export class PredatorDatabase {
 
   ensureProfileWithdrawalPassword(profileId: string): string {
     const current = this.ensureProfileAccount(profileId).withdrawalPassword;
-    if (current && isAcceptedWithdrawalPassword(current) && !current.includes("0")) {
+    if (current && isAcceptedWithdrawalPassword(current)) {
       return current;
     }
 
