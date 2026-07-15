@@ -76,9 +76,8 @@ async function fillFocusedField(
         .filter((element): element is HTMLElement => visible(element));
       const keyboards = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"));
       const keyboardIndex = keyboards.findIndex((element) => visible(element));
-      const keyboard = keyboards[keyboardIndex];
       const field = fields[fieldIndex];
-      if (!keyboard || !field || fields.length !== 2) {
+      if (!field || fields.length !== 2 || keyboards.length === 0) {
         return { ok: false, filled: false, reason: "surface-invalid", diag: `fields=${fields.length} keyboards=${keyboards.length} visibleKeyboard=${keyboardIndex} field=${fieldIndex}` };
       }
       const cells = Array.from(field.querySelectorAll<HTMLElement>(".ui-password-input__item"));
@@ -98,42 +97,71 @@ async function fillFocusedField(
         return { ok: false, filled: false, reason: "field-not-focused", diag: `field=${fieldIndex} focused=${focusedFieldIndex}` };
       }
 
+      let preferredKeyboardIndex: number | undefined;
       for (const [digitIndex, digit] of [...pin].entries()) {
-        const key = Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
-          .find((element) => element.textContent?.trim() === digit);
-        if (!key) {
-          return { ok: false, filled: false, reason: "surface-invalid", diag: `field=${fieldIndex} digit-key-absent keys=${keyboard.querySelectorAll(".ui-number-keyboard-key__wrapper").length}` };
+        // Algumas skins mantem duas arvores do teclado: a visivel e uma clonada
+        // (oculta) que conserva o listener Vue ativo. A visibilidade nao e um
+        // criterio de autoridade; a unica confirmacao segura e a bolinha surgir.
+        const orderedKeyboards = keyboards.map((keyboard, rootIndex) => ({ keyboard, rootIndex }));
+        if (preferredKeyboardIndex !== undefined) {
+          orderedKeyboards.sort((left, right) => Number(right.rootIndex === preferredKeyboardIndex) - Number(left.rootIndex === preferredKeyboardIndex));
+        }
+        const candidates = orderedKeyboards.flatMap(({ keyboard, rootIndex }) =>
+          Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
+            .filter((element) => element.textContent?.trim() === digit)
+            .map((key) => ({ key, rootIndex })),
+        );
+        if (candidates.length === 0) {
+          return { ok: false, filled: false, reason: "surface-invalid", diag: `field=${fieldIndex} digit-key-absent keyboards=${keyboards.length}` };
         }
         const before = filledCount();
-        const rect = key.getBoundingClientRect();
-        const touch = new Touch({
-          identifier: digitIndex + 1,
-          target: key,
-          clientX: rect.left + rect.width / 2,
-          clientY: rect.top + rect.height / 2,
-        });
-        const startDispatched = key.dispatchEvent(new TouchEvent("touchstart", {
-          bubbles: true,
-          cancelable: true,
-          touches: [touch],
-          targetTouches: [touch],
-          changedTouches: [touch],
-        }));
-        const endDispatched = key.dispatchEvent(new TouchEvent("touchend", {
-          bubbles: true,
-          cancelable: true,
-          touches: [],
-          targetTouches: [],
-          changedTouches: [touch],
-        }));
-        await new Promise((resolve) => setTimeout(resolve, 180));
-        const after = filledCount();
-        if (after !== before + 1) {
+        const attempts: string[] = [];
+        let accepted = false;
+        for (const { key, rootIndex } of candidates) {
+          const rect = key.getBoundingClientRect();
+          const touch = new Touch({
+            identifier: digitIndex + 1,
+            target: key,
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height / 2,
+          });
+          const startDispatched = key.dispatchEvent(new TouchEvent("touchstart", {
+            bubbles: true,
+            cancelable: true,
+            touches: [touch],
+            targetTouches: [touch],
+            changedTouches: [touch],
+          }));
+          const endDispatched = key.dispatchEvent(new TouchEvent("touchend", {
+            bubbles: true,
+            cancelable: true,
+            touches: [],
+            targetTouches: [],
+            changedTouches: [touch],
+          }));
+          await new Promise((resolve) => setTimeout(resolve, 180));
+          const after = filledCount();
+          attempts.push(`${rootIndex}:${startDispatched ? 1 : 0}/${endDispatched ? 1 : 0}:${after}`);
+          if (after === before + 1) {
+            preferredKeyboardIndex = rootIndex;
+            accepted = true;
+            break;
+          }
+          if (after !== before) {
+            return {
+              ok: false,
+              filled: false,
+              reason: "digit-unconfirmed",
+              diag: `field=${fieldIndex} digit=${digitIndex} before=${before} after=${after} attempts=${attempts.join(",")}`,
+            };
+          }
+        }
+        if (!accepted) {
           return {
             ok: false,
             filled: false,
             reason: "digit-unconfirmed",
-            diag: `field=${fieldIndex} digit=${digitIndex} before=${before} after=${after} focused=${fields.findIndex((candidate) => Boolean(candidate.querySelector(".ui-password-input__item--focus")))} keyboards=${keyboards.length} visibleKeyboard=${keyboardIndex} start=${startDispatched} end=${endDispatched}`,
+            diag: `field=${fieldIndex} digit=${digitIndex} before=${before} after=${filledCount()} focused=${fields.findIndex((candidate) => Boolean(candidate.querySelector(".ui-password-input__item--focus")))} keyboards=${keyboards.length} visibleKeyboard=${keyboardIndex} attempts=${attempts.join(",")}`,
           };
         }
       }

@@ -10,7 +10,7 @@ type FakeCell = {
   querySelector: () => null;
 };
 
-function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
+function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean; listenerBoundKeyboard?: "hidden" | "visible" }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalGetComputedStyle = globalThis.getComputedStyle;
   const originalTouch = (globalThis as { Touch?: unknown }).Touch;
@@ -52,33 +52,38 @@ function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initia
     activeCell = cellIndex;
     keyboardVisible = true;
   };
-  const keyboard = {
-    getBoundingClientRect: () => ({ height: keyboardVisible ? 220 : 0, width: keyboardVisible ? 300 : 0 }),
-    querySelectorAll: () => Array.from({ length: 10 }, (_, digit) => ({
+  const keyboardKeys = (acceptsTouch: boolean) => Array.from({ length: 10 }, (_, digit) => ({
       textContent: String(digit),
       getBoundingClientRect: () => ({ left: 0, top: 0, height: 40, width: 40 }),
       dispatchEvent: (event: { type: string }) => {
         if (event.type === "touchend") {
           activeTouch = false;
-          queueMicrotask(flushPendingDigit);
+          if (acceptsTouch) queueMicrotask(flushPendingDigit);
           return true;
         }
         if (event.type !== "touchstart" || activeTouch) return true;
+        if (!acceptsTouch) return true;
         activeTouch = true;
         touches += 1;
         pendingDigit = String(digit);
         return true;
       }
-    }))
+    }));
+  const keyboard = {
+    getBoundingClientRect: () => ({ height: keyboardVisible ? 220 : 0, width: keyboardVisible ? 300 : 0 }),
+    querySelectorAll: () => keyboardKeys(options.listenerBoundKeyboard !== "hidden")
   };
   const hiddenKeyboard = {
     getBoundingClientRect: () => ({ height: 0, width: 0 }),
-    querySelectorAll: () => []
+    querySelectorAll: () => keyboardKeys(options.listenerBoundKeyboard === "hidden")
   };
   const documentValue = {
     querySelectorAll: (selector: string) => {
       if (selector === ".ui-password-input") return fields;
-      if (selector === ".ui-number-keyboard") return options.hiddenKeyboardFirst ? [hiddenKeyboard, keyboard] : [keyboard];
+      if (selector === ".ui-number-keyboard") {
+        if (options.hiddenKeyboardFirst) return [hiddenKeyboard, keyboard];
+        return options.listenerBoundKeyboard === "hidden" ? [keyboard, hiddenKeyboard] : [keyboard];
+      }
       return [];
     },
     querySelector: (selector: string) => selector === ".ui-number-keyboard"
@@ -179,6 +184,15 @@ test("usa o teclado visivel quando uma instancia oculta aparece primeiro no DOM"
 
     assert.equal(result.ok, true);
     assert.equal(focusTapCount(), 0);
+    assert.equal(touchCount(), 12);
+  });
+});
+
+test("confirma por efeito quando o listener ativo esta no teclado oculto", async () => {
+  await withPasswordSurface({ listenerBoundKeyboard: "hidden" }, async (page, touchCount) => {
+    const result = await fillWithdrawalPasswordSetup(page, "102345", async () => undefined);
+
+    assert.equal(result.ok, true);
     assert.equal(touchCount(), 12);
   });
 });
