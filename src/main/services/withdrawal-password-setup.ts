@@ -27,7 +27,8 @@ async function activateFirstWithdrawalPasswordField(spa: SpaHandle): Promise<Fie
     };
     const fields = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-password-input"))
       .filter((element): element is HTMLElement => visible(element));
-    const keyboard = globalThis.document.querySelector<HTMLElement>(".ui-number-keyboard");
+    const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
+      .find((element) => visible(element));
     return fields.length === 2 && Boolean(keyboard && visible(keyboard)) && Boolean(
       fields[0]?.querySelector(".ui-password-input__item--focus")
     );
@@ -67,7 +68,8 @@ async function fillFocusedField(
       };
       const fields = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-password-input"))
         .filter((element): element is HTMLElement => visible(element));
-      const keyboard = globalThis.document.querySelector<HTMLElement>(".ui-number-keyboard");
+      const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
+        .find((element) => visible(element));
       if (!keyboard || !visible(keyboard) || fields.length !== 2) {
         return { ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: `fields=${fields.length} keyboard=${Boolean(keyboard)}` };
       }
@@ -90,8 +92,14 @@ async function fillFocusedField(
 
   const dispatchDigit = (digit: string, identifier: number) => spa.evaluate(
     ({ digit, identifier }): FieldResult => {
-      const keyboard = globalThis.document.querySelector<HTMLElement>(".ui-number-keyboard");
-      if (!keyboard) return { ok: false, filled: false, reason: "surface-invalid", diag: "keyboard-absent" };
+      const visible = (element: Element) => {
+        const rect = element.getBoundingClientRect();
+        const style = globalThis.getComputedStyle(element);
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 8 && rect.height > 8;
+      };
+      const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
+        .find((element) => visible(element));
+      if (!keyboard) return { ok: false, filled: false, reason: "surface-invalid", diag: "visible-keyboard-absent" };
       const key = Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
         .find((element) => element.textContent?.trim() === digit);
       if (!key) return { ok: false, filled: false, reason: "surface-invalid", diag: `digit-key=${digit}` };

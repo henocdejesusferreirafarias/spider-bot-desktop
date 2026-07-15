@@ -10,7 +10,7 @@ type FakeCell = {
   querySelector: () => null;
 };
 
-function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partiallyFilled?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number) => Promise<T>): Promise<T> {
+function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number) => Promise<T>): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalGetComputedStyle = globalThis.getComputedStyle;
   const originalTouch = (globalThis as { Touch?: unknown }).Touch;
@@ -69,9 +69,19 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
       }
     }))
   };
+  const hiddenKeyboard = {
+    getBoundingClientRect: () => ({ height: 0, width: 0 }),
+    querySelectorAll: () => []
+  };
   const documentValue = {
-    querySelectorAll: (selector: string) => selector === ".ui-password-input" ? fields : [],
-    querySelector: (selector: string) => selector === ".ui-number-keyboard" ? keyboard : null
+    querySelectorAll: (selector: string) => {
+      if (selector === ".ui-password-input") return fields;
+      if (selector === ".ui-number-keyboard") return options.hiddenKeyboardFirst ? [hiddenKeyboard, keyboard] : [keyboard];
+      return [];
+    },
+    querySelector: (selector: string) => selector === ".ui-number-keyboard"
+      ? options.hiddenKeyboardFirst ? hiddenKeyboard : keyboard
+      : null
   };
   Object.defineProperty(globalThis, "document", { configurable: true, value: documentValue });
   Object.defineProperty(globalThis, "getComputedStyle", {
@@ -107,6 +117,7 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
         locator: () => ({
           first: () => ({
             tap: async () => {
+              if (options.hiddenKeyboardFirst) throw new Error("tap should not be needed when the visible keyboard is already active");
               focusTaps += 1;
               setFocus(0, 0);
             }
@@ -155,6 +166,16 @@ test("toca o primeiro campo quando o cadastro abre sem foco nem teclado", async 
 
     assert.equal(result.ok, true);
     assert.equal(focusTapCount(), 1);
+    assert.equal(touchCount(), 12);
+  });
+});
+
+test("usa o teclado visivel quando uma instancia oculta aparece primeiro no DOM", async () => {
+  await withPasswordSurface({ hiddenKeyboardFirst: true }, async (page, touchCount, focusTapCount) => {
+    const result = await fillWithdrawalPasswordSetup(page, "102345", async () => undefined);
+
+    assert.equal(result.ok, true);
+    assert.equal(focusTapCount(), 0);
     assert.equal(touchCount(), 12);
   });
 });
