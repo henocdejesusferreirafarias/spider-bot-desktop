@@ -18,6 +18,41 @@ type FieldResult = {
   diag?: string;
 };
 
+async function activateFirstWithdrawalPasswordField(spa: SpaHandle): Promise<FieldResult> {
+  const isReady = () => spa.evaluate(() => {
+    const visible = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      const style = globalThis.getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 8 && rect.height > 8;
+    };
+    const fields = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-password-input"))
+      .filter((element): element is HTMLElement => visible(element));
+    const keyboard = globalThis.document.querySelector<HTMLElement>(".ui-number-keyboard");
+    return fields.length === 2 && Boolean(keyboard && visible(keyboard)) && Boolean(
+      fields[0]?.querySelector(".ui-password-input__item--focus")
+    );
+  }, undefined, PATCHRIGHT_MAIN_WORLD).catch(() => false);
+
+  if (await isReady()) return { ok: true, filled: false };
+
+  const firstCell = spa
+    .locator(".ui-password-input")
+    .first()
+    .locator(".ui-password-input__item")
+    .first();
+  const tapped = await firstCell.tap({ timeout: 1500 }).then(() => true).catch(() => false);
+  if (!tapped) {
+    return { ok: false, filled: false, reason: "field-not-focused", diag: "first-field-tap-failed" };
+  }
+
+  const deadline = Date.now() + 1800;
+  while (Date.now() < deadline) {
+    if (await isReady()) return { ok: true, filled: false };
+    await spa.waitForTimeout(80).catch(() => undefined);
+  }
+  return { ok: false, filled: false, reason: "field-not-focused", diag: "first-field-focus-or-keyboard-not-confirmed" };
+}
+
 async function fillFocusedField(
   spa: SpaHandle,
   expectedFieldIndex: number,
@@ -78,6 +113,10 @@ export async function fillWithdrawalPasswordSetup(
 ): Promise<WithdrawalPasswordSetupResult> {
   if (!/^\d{6}$/.test(password)) {
     return { ok: false, firstFieldFilled: false, secondFieldFilled: false, reason: "surface-invalid", diag: "password-format" };
+  }
+  const activation = await activateFirstWithdrawalPasswordField(spa);
+  if (!activation.ok) {
+    return { ok: false, firstFieldFilled: false, secondFieldFilled: false, reason: activation.reason, diag: activation.diag };
   }
   const first = await fillFocusedField(spa, 0, password);
   if (!first.ok) return { ok: false, firstFieldFilled: false, secondFieldFilled: false, reason: first.reason, diag: first.diag };
