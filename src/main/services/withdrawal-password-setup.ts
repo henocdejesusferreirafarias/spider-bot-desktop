@@ -74,11 +74,12 @@ async function fillFocusedField(
       };
       const fields = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-password-input"))
         .filter((element): element is HTMLElement => visible(element));
-      const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
-        .find((element) => visible(element));
+      const keyboards = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"));
+      const keyboardIndex = keyboards.findIndex((element) => visible(element));
+      const keyboard = keyboards[keyboardIndex];
       const field = fields[fieldIndex];
       if (!keyboard || !field || fields.length !== 2) {
-        return { ok: false, filled: false, reason: "surface-invalid", diag: `fields=${fields.length} keyboard=${Boolean(keyboard)} field=${fieldIndex}` };
+        return { ok: false, filled: false, reason: "surface-invalid", diag: `fields=${fields.length} keyboards=${keyboards.length} visibleKeyboard=${keyboardIndex} field=${fieldIndex}` };
       }
       const cells = Array.from(field.querySelectorAll<HTMLElement>(".ui-password-input__item"));
       if (cells.length !== pin.length) {
@@ -92,15 +93,16 @@ async function fillFocusedField(
       if (filledCount() !== 0) {
         return { ok: false, filled: false, reason: "field-partially-filled", diag: `field=${fieldIndex} filled=${filledCount()}` };
       }
-      if (!field.querySelector(".ui-password-input__item--focus")) {
-        return { ok: false, filled: false, reason: "field-not-focused", diag: `field=${fieldIndex}` };
+      const focusedFieldIndex = fields.findIndex((candidate) => Boolean(candidate.querySelector(".ui-password-input__item--focus")));
+      if (focusedFieldIndex !== fieldIndex) {
+        return { ok: false, filled: false, reason: "field-not-focused", diag: `field=${fieldIndex} focused=${focusedFieldIndex}` };
       }
 
       for (const [digitIndex, digit] of [...pin].entries()) {
         const key = Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
           .find((element) => element.textContent?.trim() === digit);
         if (!key) {
-          return { ok: false, filled: false, reason: "surface-invalid", diag: `digit-key=${digit}` };
+          return { ok: false, filled: false, reason: "surface-invalid", diag: `field=${fieldIndex} digit-key-absent keys=${keyboard.querySelectorAll(".ui-number-keyboard-key__wrapper").length}` };
         }
         const before = filledCount();
         const rect = key.getBoundingClientRect();
@@ -110,14 +112,14 @@ async function fillFocusedField(
           clientX: rect.left + rect.width / 2,
           clientY: rect.top + rect.height / 2,
         });
-        key.dispatchEvent(new TouchEvent("touchstart", {
+        const startDispatched = key.dispatchEvent(new TouchEvent("touchstart", {
           bubbles: true,
           cancelable: true,
           touches: [touch],
           targetTouches: [touch],
           changedTouches: [touch],
         }));
-        key.dispatchEvent(new TouchEvent("touchend", {
+        const endDispatched = key.dispatchEvent(new TouchEvent("touchend", {
           bubbles: true,
           cancelable: true,
           touches: [],
@@ -127,7 +129,12 @@ async function fillFocusedField(
         await new Promise((resolve) => setTimeout(resolve, 180));
         const after = filledCount();
         if (after !== before + 1) {
-          return { ok: false, filled: false, reason: "digit-unconfirmed", diag: `field=${fieldIndex} digit=${digitIndex} before=${before} after=${after}` };
+          return {
+            ok: false,
+            filled: false,
+            reason: "digit-unconfirmed",
+            diag: `field=${fieldIndex} digit=${digitIndex} before=${before} after=${after} focused=${fields.findIndex((candidate) => Boolean(candidate.querySelector(".ui-password-input__item--focus")))} keyboards=${keyboards.length} visibleKeyboard=${keyboardIndex} start=${startDispatched} end=${endDispatched}`,
+          };
         }
       }
       return filledCount() === pin.length

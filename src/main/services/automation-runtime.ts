@@ -892,7 +892,7 @@ export class AutomationRuntimeService {
         await checkpoint("reserved");
         const filled = await fillWithdrawalPasswordSetup(spa, withdrawalPassword, checkpoint);
         if (!filled.ok || !filled.firstFieldFilled || !filled.secondFieldFilled) {
-          throw new Error(`senha de saque nao confirmou preenchimento (${filled.reason ?? "desconhecido"})`);
+          throw new Error(`senha de saque nao confirmou preenchimento (${filled.reason ?? "desconhecido"}${filled.diag ? `; ${filled.diag}` : ""})`);
         }
         resultStatus = "withdrawal_password_filled";
       }
