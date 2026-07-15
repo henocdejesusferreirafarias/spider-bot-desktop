@@ -55,7 +55,14 @@ Na mesma execução, o estado anterior sem conta PIX e o aparecimento posterior 
 
 ## Estoque e interface
 
-A listagem de Chaves PIX deve exibir `available`, `reserved`, `pending_confirmation` e `used`, sem revelar números completos. Para estados não disponíveis, mostra perfil vinculado e timestamp relevante. Ações de editar, excluir ou realocar são permitidas apenas para `available`.
+A listagem de Chaves PIX deve usar estes rótulos em português, mantendo os identificadores técnicos internos apenas no código:
+
+- `available` → **Disponível**;
+- `reserved` → **Em cadastro**;
+- `pending_confirmation` → **Aguardando confirmação**;
+- `used` → **Cadastrada**.
+
+A listagem não revela números completos. Para estados não disponíveis, mostra perfil vinculado e timestamp relevante. Ações de editar, excluir ou realocar são permitidas apenas para chaves **Disponíveis**.
 
 Chaves pendentes e conflitos devem ficar visíveis ao operador, com uma ação futura de revisão manual; esta fatia não libera pendências manualmente nem altera contas cadastradas na plataforma.
 
