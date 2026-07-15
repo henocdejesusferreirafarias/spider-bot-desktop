@@ -459,7 +459,7 @@ export interface PixKeyRegistrationControlResult {
   profileId: string;
   profileName: string;
   status: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "failed";
-  step?: "profile" | "withdrawal-management" | "withdrawal-password";
+  step?: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation";
 }
 
 export interface WithdrawalPreparationControlRequest {

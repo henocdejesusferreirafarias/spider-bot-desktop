@@ -202,9 +202,16 @@ function withConfirmationSurface<T>(
 
 type ConfirmationSetupModule = {
   confirmWithdrawalPasswordSetup?: (page: Page) => Promise<{ ok: boolean; reason?: string }>;
+  confirmAndVerifyWithdrawalPasswordSetup?: (
+    page: Page,
+    waitForDestination: () => Promise<"needs_withdrawal_password" | "withdrawal_ready" | "unknown">,
+  ) => Promise<{ ok: boolean; reason?: string }>;
 };
 
 const confirmWithdrawalPasswordSetup = (withdrawalPasswordSetup as ConfirmationSetupModule).confirmWithdrawalPasswordSetup;
+const confirmAndVerifyWithdrawalPasswordSetup = (
+  withdrawalPasswordSetup as ConfirmationSetupModule
+).confirmAndVerifyWithdrawalPasswordSetup;
 
 test("confirma uma unica acao semantica apos os dois PINs", async () => {
   assert.equal(typeof confirmWithdrawalPasswordSetup, "function");
@@ -234,6 +241,28 @@ test("recusa controles de confirmacao ambiguos sem clicar", async () => {
     assert.equal(result.reason, "confirm-action-ambiguous");
     assert.equal(confirmCount(), 0);
   });
+});
+
+test("confirmacao da senha exige destino de saque", async () => {
+  assert.equal(typeof confirmAndVerifyWithdrawalPasswordSetup, "function");
+  await withConfirmationSurface({ pinCount: [6, 6], confirmControls: 1 }, async (page, confirmCount) => {
+    const result = await confirmAndVerifyWithdrawalPasswordSetup!(page, async () => "withdrawal_ready");
+
+    assert.deepEqual(result, { ok: true });
+    assert.equal(confirmCount(), 1);
+  });
+});
+
+test("confirmacao da senha falha sem segundo clique quando o destino nao esta pronto", async () => {
+  assert.equal(typeof confirmAndVerifyWithdrawalPasswordSetup, "function");
+  for (const destination of ["needs_withdrawal_password", "unknown"] as const) {
+    await withConfirmationSurface({ pinCount: [6, 6], confirmControls: 1 }, async (page, confirmCount) => {
+      const result = await confirmAndVerifyWithdrawalPasswordSetup!(page, async () => destination);
+
+      assert.equal(result.reason, "destination-not-confirmed");
+      assert.equal(confirmCount(), 1);
+    });
+  }
 });
 
 test("preenche os dois campos pelo teclado virtual e confirma cada checkpoint", async () => {

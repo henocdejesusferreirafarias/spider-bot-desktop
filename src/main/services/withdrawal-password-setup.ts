@@ -16,7 +16,7 @@ export interface WithdrawalPasswordSetupResult {
 
 export interface WithdrawalPasswordConfirmationResult {
   ok: boolean;
-  reason?: "surface-invalid" | "confirm-action-absent" | "confirm-action-ambiguous" | "confirm-action-failed";
+  reason?: "surface-invalid" | "confirm-action-absent" | "confirm-action-ambiguous" | "confirm-action-failed" | "destination-not-confirmed";
   diag?: string;
 }
 
@@ -269,7 +269,7 @@ export async function confirmWithdrawalPasswordSetup(
       const props = [record(component?.props), record(vnode?.props)].filter(
         (value): value is RecordLike => Boolean(value),
       );
-      const event = new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, view: globalThis });
+      const event = new MouseEvent("click", { bubbles: true, cancelable: true, composed: true });
       for (const propSet of props) {
         const listener = propSet.onClick ?? propSet.onclick;
         if (typeof listener !== "function") continue;
@@ -294,4 +294,20 @@ export async function confirmWithdrawalPasswordSetup(
     reason: "surface-invalid",
     diag: String(error),
   }));
+}
+
+export async function confirmAndVerifyWithdrawalPasswordSetup(
+  spa: SpaHandle,
+  waitForDestination: () => Promise<"needs_withdrawal_password" | "withdrawal_ready" | "unknown">,
+): Promise<WithdrawalPasswordConfirmationResult> {
+  const confirmation = await confirmWithdrawalPasswordSetup(spa);
+  if (!confirmation.ok) return confirmation;
+
+  try {
+    const destination = await waitForDestination();
+    if (destination === "withdrawal_ready") return { ok: true };
+    return { ok: false, reason: "destination-not-confirmed", diag: `destination=${destination}` };
+  } catch (error) {
+    return { ok: false, reason: "destination-not-confirmed", diag: `wait-error=${String(error)}` };
+  }
 }

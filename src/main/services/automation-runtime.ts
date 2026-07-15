@@ -44,7 +44,10 @@ import {
   routerPush,
 } from "./spa-navigation.js";
 import type { PlatformDescriptor } from "./spa-navigation.js";
-import { fillWithdrawalPasswordSetup } from "./withdrawal-password-setup.js";
+import {
+  confirmAndVerifyWithdrawalPasswordSetup,
+  fillWithdrawalPasswordSetup,
+} from "./withdrawal-password-setup.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -834,7 +837,7 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" | "withdrawal-password" = "profile";
+    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" = "profile";
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -884,7 +887,7 @@ export class AutomationRuntimeService {
       if (resultStatus === "needs_withdrawal_password") {
         step = "withdrawal-password";
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
-        const checkpoint = async (passwordStage: "reserved" | "first-field-filled" | "second-field-filled") => {
+        const checkpoint = async (passwordStage: "reserved" | "first-field-filled" | "second-field-filled" | "confirmed") => {
           this.database.updateRun(run.id, {
             metrics: { manual: true, pixType, pixWithdrawalEntry: entryDestination, pixWithdrawalPasswordStage: passwordStage }
           });
@@ -894,7 +897,17 @@ export class AutomationRuntimeService {
         if (!filled.ok || !filled.firstFieldFilled || !filled.secondFieldFilled) {
           throw new Error(`senha de saque nao confirmou preenchimento (${filled.reason ?? "desconhecido"}${filled.diag ? `; ${filled.diag}` : ""})`);
         }
-        resultStatus = "withdrawal_password_filled";
+        step = "withdrawal-password-confirmation";
+        const confirmationPage = session.page;
+        const confirmation = await confirmAndVerifyWithdrawalPasswordSetup(
+          spa,
+          () => waitForWithdrawalManagementDestination(confirmationPage, PIX_MS(12000)),
+        );
+        if (!confirmation.ok) {
+          throw new Error(`senha de saque nao confirmou cadastro (${confirmation.reason ?? "desconhecido"}${confirmation.diag ? `; ${confirmation.diag}` : ""})`);
+        }
+        await checkpoint("confirmed");
+        resultStatus = "withdrawal_ready";
       }
 
       this.database.updateRun(run.id, {
