@@ -58,6 +58,7 @@ import {
   formatPixAddFormDiagnostics,
   waitForPixAddForm,
 } from "./pix-password-confirmation.js";
+import { fillPixPhoneAddForm } from "./pix-add-form-fill.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -851,7 +852,7 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" | "pix-enter-password" | "pix-password-confirmation" = "profile";
+    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-add-password" | "pix-enter-password" | "pix-password-confirmation" | "pix-add-form-fill" = "profile";
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -897,7 +898,7 @@ export class AutomationRuntimeService {
       if (entryDestination === "unknown") {
         throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
       }
-      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" | "pix_add_form_ready" = entryDestination;
+      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" | "pix_add_form_ready" | "pix_add_form_filled" = entryDestination;
       if (resultStatus === "needs_withdrawal_password") {
         step = "withdrawal-password";
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
@@ -985,13 +986,32 @@ export class AutomationRuntimeService {
       }
       resultStatus = "pix_add_form_ready";
 
+      step = "pix-add-form-fill";
+      const account = this.database.getOrCreateProfileAccount(profile.id);
+      const cpf = this.database.resolveCpfForProfile(profile.id);
+      const phoneKey = this.database.reservePixPhoneKey(profile.id);
+      if (!phoneKey) {
+        throw new Error("chave PIX PHONE reservada ausente para este perfil");
+      }
+      const formFill = await fillPixPhoneAddForm(spa, {
+        realName: account.realName,
+        phoneNumber: phoneKey.phoneNumber,
+        cpf,
+      });
+      if (!formFill.ok) {
+        throw new Error(
+          `formulario PIX nao confirmou preenchimento (${formFill.reason ?? "desconhecido"}${formFill.diag ? `; ${formFill.diag}` : ""})`,
+        );
+      }
+      resultStatus = "pix_add_form_filled";
+
       this.database.updateRun(run.id, {
         status: "succeeded",
         finishedAt: new Date().toISOString(),
         metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
       });
       this.database.updateProfileStatus(profile.id, "active");
-      this.log(run.id, "success", `[${profile.name}] Entrada PIX confirmada: ${resultStatus}.`);
+      this.log(run.id, "success", `[${profile.name}] Formulario PIX preenchido: ${resultStatus}.`);
       return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
     } catch (error) {
       const message = error instanceof Error ? error.message : "erro inesperado";

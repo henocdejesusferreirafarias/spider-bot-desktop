@@ -64,7 +64,7 @@ export async function fillPixPhoneAddForm(
     };
   }
 
-  return surface.evaluate(async (input: PixPhoneFormData): Promise<PixPhoneFormFillResult> => {
+  const attempt = () => surface.evaluate(async (input: PixPhoneFormData): Promise<PixPhoneFormFillResult> => {
     type RecordLike = Record<PropertyKey, unknown>;
     const runtime = globalThis as unknown as {
       Event?: new (type: string, init?: { bubbles?: boolean }) => Event;
@@ -155,5 +155,16 @@ export async function fillPixPhoneAddForm(
       return { ok: false, reason: "field-not-confirmed", diag: "field=cpf" };
     }
     return { ok: true, nameMode };
-  }, data, false).catch(() => ({ ok: false, reason: "surface-invalid", diag: "evaluate-error" }));
+  }, data, false).catch(() => ({ ok: false, reason: "surface-invalid" as const, diag: "evaluate-error" }));
+
+  const deadline = Date.now() + 12_000;
+  let result = await attempt();
+  while (!result.ok && Date.now() < deadline) {
+    if (result.reason !== "surface-invalid" && result.reason !== "phone-type-not-confirmed") {
+      return result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    result = await attempt();
+  }
+  return result;
 }

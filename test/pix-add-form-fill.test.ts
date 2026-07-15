@@ -27,7 +27,7 @@ interface FakePixSurface {
   restore: () => void;
 }
 
-function fakePixSurface(options: { name: string; nameDisabled: boolean }): FakePixSurface {
+function fakePixSurface(options: { name: string; nameDisabled: boolean; phoneInputsHiddenReads?: number }): FakePixSurface {
   const globals = globalThis as unknown as Record<string, unknown>;
   const saved = new Map<string, unknown>();
   const install = (key: string, value: unknown) => {
@@ -51,6 +51,7 @@ function fakePixSurface(options: { name: string; nameDisabled: boolean }): FakeP
   let pixType = "CPF";
   let menuOpen = false;
   let submits = 0;
+  let phoneInputReads = 0;
   const selector = {
     get textContent() { return pixType; },
     dispatchEvent: () => { menuOpen = true; return true; },
@@ -65,7 +66,11 @@ function fakePixSurface(options: { name: string; nameDisabled: boolean }): FakeP
     getBoundingClientRect: visible,
     querySelector: (query: string) => query === ".ui-select__reference" ? selector : null,
     querySelectorAll: (query: string) => {
-      if (query === "input") return pixType === "PHONE" ? [name, phone, cpf] : [name, cpf];
+      if (query === "input") {
+        phoneInputReads += 1;
+        if (pixType === "PHONE" && phoneInputReads > (options.phoneInputsHiddenReads ?? 0)) return [name, phone, cpf];
+        return [name, cpf];
+      }
       if (query === ".ui-button") return [{ dispatchEvent: () => { submits += 1; return true; } }];
       return [];
     },
@@ -168,6 +173,23 @@ test("recusa nome bloqueado divergente sem preencher telefone ou CPF", async () 
     assert.equal(fake.phone.value, "");
     assert.equal(fake.cpf.value, "");
     assert.equal(fake.submitClicks(), 0);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("aguarda condicionalmente a renderizacao dos tres campos apos selecionar PHONE", async () => {
+  const fake = fakePixSurface({ name: "", nameDisabled: false, phoneInputsHiddenReads: 1 });
+  try {
+    const result = await fillPixPhoneAddForm(fake.surface, {
+      realName: "Eduardo Vargas Pinto",
+      phoneNumber: "11988887777",
+      cpf: "12345678901",
+    });
+
+    assert.deepEqual(result, { ok: true, nameMode: "filled" });
+    assert.equal(fake.phone.value, "11988887777");
+    assert.equal(fake.cpf.value, "12345678901");
   } finally {
     fake.restore();
   }
