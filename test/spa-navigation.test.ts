@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "patchright";
 import {
+  buildPixReceivingAccountTarget,
   programmaticDeposit,
   programmaticPixUiAction,
   programmaticWithdrawalManagementAction,
@@ -670,4 +671,32 @@ test("waitForSpaRouter: evaluate que rejeita e tratado como router ausente (guar
 
   const ready = await waitForSpaRouter(spa, 30, 1);
   assert.equal(ready, false);
+});
+
+test("buildPixReceivingAccountTarget preserva a rota de saque e troca somente active", () => {
+  assert.deepEqual(
+    buildPixReceivingAccountTarget({
+      name: "withdraw",
+      path: "/home/withdraw",
+      fullPath: "/home/withdraw?active=20&campaign=x",
+      query: { active: "20", campaign: "x" },
+    }),
+    {
+      name: "withdraw",
+      path: "/home/withdraw",
+      query: { active: "10", campaign: "x" },
+    },
+  );
+});
+
+test("buildPixReceivingAccountTarget recusa rota sem nome e sem path", () => {
+  assert.equal(
+    buildPixReceivingAccountTarget({
+      name: null,
+      path: null,
+      fullPath: null,
+      query: {},
+    }),
+    null,
+  );
 });

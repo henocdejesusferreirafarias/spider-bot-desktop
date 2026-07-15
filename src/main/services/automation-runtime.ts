@@ -39,6 +39,8 @@ import {
   programmaticDeposit,
   programmaticPixUiAction,
   programmaticWithdrawalManagementAction,
+  buildPixReceivingAccountTarget,
+  getCurrentRoute,
   resolvePlatformDescriptor,
   resolveRouteTarget,
   routerPush,
@@ -80,6 +82,7 @@ import {
   waitForProfileSurface,
   waitForWithdrawalManagementDestination,
   waitForWithdrawalPasswordConfirmationDestination,
+  waitForPixReceivingAccountSurface,
 } from "./screen-waits.js";
 import {
   extractQrCode,
@@ -838,7 +841,7 @@ export class AutomationRuntimeService {
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
     let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
-    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" = "profile";
+    let step: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" = "profile";
 
     try {
       this.database.updateProfileStatus(profile.id, "running-automation");
@@ -884,7 +887,7 @@ export class AutomationRuntimeService {
       if (entryDestination === "unknown") {
         throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
       }
-      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" = entryDestination;
+      let resultStatus: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" = entryDestination;
       if (resultStatus === "needs_withdrawal_password") {
         step = "withdrawal-password";
         const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
@@ -910,6 +913,24 @@ export class AutomationRuntimeService {
         await checkpoint("confirmed");
         resultStatus = "withdrawal_ready";
       }
+
+      step = "pix-receiving-account";
+      const withdrawalRoute = await getCurrentRoute(spa);
+      const receivingTarget = withdrawalRoute && buildPixReceivingAccountTarget(withdrawalRoute);
+      if (!receivingTarget || !(await routerPush(spa, receivingTarget))) {
+        throw new Error(`rota de recebimento PIX indisponivel (${await describeSpaState(spa)})`);
+      }
+      const receiving = await waitForPixReceivingAccountSurface(
+        session.page,
+        () => getCurrentRoute(spa),
+        PIX_MS(12000),
+      );
+      if (!receiving.ready) {
+        throw new Error(
+          `conta para recebimento PIX nao confirmada (active10=${receiving.routeActive10}; receivingArea=${receiving.hasReceivingAccountArea}; pixAddAction=${receiving.hasPixAddAction}; ${await describeSpaState(spa)})`,
+        );
+      }
+      resultStatus = "pix_receiving_ready";
 
       this.database.updateRun(run.id, {
         status: "succeeded",

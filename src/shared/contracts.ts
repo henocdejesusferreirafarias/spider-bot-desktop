@@ -458,8 +458,8 @@ export interface PixKeyRegistrationControlResult {
   pixType: PixRegistrationType;
   profileId: string;
   profileName: string;
-  status: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "failed";
-  step?: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation";
+  status: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "failed";
+  step?: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account";
 }
 
 export interface WithdrawalPreparationControlRequest {

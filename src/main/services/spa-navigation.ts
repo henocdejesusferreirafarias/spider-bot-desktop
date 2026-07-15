@@ -320,6 +320,17 @@ export async function getCurrentRoute(spa: SpaHandle): Promise<RouteInfo | null>
     .catch(() => null);
 }
 
+export function buildPixReceivingAccountTarget(route: RouteInfo): RouteTarget | null {
+  if (!route.name && !route.path) {
+    return null;
+  }
+  return {
+    ...(route.name ? { name: route.name } : {}),
+    ...(route.path ? { path: route.path } : {}),
+    query: { ...route.query, active: "10" },
+  };
+}
+
 // Empurra a SPA para uma rota via `router.push`. Retorna false se nao houver router.
 export async function routerPush(spa: SpaHandle, target: RouteTarget): Promise<boolean> {
   return spa
