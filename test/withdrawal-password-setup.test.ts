@@ -38,6 +38,7 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
   let focusTaps = 0;
   let keyboardVisible = activeField === 0;
   let activeTouch = false;
+  let pendingDigit: string | undefined;
   for (const [fieldIndex, field] of fields.entries()) {
     for (const [cellIndex, cell] of field.cells.entries()) {
       cell.classList = {
@@ -63,10 +64,7 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
         if (event.type !== "touchstart" || activeTouch) return true;
         activeTouch = true;
         touches += 1;
-        const cell = fields[activeField]!.cells[activeCell]!;
-        cell.textContent = String(digit);
-        if (activeCell < 5) setFocus(activeField, activeCell + 1);
-        else if (activeField === 0) setFocus(1, 0);
+        pendingDigit = String(digit);
         return true;
       }
     }))
@@ -90,8 +88,20 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
       }
     }
   });
+  const flushPendingDigit = () => {
+    if (!pendingDigit) return;
+    const cell = fields[activeField]!.cells[activeCell]!;
+    cell.textContent = pendingDigit;
+    pendingDigit = undefined;
+    if (activeCell < 5) setFocus(activeField, activeCell + 1);
+    else if (activeField === 0) setFocus(1, 0);
+  };
   const page = {
-    evaluate: async (fn: (payload: { expectedFieldIndex: number; password: string }) => unknown, payload: { expectedFieldIndex: number; password: string }) => fn(payload),
+    evaluate: async (fn: (payload: { expectedFieldIndex: number; password: string }) => unknown, payload: { expectedFieldIndex: number; password: string }) => {
+      const result = fn(payload);
+      flushPendingDigit();
+      return result;
+    },
     locator: () => ({
       first: () => ({
         locator: () => ({

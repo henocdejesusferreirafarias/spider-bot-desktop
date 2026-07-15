@@ -58,8 +58,8 @@ async function fillFocusedField(
   expectedFieldIndex: number,
   password: string,
 ): Promise<FieldResult> {
-  return spa.evaluate(
-    ({ expectedFieldIndex, password }): FieldResult => {
+  const readState = () => spa.evaluate(
+    (): { ok: boolean; activeIndex: number; filledCounts: number[]; reason?: FieldResult["reason"]; diag?: string } => {
       const visible = (element: Element) => {
         const rect = element.getBoundingClientRect();
         const style = globalThis.getComputedStyle(element);
@@ -69,11 +69,11 @@ async function fillFocusedField(
         .filter((element): element is HTMLElement => visible(element));
       const keyboard = globalThis.document.querySelector<HTMLElement>(".ui-number-keyboard");
       if (!keyboard || !visible(keyboard) || fields.length !== 2) {
-        return { ok: false, filled: false, reason: "surface-invalid", diag: `fields=${fields.length} keyboard=${Boolean(keyboard)}` };
+        return { ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: `fields=${fields.length} keyboard=${Boolean(keyboard)}` };
       }
       const cells = fields.map((field) => Array.from(field.querySelectorAll<HTMLElement>(".ui-password-input__item")));
       if (cells.some((items) => items.length !== 6)) {
-        return { ok: false, filled: false, reason: "surface-invalid", diag: `cells=${cells.map((items) => items.length).join(",")}` };
+        return { ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: `cells=${cells.map((items) => items.length).join(",")}` };
       }
       const filledCount = (items: HTMLElement[]) => items.filter((item) => {
         if (item.textContent?.trim()) return true;
@@ -81,30 +81,58 @@ async function fillFocusedField(
         return Boolean(marker && globalThis.getComputedStyle(marker).visibility !== "hidden");
       }).length;
       const activeIndex = cells.findIndex((items) => items.some((item) => item.classList.contains("ui-password-input__item--focus")));
-      if (activeIndex !== expectedFieldIndex) {
-        return { ok: false, filled: false, reason: "field-not-focused", diag: `active=${activeIndex} expected=${expectedFieldIndex}` };
-      }
-      if (filledCount(cells[expectedFieldIndex]!) !== 0) {
-        return { ok: false, filled: false, reason: "field-partially-filled" };
-      }
-      for (let digitIndex = 0; digitIndex < password.length; digitIndex += 1) {
-        const digit = password[digitIndex]!;
-        const key = Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
-          .find((element) => element.textContent?.trim() === digit);
-        if (!key) return { ok: false, filled: false, reason: "surface-invalid", diag: `digit-key=${digit}` };
-        const rect = key.getBoundingClientRect();
-        const touch = new Touch({ identifier: 1, target: key, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
-        key.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
-        key.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
-        if (filledCount(cells[expectedFieldIndex]!) < digitIndex + 1) {
-          return { ok: false, filled: false, reason: "digit-unconfirmed" };
-        }
-      }
-      return { ok: filledCount(cells[expectedFieldIndex]!) === 6, filled: filledCount(cells[expectedFieldIndex]!) === 6 };
+      return { ok: true, activeIndex, filledCounts: cells.map(filledCount) };
     },
-    { expectedFieldIndex, password },
+    PATCHRIGHT_MAIN_WORLD,
+  ).catch((error): { ok: false; activeIndex: number; filledCounts: number[]; reason: "surface-invalid"; diag: string } => ({
+    ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: String(error)
+  }));
+
+  const dispatchDigit = (digit: string, identifier: number) => spa.evaluate(
+    ({ digit, identifier }): FieldResult => {
+      const keyboard = globalThis.document.querySelector<HTMLElement>(".ui-number-keyboard");
+      if (!keyboard) return { ok: false, filled: false, reason: "surface-invalid", diag: "keyboard-absent" };
+      const key = Array.from(keyboard.querySelectorAll<HTMLElement>(".ui-number-keyboard-key__wrapper"))
+        .find((element) => element.textContent?.trim() === digit);
+      if (!key) return { ok: false, filled: false, reason: "surface-invalid", diag: `digit-key=${digit}` };
+      const rect = key.getBoundingClientRect();
+      const touch = new Touch({ identifier, target: key, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+      key.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
+      key.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
+      return { ok: true, filled: false };
+    },
+    { digit, identifier },
     PATCHRIGHT_MAIN_WORLD,
   ).catch((error): FieldResult => ({ ok: false, filled: false, reason: "surface-invalid", diag: String(error) }));
+
+  for (let digitIndex = 0; digitIndex < password.length; digitIndex += 1) {
+    const before = await readState();
+    if (!before.ok) return { ok: false, filled: false, reason: before.reason, diag: before.diag };
+    if (before.activeIndex !== expectedFieldIndex) {
+      return { ok: false, filled: false, reason: "field-not-focused", diag: `active=${before.activeIndex} expected=${expectedFieldIndex}` };
+    }
+    if (before.filledCounts[expectedFieldIndex] !== digitIndex) {
+      return { ok: false, filled: false, reason: "field-partially-filled", diag: `filled=${before.filledCounts[expectedFieldIndex]} expected=${digitIndex}` };
+    }
+
+    const dispatched = await dispatchDigit(password[digitIndex]!, digitIndex + 1);
+    if (!dispatched.ok) return dispatched;
+
+    const deadline = Date.now() + 1800;
+    let accepted = false;
+    while (Date.now() < deadline) {
+      const after = await readState();
+      if (!after.ok) return { ok: false, filled: false, reason: after.reason, diag: after.diag };
+      if (after.filledCounts[expectedFieldIndex] === digitIndex + 1) {
+        accepted = true;
+        break;
+      }
+      await spa.waitForTimeout(80).catch(() => undefined);
+    }
+    if (!accepted) return { ok: false, filled: false, reason: "digit-unconfirmed", diag: `digit-index=${digitIndex}` };
+  }
+
+  return { ok: true, filled: true };
 }
 
 export async function fillWithdrawalPasswordSetup(
