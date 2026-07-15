@@ -101,6 +101,7 @@ export async function inspectPixReceivingAccounts(surface: SpaHandle): Promise<P
     const accountIds = new Set<string>();
     const addAccount = (kind: PixReceivingAccount["kind"], rawPhone?: unknown): void => {
       const maskedPhone = kind === "pix-phone" ? maskPhone(rawPhone) : undefined;
+      if (kind === "pix-phone" && !maskedPhone) return;
       const id = `${kind}:${maskedPhone ?? ""}`;
       if (accountIds.has(id)) return;
       accountIds.add(id);
@@ -132,7 +133,7 @@ export async function inspectPixReceivingAccounts(surface: SpaHandle): Promise<P
       const text = element.textContent ?? "";
       if (!/pix/i.test(text)) continue;
       const masked = text.match(/\d{2,}[^\d]*\*+[^\d]*\d{3,}/)?.[0];
-      addAccount("pix-phone", masked);
+      if (masked) addAccount("pix-phone", masked);
     }
 
     const runtime = globalThis as unknown as Rec;

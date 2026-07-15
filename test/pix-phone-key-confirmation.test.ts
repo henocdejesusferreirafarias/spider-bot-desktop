@@ -50,6 +50,36 @@ test("inspection returns structural account state without a full phone number", 
   assert.equal(inspected.visiblePixFormModals, 1);
 });
 
+test("inspection does not treat the PIX add action as an existing receiving account", async () => {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const originalGetComputedStyle = globalThis.getComputedStyle;
+  const addAction = {
+    textContent: "PIX Adicionar",
+    getBoundingClientRect: () => ({ width: 300, height: 40 }),
+  };
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      body: { textContent: "Conta para recebimento (0/1) PIX Adicionar" },
+      querySelectorAll: (selector: string) => selector === "[class*='account'], [class*='Account']" ? [addAction] : [],
+    },
+  });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({ display: "block", visibility: "visible" }),
+  });
+  const surface = { evaluate: async (fn: () => unknown) => fn() } as unknown as SpaHandle;
+
+  try {
+    const inspected = await inspectPixReceivingAccounts(surface);
+    assert.deepEqual(inspected.accounts, []);
+  } finally {
+    if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+    else delete (globalThis as { document?: unknown }).document;
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: originalGetComputedStyle });
+  }
+});
+
 test("confirmation waits for modal disappearance and a compatible PIX PHONE card", async () => {
   const fake = fakeSurface([
     snapshot(),
