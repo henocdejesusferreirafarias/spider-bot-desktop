@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "patchright";
+import * as withdrawalPasswordSetup from "../src/main/services/withdrawal-password-setup.js";
 import { fillWithdrawalPasswordSetup } from "../src/main/services/withdrawal-password-setup.js";
 
 type FakeCell = {
@@ -144,6 +145,96 @@ function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initia
     else Object.defineProperty(globalThis, "TouchEvent", { configurable: true, value: originalTouchEvent });
   });
 }
+
+function withConfirmationSurface<T>(
+  options: { pinCount: [number, number]; confirmControls: number },
+  callback: (page: Page, confirmCount: () => number) => Promise<T>,
+): Promise<T> {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const originalGetComputedStyle = globalThis.getComputedStyle;
+  const originalMouseEvent = (globalThis as { MouseEvent?: unknown }).MouseEvent;
+  let confirmations = 0;
+  const fields = options.pinCount.map((count) => ({
+    getBoundingClientRect: () => ({ height: 40, width: 300 }),
+    querySelectorAll: () => Array.from({ length: 6 }, (_, index) => ({
+      textContent: index < count ? "•" : "",
+      getBoundingClientRect: () => ({ height: 40, width: 40 }),
+      querySelector: () => null,
+    })),
+  }));
+  const controls = Array.from({ length: options.confirmControls }, () => ({
+    textContent: "Confirmar",
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ height: 44, width: 300 }),
+    contains: () => false,
+    dispatchEvent: () => {
+      confirmations += 1;
+      return true;
+    },
+  }));
+  const documentValue = {
+    querySelectorAll: (selector: string) => {
+      if (selector === ".ui-password-input") return fields;
+      if (selector === "button,[role='button'],.ui-button,input[type='submit'],div,span") return controls;
+      return [];
+    },
+  };
+  Object.defineProperty(globalThis, "document", { configurable: true, value: documentValue });
+  Object.defineProperty(globalThis, "getComputedStyle", {
+    configurable: true,
+    value: () => ({ display: "block", visibility: "visible" }),
+  });
+  Object.defineProperty(globalThis, "MouseEvent", {
+    configurable: true,
+    value: class { constructor(_: string, __: unknown) {} },
+  });
+  const page = {
+    evaluate: async (fn: () => unknown) => fn(),
+  } as unknown as Page;
+  return callback(page, () => confirmations).finally(() => {
+    if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+    else delete (globalThis as { document?: unknown }).document;
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: originalGetComputedStyle });
+    if (originalMouseEvent === undefined) delete (globalThis as { MouseEvent?: unknown }).MouseEvent;
+    else Object.defineProperty(globalThis, "MouseEvent", { configurable: true, value: originalMouseEvent });
+  });
+}
+
+type ConfirmationSetupModule = {
+  confirmWithdrawalPasswordSetup?: (page: Page) => Promise<{ ok: boolean; reason?: string }>;
+};
+
+const confirmWithdrawalPasswordSetup = (withdrawalPasswordSetup as ConfirmationSetupModule).confirmWithdrawalPasswordSetup;
+
+test("confirma uma unica acao semantica apos os dois PINs", async () => {
+  assert.equal(typeof confirmWithdrawalPasswordSetup, "function");
+  await withConfirmationSurface({ pinCount: [6, 6], confirmControls: 1 }, async (page, confirmCount) => {
+    const result = await confirmWithdrawalPasswordSetup!(page);
+
+    assert.deepEqual(result, { ok: true });
+    assert.equal(confirmCount(), 1);
+  });
+});
+
+test("nao confirma quando os dois PINs nao estao completos", async () => {
+  assert.equal(typeof confirmWithdrawalPasswordSetup, "function");
+  await withConfirmationSurface({ pinCount: [6, 5], confirmControls: 1 }, async (page, confirmCount) => {
+    const result = await confirmWithdrawalPasswordSetup!(page);
+
+    assert.equal(result.reason, "surface-invalid");
+    assert.equal(confirmCount(), 0);
+  });
+});
+
+test("recusa controles de confirmacao ambiguos sem clicar", async () => {
+  assert.equal(typeof confirmWithdrawalPasswordSetup, "function");
+  await withConfirmationSurface({ pinCount: [6, 6], confirmControls: 2 }, async (page, confirmCount) => {
+    const result = await confirmWithdrawalPasswordSetup!(page);
+
+    assert.equal(result.reason, "confirm-action-ambiguous");
+    assert.equal(confirmCount(), 0);
+  });
+});
 
 test("preenche os dois campos pelo teclado virtual e confirma cada checkpoint", async () => {
   await withPasswordSurface({}, async (page, touchCount) => {

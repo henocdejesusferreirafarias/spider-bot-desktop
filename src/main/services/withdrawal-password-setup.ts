@@ -14,6 +14,12 @@ export interface WithdrawalPasswordSetupResult {
   diag?: string;
 }
 
+export interface WithdrawalPasswordConfirmationResult {
+  ok: boolean;
+  reason?: "surface-invalid" | "confirm-action-absent" | "confirm-action-ambiguous" | "confirm-action-failed";
+  diag?: string;
+}
+
 type FieldResult = {
   ok: boolean;
   filled: boolean;
@@ -193,4 +199,99 @@ export async function fillWithdrawalPasswordSetup(
   if (!second.ok) return { ok: false, firstFieldFilled: true, secondFieldFilled: false, reason: second.reason, diag: second.diag };
   await onStage("second-field-filled");
   return { ok: true, firstFieldFilled: true, secondFieldFilled: true };
+}
+
+// Confirma uma unica vez a tela de definicao ja preenchida. A persistencia na
+// plataforma e deliberadamente confirmada pelo chamador, depois da transicao.
+export async function confirmWithdrawalPasswordSetup(
+  spa: SpaHandle,
+): Promise<WithdrawalPasswordConfirmationResult> {
+  return spa.evaluate(
+    async (): Promise<WithdrawalPasswordConfirmationResult> => {
+      type RecordLike = Record<PropertyKey, unknown>;
+      const visible = (element: Element) => {
+        const rect = element.getBoundingClientRect();
+        const style = globalThis.getComputedStyle(element);
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 8 && rect.height > 8;
+      };
+      const normalize = (value: string | null | undefined) => (value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const fields = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-password-input"))
+        .filter((element): element is HTMLElement => visible(element));
+      const filledCount = (field: HTMLElement) => Array.from(
+        field.querySelectorAll<HTMLElement>(".ui-password-input__item"),
+      ).filter((item) => {
+        if (item.textContent?.trim()) return true;
+        const marker = item.querySelector<HTMLElement>("i");
+        return Boolean(marker && globalThis.getComputedStyle(marker).visibility !== "hidden");
+      }).length;
+      if (
+        fields.length !== 2 ||
+        fields.some((field) => field.querySelectorAll(".ui-password-input__item").length !== 6) ||
+        fields.some((field) => filledCount(field) !== 6)
+      ) {
+        return {
+          ok: false,
+          reason: "surface-invalid",
+          diag: `fields=${fields.length} filled=${fields.map(filledCount).join(",")}`,
+        };
+      }
+
+      const controls = Array.from(globalThis.document.querySelectorAll<HTMLElement>(
+        "button,[role='button'],.ui-button,input[type='submit'],div,span",
+      )).filter((element) => {
+        if (!visible(element)) return false;
+        const label = normalize(element.getAttribute("aria-label") || element.textContent);
+        return label === "confirmar" || label === "confirm";
+      });
+      // Um botao costuma ter wrappers com o mesmo texto. Conservamos somente os
+      // nos-folha; dois controles independentes continuam sendo ambiguidade.
+      const leafControls = controls.filter((candidate) => !controls.some((other) =>
+        other !== candidate && candidate.contains(other),
+      ));
+      if (leafControls.length === 0) {
+        return { ok: false, reason: "confirm-action-absent", diag: "controls=0" };
+      }
+      if (leafControls.length !== 1) {
+        return { ok: false, reason: "confirm-action-ambiguous", diag: `controls=${leafControls.length}` };
+      }
+
+      const control = leafControls[0]!;
+      const record = (value: unknown): RecordLike | undefined => (
+        value && (typeof value === "object" || typeof value === "function") ? value as RecordLike : undefined
+      );
+      const component = record((control as unknown as { __vueParentComponent?: unknown }).__vueParentComponent);
+      const vnode = record(component?.vnode);
+      const props = [record(component?.props), record(vnode?.props)].filter(
+        (value): value is RecordLike => Boolean(value),
+      );
+      const event = new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, view: globalThis });
+      for (const propSet of props) {
+        const listener = propSet.onClick ?? propSet.onclick;
+        if (typeof listener !== "function") continue;
+        try {
+          await Reflect.apply(listener, propSet, [event]);
+          return { ok: true };
+        } catch (error) {
+          return { ok: false, reason: "confirm-action-failed", diag: String(error) };
+        }
+      }
+      try {
+        control.dispatchEvent(event);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, reason: "confirm-action-failed", diag: String(error) };
+      }
+    },
+    undefined,
+    WITHDRAWAL_PASSWORD_MAIN_WORLD,
+  ).catch((error): WithdrawalPasswordConfirmationResult => ({
+    ok: false,
+    reason: "surface-invalid",
+    diag: String(error),
+  }));
 }
