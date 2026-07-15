@@ -14,3 +14,7 @@ export function pixKeyStatusLabel(status: PixPhoneKeyStatus): string {
 export function canManagePixKey(status: PixPhoneKeyStatus): boolean {
   return status === "available";
 }
+
+export function countAvailablePixKeys(statuses: readonly PixPhoneKeyStatus[]): number {
+  return statuses.filter((status) => status === "available").length;
+}
