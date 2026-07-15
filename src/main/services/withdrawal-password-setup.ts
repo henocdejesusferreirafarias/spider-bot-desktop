@@ -23,6 +23,7 @@ export interface WithdrawalPasswordEntryResult {
 
 export interface WithdrawalPasswordConfirmationResult {
   ok: boolean;
+  actionRejected?: boolean;
   reason?: "surface-invalid" | "confirm-action-absent" | "confirm-action-ambiguous" | "confirm-action-failed" | "destination-not-confirmed";
   diag?: string;
 }
@@ -347,14 +348,14 @@ export async function confirmWithdrawalPasswordSetup(
           await Reflect.apply(listener, propSet, [event]);
           return { ok: true };
         } catch (error) {
-          return { ok: false, reason: "confirm-action-failed", diag: String(error) };
+          return { ok: true, actionRejected: true, diag: `action-rejected=${String(error).length > 0}` };
         }
       }
       try {
         control.dispatchEvent(event);
         return { ok: true };
       } catch (error) {
-        return { ok: false, reason: "confirm-action-failed", diag: String(error) };
+        return { ok: true, actionRejected: true, diag: `action-rejected=${String(error).length > 0}` };
       }
     },
     undefined,

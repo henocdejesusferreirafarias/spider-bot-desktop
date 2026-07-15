@@ -156,7 +156,7 @@ function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFir
 }
 
 function withConfirmationSurface<T>(
-  options: { pinCount: [number, number]; confirmControls: number },
+  options: { pinCount: [number, number]; confirmControls: number; throwAfterDispatch?: boolean },
   callback: (page: Page, confirmCount: () => number) => Promise<T>,
 ): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -178,6 +178,7 @@ function withConfirmationSurface<T>(
     contains: () => false,
     dispatchEvent: () => {
       confirmations += 1;
+      if (options.throwAfterDispatch) throw new Error("transition detached after dispatch");
       return true;
     },
   }));
@@ -230,6 +231,19 @@ test("confirma uma unica acao semantica apos os dois PINs", async () => {
     assert.deepEqual(result, { ok: true });
     assert.equal(confirmCount(), 1);
   });
+});
+
+test("aguarda o destino quando o dispatch confirma e rejeita durante a transicao", async () => {
+  assert.equal(typeof confirmAndVerifyWithdrawalPasswordSetup, "function");
+  await withConfirmationSurface(
+    { pinCount: [6, 6], confirmControls: 1, throwAfterDispatch: true },
+    async (page, confirmCount) => {
+      const result = await confirmAndVerifyWithdrawalPasswordSetup!(page, async () => "withdrawal_ready");
+
+      assert.equal(result.ok, true);
+      assert.equal(confirmCount(), 1);
+    },
+  );
 });
 
 test("nao confirma quando os dois PINs nao estao completos", async () => {
