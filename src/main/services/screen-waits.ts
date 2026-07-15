@@ -5,6 +5,7 @@ import {
   hasActiveSession,
   isLoginFormVisible,
   hasWithdrawalPasswordSetupSurface,
+  hasExistingWithdrawalPasswordModal,
   hasWithdrawalAccountSurface,
   hasWithdrawalRequestSurface,
   classifyWithdrawalManagementDestination,
@@ -159,6 +160,20 @@ export async function waitForPixReceivingAccountSurface(
     await page.waitForTimeout(180).catch(() => null);
   }
   return readPixReceivingAccountSignals(page, await readRoute());
+}
+
+export async function waitForExistingWithdrawalPasswordModal(
+  page: Page,
+  timeoutMs: number,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await hasExistingWithdrawalPasswordModal(page)) {
+      return true;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return hasExistingWithdrawalPasswordModal(page);
 }
 
 export async function waitForAddPixModal(page: Page, timeoutMs: number): Promise<boolean> {

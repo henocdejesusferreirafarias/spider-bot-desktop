@@ -7,6 +7,7 @@ import {
   waitForWithdrawalManagementDestination,
   waitForWithdrawalPasswordConfirmationDestination,
   waitForPixReceivingAccountSurface,
+  waitForExistingWithdrawalPasswordModal,
 } from "../src/main/services/screen-waits.js";
 
 // A camada de esperas condicionais (screen-waits) faz polling de predicados de
@@ -126,4 +127,15 @@ test("waitForPixReceivingAccountSurface: ignora sinais parciais ate a aba PIX es
     (await waitForPixReceivingAccountSurface(page, readRoute, 2000)).ready,
     true,
   );
+});
+
+test("waitForExistingWithdrawalPasswordModal: espera o prompt apos a transicao", async () => {
+  let checks = 0;
+  const page = fakePage(async () => {
+    checks += 1;
+    return checks >= 3;
+  });
+
+  assert.equal(await waitForExistingWithdrawalPasswordModal(page, 2000), true);
+  assert.ok(checks >= 3);
 });
