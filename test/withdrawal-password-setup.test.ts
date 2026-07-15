@@ -10,7 +10,7 @@ type FakeCell = {
   querySelector: () => null;
 };
 
-function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number) => Promise<T>): Promise<T> {
+function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalGetComputedStyle = globalThis.getComputedStyle;
   const originalTouch = (globalThis as { Touch?: unknown }).Touch;
@@ -39,6 +39,7 @@ function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initia
   let keyboardVisible = activeField === 0;
   let activeTouch = false;
   let pendingDigit: string | undefined;
+  const evaluateWorlds: boolean[] = [];
   for (const [fieldIndex, field] of fields.entries()) {
     for (const [cellIndex, cell] of field.cells.entries()) {
       cell.classList = {
@@ -107,7 +108,8 @@ function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initia
     else if (activeField === 0) setFocus(1, 0);
   };
   const page = {
-    evaluate: async (fn: (payload: { expectedFieldIndex: number; password: string }) => unknown, payload: { expectedFieldIndex: number; password: string }) => {
+    evaluate: async (fn: (payload: { expectedFieldIndex: number; password: string }) => unknown, payload: { expectedFieldIndex: number; password: string }, mainWorld?: boolean) => {
+      evaluateWorlds.push(Boolean(mainWorld));
       const result = fn(payload);
       flushPendingDigit();
       return result;
@@ -126,7 +128,7 @@ function withPasswordSurface<T>(options: { hiddenKeyboardFirst?: boolean; initia
       })
     })
   } as unknown as Page;
-  return callback(page, () => touches, () => focusTaps).finally(() => {
+  return callback(page, () => touches, () => focusTaps, () => evaluateWorlds).finally(() => {
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
     else delete (globalThis as { document?: unknown }).document;
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: originalGetComputedStyle });
@@ -177,5 +179,15 @@ test("usa o teclado visivel quando uma instancia oculta aparece primeiro no DOM"
     assert.equal(result.ok, true);
     assert.equal(focusTapCount(), 0);
     assert.equal(touchCount(), 12);
+  });
+});
+
+test("executa a interacao da senha no contexto principal da pagina", async () => {
+  await withPasswordSurface({}, async (page, _touchCount, _focusTapCount, evaluateWorlds) => {
+    const result = await fillWithdrawalPasswordSetup(page, "102345", async () => undefined);
+
+    assert.equal(result.ok, true);
+    assert.equal(evaluateWorlds().length > 0, true);
+    assert.equal(evaluateWorlds().every((mainWorld) => mainWorld), true, JSON.stringify(evaluateWorlds()));
   });
 });

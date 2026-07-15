@@ -1,5 +1,7 @@
 import type { SpaHandle } from "./spa-navigation.js";
-import { PATCHRIGHT_MAIN_WORLD } from "./automation-dom.js";
+
+// O teclado Vue aceita a sequencia de touch somente no contexto da propria pagina.
+const WITHDRAWAL_PASSWORD_MAIN_WORLD = true;
 
 export type WithdrawalPasswordSetupStage = "first-field-filled" | "second-field-filled";
 
@@ -32,7 +34,7 @@ async function activateFirstWithdrawalPasswordField(spa: SpaHandle): Promise<Fie
     return fields.length === 2 && Boolean(keyboard && visible(keyboard)) && Boolean(
       fields[0]?.querySelector(".ui-password-input__item--focus")
     );
-  }, undefined, PATCHRIGHT_MAIN_WORLD).catch(() => false);
+  }, undefined, WITHDRAWAL_PASSWORD_MAIN_WORLD).catch(() => false);
 
   if (await isReady()) return { ok: true, filled: false };
 
@@ -85,7 +87,8 @@ async function fillFocusedField(
       const activeIndex = cells.findIndex((items) => items.some((item) => item.classList.contains("ui-password-input__item--focus")));
       return { ok: true, activeIndex, filledCounts: cells.map(filledCount) };
     },
-    PATCHRIGHT_MAIN_WORLD,
+    undefined,
+    WITHDRAWAL_PASSWORD_MAIN_WORLD,
   ).catch((error): { ok: false; activeIndex: number; filledCounts: number[]; reason: "surface-invalid"; diag: string } => ({
     ok: false, activeIndex: -1, filledCounts: [], reason: "surface-invalid", diag: String(error)
   }));
@@ -110,7 +113,7 @@ async function fillFocusedField(
       return { ok: true, filled: false };
     },
     { digit, identifier },
-    PATCHRIGHT_MAIN_WORLD,
+    WITHDRAWAL_PASSWORD_MAIN_WORLD,
   ).catch((error): FieldResult => ({ ok: false, filled: false, reason: "surface-invalid", diag: String(error) }));
 
   for (let digitIndex = 0; digitIndex < password.length; digitIndex += 1) {
