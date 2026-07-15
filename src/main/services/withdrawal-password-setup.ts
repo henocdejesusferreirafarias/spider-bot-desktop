@@ -34,11 +34,16 @@ type FieldResult = {
   diag?: string;
 };
 
-async function activateFirstWithdrawalPasswordField(
+type FieldReadiness = {
+  ready: boolean;
+  diag: string;
+};
+
+async function readWithdrawalPasswordFieldReadiness(
   spa: SpaHandle,
   expectedFieldCount: number,
-): Promise<FieldResult> {
-  const isReady = () => spa.evaluate(() => {
+): Promise<FieldReadiness> {
+  return spa.evaluate((fieldCount: number) => {
     const visible = (element: Element) => {
       const rect = element.getBoundingClientRect();
       const style = globalThis.getComputedStyle(element);
@@ -46,14 +51,38 @@ async function activateFirstWithdrawalPasswordField(
     };
     const fields = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-password-input"))
       .filter((element): element is HTMLElement => visible(element));
-    const keyboard = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"))
-      .find((element) => visible(element));
-    return fields.length === expectedFieldCount && Boolean(keyboard && visible(keyboard)) && Boolean(
-      fields[0]?.querySelector(".ui-password-input__item--focus")
+    const cells = fields.flatMap((field) => Array.from(
+      field.querySelectorAll<HTMLElement>(".ui-password-input__item"),
+    ));
+    const filled = cells.filter((cell) => {
+      if (cell.textContent?.trim()) return true;
+      const marker = cell.querySelector<HTMLElement>("i");
+      return Boolean(marker && globalThis.getComputedStyle(marker).visibility !== "hidden");
+    }).length;
+    const focused = cells.filter((cell) => cell.classList.contains("ui-password-input__item--focus")).length;
+    const keyboards = Array.from(globalThis.document.querySelectorAll<HTMLElement>(".ui-number-keyboard"));
+    const visibleKeyboards = keyboards.filter((element) => visible(element));
+    const keyboardKeys = Math.max(
+      0,
+      ...visibleKeyboards.map((keyboard) => keyboard.querySelectorAll(".ui-number-keyboard-key__wrapper").length),
     );
-  }, undefined, WITHDRAWAL_PASSWORD_MAIN_WORLD).catch(() => false);
+    return {
+      ready: fields.length === fieldCount && focused >= 1 && visibleKeyboards.length >= 1,
+      diag: `fields=${fields.length} cells=${cells.length} filled=${filled} focused=${focused} keyboards=${keyboards.length} visibleKeyboards=${visibleKeyboards.length} keyboardKeys=${keyboardKeys}`,
+    };
+  }, expectedFieldCount, WITHDRAWAL_PASSWORD_MAIN_WORLD).catch(() => ({
+    ready: false,
+    diag: "readiness-evaluate-error",
+  }));
+}
 
-  if (await isReady()) return { ok: true, filled: false };
+async function activateFirstWithdrawalPasswordField(
+  spa: SpaHandle,
+  expectedFieldCount: number,
+): Promise<FieldResult> {
+  const initial = await readWithdrawalPasswordFieldReadiness(spa, expectedFieldCount);
+
+  if (initial.ready) return { ok: true, filled: false };
 
   const firstCell = spa
     .locator(".ui-password-input")
@@ -62,15 +91,23 @@ async function activateFirstWithdrawalPasswordField(
     .first();
   const tapped = await firstCell.tap({ timeout: 1500 }).then(() => true).catch(() => false);
   if (!tapped) {
-    return { ok: false, filled: false, reason: "field-not-focused", diag: "first-field-tap-failed" };
+    return { ok: false, filled: false, reason: "field-not-focused", diag: `first-field-tap-failed; ${initial.diag}` };
   }
 
   const deadline = Date.now() + 1800;
   while (Date.now() < deadline) {
-    if (await isReady()) return { ok: true, filled: false };
+    if ((await readWithdrawalPasswordFieldReadiness(spa, expectedFieldCount)).ready) {
+      return { ok: true, filled: false };
+    }
     await spa.waitForTimeout(80).catch(() => undefined);
   }
-  return { ok: false, filled: false, reason: "field-not-focused", diag: "first-field-focus-or-keyboard-not-confirmed" };
+  const latest = await readWithdrawalPasswordFieldReadiness(spa, expectedFieldCount);
+  return {
+    ok: false,
+    filled: false,
+    reason: "field-not-focused",
+    diag: `first-field-focus-or-keyboard-not-confirmed; ${latest.diag}`,
+  };
 }
 
 async function fillFocusedField(

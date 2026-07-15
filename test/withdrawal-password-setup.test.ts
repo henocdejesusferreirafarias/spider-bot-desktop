@@ -11,7 +11,7 @@ type FakeCell = {
   querySelector: () => null;
 };
 
-function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean; listenerBoundKeyboard?: "hidden" | "visible" }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
+function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFirst?: boolean; initiallyFocused?: boolean; partiallyFilled?: boolean; listenerBoundKeyboard?: "hidden" | "visible"; tapEffect?: boolean }, callback: (page: Page, touchCount: () => number, focusTapCount: () => number, evaluateWorlds: () => boolean[]) => Promise<T>): Promise<T> {
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
   const originalGetComputedStyle = globalThis.getComputedStyle;
   const originalTouch = (globalThis as { Touch?: unknown }).Touch;
@@ -128,12 +128,13 @@ function withPasswordSurface<T>(options: { fieldCount?: 1 | 2; hiddenKeyboardFir
             tap: async () => {
               if (options.hiddenKeyboardFirst) throw new Error("tap should not be needed when the visible keyboard is already active");
               focusTaps += 1;
-              setFocus(0, 0);
+              if (options.tapEffect !== false) setFocus(0, 0);
             }
           })
         })
       })
-    })
+    }),
+    waitForTimeout: async () => undefined,
   } as unknown as Page;
   return callback(page, () => touches, () => focusTaps, () => evaluateWorlds).finally(() => {
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
@@ -352,5 +353,15 @@ test("recusa PIN existente quando o grid unico ja esta parcial", async () => {
     assert.equal(result.ok, false);
     assert.equal(result.reason, "field-partially-filled");
     assert.equal(touchCount(), 0);
+  });
+});
+
+test("registra o snapshot seguro quando o foco do PIN nao confirma", async () => {
+  await withPasswordSurface({ fieldCount: 1, initiallyFocused: false, tapEffect: false }, async (page) => {
+    const result = await fillExistingWithdrawalPassword(page, "102345");
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "field-not-focused");
+    assert.match(result.diag ?? "", /fields=1 cells=6 filled=0 focused=0 keyboards=1 visibleKeyboards=0 keyboardKeys=0/);
   });
 });
