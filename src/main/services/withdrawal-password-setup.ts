@@ -95,6 +95,7 @@ async function fillFocusedField(
         const rect = key.getBoundingClientRect();
         const touch = new Touch({ identifier: 1, target: key, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
         key.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
+        key.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
         if (filledCount(cells[expectedFieldIndex]!) < digitIndex + 1) {
           return { ok: false, filled: false, reason: "digit-unconfirmed" };
         }

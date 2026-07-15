@@ -37,6 +37,7 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
   let touches = 0;
   let focusTaps = 0;
   let keyboardVisible = activeField === 0;
+  let activeTouch = false;
   for (const [fieldIndex, field] of fields.entries()) {
     for (const [cellIndex, cell] of field.cells.entries()) {
       cell.classList = {
@@ -54,7 +55,13 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
     querySelectorAll: () => Array.from({ length: 10 }, (_, digit) => ({
       textContent: String(digit),
       getBoundingClientRect: () => ({ left: 0, top: 0, height: 40, width: 40 }),
-      dispatchEvent: () => {
+      dispatchEvent: (event: { type: string }) => {
+        if (event.type === "touchend") {
+          activeTouch = false;
+          return true;
+        }
+        if (event.type !== "touchstart" || activeTouch) return true;
+        activeTouch = true;
         touches += 1;
         const cell = fields[activeField]!.cells[activeCell]!;
         cell.textContent = String(digit);
@@ -74,7 +81,15 @@ function withPasswordSurface<T>(options: { initiallyFocused?: boolean; partially
     value: () => ({ display: "block", visibility: "visible" })
   });
   Object.defineProperty(globalThis, "Touch", { configurable: true, value: class { constructor(_: unknown) {} } });
-  Object.defineProperty(globalThis, "TouchEvent", { configurable: true, value: class { constructor(_: string, __: unknown) {} } });
+  Object.defineProperty(globalThis, "TouchEvent", {
+    configurable: true,
+    value: class {
+      type: string;
+      constructor(type: string, _: unknown) {
+        this.type = type;
+      }
+    }
+  });
   const page = {
     evaluate: async (fn: (payload: { expectedFieldIndex: number; password: string }) => unknown, payload: { expectedFieldIndex: number; password: string }) => fn(payload),
     locator: () => ({
