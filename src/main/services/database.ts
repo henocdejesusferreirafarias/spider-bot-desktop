@@ -204,6 +204,7 @@ interface ProfileAccountRow {
   real_name_enc: string;
   cpf_enc: string | null;
   withdrawal_password_enc: string | null;
+  pix_phone_key_enc: string | null;
   pix_key_registered_origins_json: string | null;
   pix_key_registered_at: string | null;
   status: ProfileAccountRecord["status"];
@@ -895,6 +896,7 @@ export class PredatorDatabase {
     this.initializeSchema();
     this.seedIfEmpty();
     this.ensureProfileArtifacts();
+    this.migrateLegacyUsedPixPhoneKeys();
     this.recoverInterruptedRuns();
     this.recoverInactivePixPhoneKeyReservations([]);
   }
@@ -1029,6 +1031,7 @@ export class PredatorDatabase {
         real_name_enc TEXT NOT NULL,
         cpf_enc TEXT,
         withdrawal_password_enc TEXT,
+        pix_phone_key_enc TEXT,
         pix_key_registered_origins_json TEXT NOT NULL DEFAULT '[]',
         pix_key_registered_at TEXT,
         status TEXT NOT NULL,
@@ -1114,6 +1117,7 @@ export class PredatorDatabase {
     const columns: Array<{ name: string; definition: string }> = [
       { name: "cpf_enc", definition: "cpf_enc TEXT" },
       { name: "withdrawal_password_enc", definition: "withdrawal_password_enc TEXT" },
+      { name: "pix_phone_key_enc", definition: "pix_phone_key_enc TEXT" },
       {
         name: "pix_key_registered_origins_json",
         definition: "pix_key_registered_origins_json TEXT NOT NULL DEFAULT '[]'"
@@ -2187,30 +2191,78 @@ export class PredatorDatabase {
     }
   }
 
-  // Consome uma chave reservada APOS a confirmacao real do cadastro: em vez de apagar a
-  // linha (perdendo o rastro), marca status='used' e grava perfil/conta/quando. Assim o
-  // suporte consegue auditar qual chave foi para qual perfil. So transita de 'reserved'
-  // (o WHERE garante idempotencia e evita consumir uma chave ja liberada/usada).
-  markPixPhoneKeyUsed(
+  confirmPixPhoneKeyRegistration(
     pixKeyId: string,
-    opts: { profileId: string; accountId?: string }
+    opts: { profileId: string; origin: string }
   ): boolean {
-    const now = new Date().toISOString();
-    return this.db.prepare(`
-      UPDATE pix_phone_keys
-      SET status = 'used',
-          assigned_profile_id = NULL,
-          assigned_at = NULL,
-          reservation_run_id = NULL,
-          pending_profile_id = NULL,
-          pending_run_id = NULL,
-          pending_at = NULL,
-          used_profile_id = ?,
-          used_account_id = ?,
-          used_at = ?,
-          updated_at = ?
-      WHERE id = ? AND status = 'pending_confirmation' AND pending_profile_id = ?
-    `).run(opts.profileId, opts.accountId ?? null, now, now, pixKeyId, opts.profileId).changes === 1;
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      const row = this.db.prepare(`
+        SELECT * FROM pix_phone_keys
+        WHERE id = ? AND status = 'pending_confirmation' AND pending_profile_id = ?
+      `).get(pixKeyId, opts.profileId) as PixPhoneKeyRow | undefined;
+      if (!row) {
+        this.db.exec("ROLLBACK;");
+        return false;
+      }
+
+      const current = this.ensureProfileAccount(opts.profileId);
+      const now = new Date().toISOString();
+      this.setProfileAccount(opts.profileId, {
+        ...current,
+        pixPhoneKey: this.secureStore.decrypt(row.phone_number_enc) ?? undefined,
+        pixKeyRegisteredAt: now,
+        pixKeyRegisteredOrigins: mergeRegistrationOrigins(current.pixKeyRegisteredOrigins, opts.origin),
+        updatedAt: now
+      });
+
+      const removed = this.db.prepare(`
+        DELETE FROM pix_phone_keys
+        WHERE id = ? AND status = 'pending_confirmation' AND pending_profile_id = ?
+      `).run(pixKeyId, opts.profileId);
+      if (removed.changes !== 1) {
+        throw new Error("Nao foi possivel consumir a chave PIX confirmada.");
+      }
+
+      this.db.exec("COMMIT;");
+      return true;
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  migrateLegacyUsedPixPhoneKeys(): number {
+    const legacy = this.db.prepare("SELECT * FROM pix_phone_keys WHERE status = 'used'").all() as unknown as PixPhoneKeyRow[];
+    if (!legacy.length) {
+      return 0;
+    }
+
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      for (const row of legacy) {
+        if (row.used_profile_id) {
+          const profile = this.db.prepare("SELECT id FROM profiles WHERE id = ?").get(row.used_profile_id) as { id: string } | undefined;
+          const phoneNumber = this.secureStore.decrypt(row.phone_number_enc) ?? undefined;
+          if (profile && phoneNumber) {
+            const current = this.ensureProfileAccount(row.used_profile_id);
+            this.setProfileAccount(row.used_profile_id, {
+              ...current,
+              pixPhoneKey: phoneNumber,
+              pixKeyRegisteredAt: row.used_at ?? current.pixKeyRegisteredAt ?? new Date().toISOString(),
+              pixKeyRegisteredOrigins: mergeRegistrationOrigins(current.pixKeyRegisteredOrigins, "Telefone"),
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+        this.db.prepare("DELETE FROM pix_phone_keys WHERE id = ? AND status = 'used'").run(row.id);
+      }
+      this.db.exec("COMMIT;");
+      return legacy.length;
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
   }
 
   markPixPhoneKeyPendingConfirmation(
@@ -2612,6 +2664,7 @@ export class PredatorDatabase {
       generatedAt: now,
       registeredAt: undefined,
       registeredOrigins: [],
+      pixPhoneKey: undefined,
       pixKeyRegisteredOrigins: [],
       pixKeyRegisteredAt: undefined,
       lastError: undefined,
@@ -2643,16 +2696,17 @@ export class PredatorDatabase {
     const encryptedCpf = this.secureStore.encrypt(next.cpf) ?? next.cpf ?? null;
     const encryptedWithdrawalPassword =
       this.secureStore.encrypt(next.withdrawalPassword) ?? next.withdrawalPassword ?? null;
+    const encryptedPixPhoneKey = this.secureStore.encrypt(next.pixPhoneKey) ?? next.pixPhoneKey ?? null;
     const serializedOrigins = JSON.stringify(next.registeredOrigins);
     const serializedPixOrigins = JSON.stringify(mergeRegistrationOrigins(next.pixKeyRegisteredOrigins));
 
     this.db.prepare(`
       INSERT INTO profile_accounts (
         id, profile_id, platform_id, username_enc, password_enc, phone_country_code,
-        phone_number_enc, real_name_enc, cpf_enc, withdrawal_password_enc,
+        phone_number_enc, real_name_enc, cpf_enc, withdrawal_password_enc, pix_phone_key_enc,
         pix_key_registered_origins_json, pix_key_registered_at, status, last_error, generated_at,
         registered_at, registered_origins_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(profile_id) DO UPDATE SET
         platform_id = excluded.platform_id,
         username_enc = excluded.username_enc,
@@ -2662,6 +2716,7 @@ export class PredatorDatabase {
         real_name_enc = excluded.real_name_enc,
         cpf_enc = excluded.cpf_enc,
         withdrawal_password_enc = excluded.withdrawal_password_enc,
+        pix_phone_key_enc = excluded.pix_phone_key_enc,
         pix_key_registered_origins_json = excluded.pix_key_registered_origins_json,
         pix_key_registered_at = excluded.pix_key_registered_at,
         status = excluded.status,
@@ -2681,6 +2736,7 @@ export class PredatorDatabase {
       encryptedRealName,
       encryptedCpf,
       encryptedWithdrawalPassword,
+      encryptedPixPhoneKey,
       serializedPixOrigins,
       next.pixKeyRegisteredAt ?? null,
       next.status,
@@ -3044,6 +3100,7 @@ export class PredatorDatabase {
       realName: this.secureStore.decrypt(row.real_name_enc) ?? "",
       cpf: this.secureStore.decrypt(row.cpf_enc ?? undefined) ?? undefined,
       withdrawalPassword: this.secureStore.decrypt(row.withdrawal_password_enc ?? undefined) ?? undefined,
+      pixPhoneKey: this.secureStore.decrypt(row.pix_phone_key_enc ?? undefined) ?? undefined,
       pixKeyRegisteredOrigins: mergeRegistrationOrigins(
         jsonParse<string[]>(row.pix_key_registered_origins_json, [])
       ),

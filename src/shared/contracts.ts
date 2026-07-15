@@ -181,6 +181,7 @@ export interface ProfileAccountRecord {
   realName: string;
   cpf?: string;
   withdrawalPassword?: string;
+  pixPhoneKey?: string;
   pixKeyRegisteredOrigins: string[];
   pixKeyRegisteredAt?: string;
   status: ProfileAccountStatus;
