@@ -39,12 +39,14 @@ test("findNineChallengeWithClient requests nine and accepts the tenth nine respo
   });
 
   assert.equal(result.status, "found");
-  assert.equal(result.searchAttempts, 10);
+  assert.equal(result.loadAttempts, 10);
+  assert.equal(result.rerollAttempts, 9);
   assert.deepEqual(requestedTypes, Array(10).fill("nine"));
 });
 
-test("findNineChallengeWithClient exhausts ten non-nine responses", async () => {
+test("findNineChallengeWithClient exhausts exactly ten rerolls", async () => {
   let loads = 0;
+  const waits: number[] = [];
   const client = {
     async load() {
       loads += 1;
@@ -56,11 +58,51 @@ test("findNineChallengeWithClient exhausts ten non-nine responses", async () => 
 
   const result = await findNineChallengeWithClient(client, "captcha-1", {
     deadlineAt: 60_000,
+    maxRerolls: 10,
     now: () => 0,
-    wait: async () => undefined,
+    wait: async (delayMs) => { waits.push(delayMs); },
   });
 
-  assert.deepEqual(result, { status: "exhausted", searchAttempts: 10 });
+  assert.deepEqual(result, {
+    status: "exhausted",
+    loadAttempts: 10,
+    rerollAttempts: 10,
+  });
+  assert.equal(loads, 10);
+  assert.deepEqual(waits, []);
+});
+
+test("findNineChallengeWithClient delays malformed and failed loads only", async () => {
+  const waits: number[] = [];
+  let loads = 0;
+  const client = {
+    async load() {
+      loads += 1;
+      if (loads === 1) throw new Error("network");
+      if (loads === 2) {
+        return { ...challenge("nine", "bad"), process_token: "" };
+      }
+      if (loads === 3) return challenge("icon", "icon");
+      return challenge("nine", "good");
+    },
+    async fetchImage() { return Buffer.alloc(0); },
+    async verify() { return {}; },
+  };
+
+  const result = await findNineChallengeWithClient(client, "captcha-1", {
+    deadlineAt: 60_000,
+    maxRerolls: 10,
+    now: () => 0,
+    wait: async (delayMs) => { waits.push(delayMs); },
+  });
+
+  assert.deepEqual(result, {
+    status: "found",
+    data: challenge("nine", "good"),
+    loadAttempts: 4,
+    rerollAttempts: 3,
+  });
+  assert.deepEqual(waits, [180, 180]);
 });
 
 test("findNineChallengeWithClient counts load errors and honors the deadline", async () => {
@@ -81,7 +123,11 @@ test("findNineChallengeWithClient counts load errors and honors the deadline", a
     wait: async () => { now += 30_000; },
   });
 
-  assert.deepEqual(result, { status: "deadline", searchAttempts: 2 });
+  assert.deepEqual(result, {
+    status: "deadline",
+    loadAttempts: 2,
+    rerollAttempts: 2,
+  });
   assert.equal(loads, 2);
 });
 
@@ -105,7 +151,8 @@ test("findNineChallengeWithClient treats malformed nine data as a consumed searc
   });
 
   assert.equal(result.status, "found");
-  assert.equal(result.searchAttempts, 2);
+  assert.equal(result.loadAttempts, 2);
+  assert.equal(result.rerollAttempts, 1);
 });
 
 test("solveLoadedNineGeetestWithClient verifies without loading another challenge", async () => {

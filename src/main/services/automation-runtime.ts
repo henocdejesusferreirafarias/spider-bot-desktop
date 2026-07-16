@@ -6911,12 +6911,12 @@ export class AutomationRuntimeService {
         now: () => this.nowMs(),
         wait: (delayMs) => this.waitForRunDelay(runId, page, delayMs),
       });
-      totalSearchAttempts += selection.searchAttempts;
+      totalSearchAttempts += selection.loadAttempts;
 
       if (selection.status !== "found") {
         const reason = selection.status === "deadline"
           ? "limite total de 60 segundos atingido"
-          : `nenhum captcha nine em ${selection.searchAttempts} busca(s)`;
+          : `nenhum captcha nine em ${selection.loadAttempts} busca(s)`;
         this.log(
           runId,
           "warning",

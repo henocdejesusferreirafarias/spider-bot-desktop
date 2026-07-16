@@ -37,12 +37,21 @@ export const GEETEST_NINE_RETRY_DELAY_MS = 180;
 export const GEETEST_NINE_DEADLINE_MS = 60_000;
 
 export type NineChallengeSearchResult =
-  | { status: "found"; data: GeetestChallengeData; searchAttempts: number }
-  | { status: "exhausted" | "deadline"; searchAttempts: number };
+  | {
+      status: "found";
+      data: GeetestChallengeData;
+      loadAttempts: number;
+      rerollAttempts: number;
+    }
+  | {
+      status: "exhausted" | "deadline";
+      loadAttempts: number;
+      rerollAttempts: number;
+    };
 
 export interface NineChallengeSearchOptions {
   deadlineAt: number;
-  maxAttempts?: number;
+  maxRerolls?: number;
   now?: () => number;
   wait?: (delayMs: number) => Promise<void>;
 }
@@ -68,37 +77,46 @@ export async function findNineChallengeWithClient(
   captchaId: string,
   options: NineChallengeSearchOptions,
 ): Promise<NineChallengeSearchResult> {
-  const maxAttempts = options.maxAttempts ?? GEETEST_NINE_SEARCH_LIMIT;
+  const maxRerolls = options.maxRerolls ?? GEETEST_NINE_SEARCH_LIMIT;
   const now = options.now ?? Date.now;
   const wait = options.wait ?? ((delayMs: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
-  let searchAttempts = 0;
+  let loadAttempts = 0;
+  let rerollAttempts = 0;
 
-  while (searchAttempts < maxAttempts) {
+  while (rerollAttempts < maxRerolls) {
     if (now() >= options.deadlineAt) {
-      return { status: "deadline", searchAttempts };
+      return { status: "deadline", loadAttempts, rerollAttempts };
     }
-    searchAttempts += 1;
+    loadAttempts += 1;
+    let shouldDelay = false;
     try {
       const data = await client.load(captchaId, "nine");
       if (now() >= options.deadlineAt) {
-        return { status: "deadline", searchAttempts };
+        return { status: "deadline", loadAttempts, rerollAttempts };
       }
       if (isUsableNineChallenge(data)) {
-        return { status: "found", data, searchAttempts };
+        return { status: "found", data, loadAttempts, rerollAttempts };
       }
+      const isValidNonNine = hasText(data.captcha_type)
+        && !isNineCaptchaType(data.captcha_type);
+      shouldDelay = !isValidNonNine;
     } catch {
-      // A failed load consumes this search attempt.
+      shouldDelay = true;
     }
-    if (searchAttempts < maxAttempts) {
-      if (now() >= options.deadlineAt) {
-        return { status: "deadline", searchAttempts };
-      }
+    rerollAttempts += 1;
+    if (rerollAttempts >= maxRerolls) {
+      return { status: "exhausted", loadAttempts, rerollAttempts };
+    }
+    if (now() >= options.deadlineAt) {
+      return { status: "deadline", loadAttempts, rerollAttempts };
+    }
+    if (shouldDelay) {
       await wait(GEETEST_NINE_RETRY_DELAY_MS);
     }
   }
 
-  return { status: "exhausted", searchAttempts };
+  return { status: "exhausted", loadAttempts, rerollAttempts };
 }
 
 export type GenerateGeetestNineW = (

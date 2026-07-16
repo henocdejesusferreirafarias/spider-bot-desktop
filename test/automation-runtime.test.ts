@@ -383,6 +383,7 @@ test("Geetest runtime stops searching at the 60 second deadline", async () => {
   geetest.createGeetestClient = () => ({
     async load() {
       loads += 1;
+      now += 30_000;
       return {
         lot_number: `lot-${loads}`,
         pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
@@ -391,7 +392,7 @@ test("Geetest runtime stops searching at the 60 second deadline", async () => {
       };
     }
   });
-  geetest.waitForRunDelay = async () => { now += 30_000; };
+  geetest.waitForRunDelay = async () => undefined;
   geetest.ensureRunActive = () => undefined;
   geetest.nowMs = () => now;
   geetest.log = () => undefined;
