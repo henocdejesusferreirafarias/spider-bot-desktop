@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { InferenceSession } from 'onnxruntime-node';
 import { PNG } from 'pngjs';
 import { NineMatchClassifier, NineMatchInferenceQueue, normalizeNineMatchPairForImageNet } from '../src/main/services/captcha/onnx-session.js';
-import { findIconCellsPhoto, rankPhotoCellsForTarget } from '../src/main/services/captcha/solvers/nine-photo.js';
+import { findNineMatchCells } from '../src/main/services/captcha/solvers/nine-match.js';
 
 function solidPng(width: number, height: number, rgba: [number, number, number, number]): Buffer {
   const png = new PNG({ width, height });
@@ -15,15 +15,6 @@ function solidPng(width: number, height: number, rgba: [number, number, number, 
   }
   return PNG.sync.write(png);
 }
-
-test('rankPhotoCellsForTarget prefers target score and keeps 1-indexed cells', () => {
-  const ranked = rankPhotoCellsForTarget('plane_d', [
-    { row: 1, col: 1, label: 'car_r', score: 0.9, targetScore: 0.1 },
-    { row: 1, col: 2, label: 'plane_d', score: 0.7, targetScore: 0.7 },
-    { row: 3, col: 3, label: 'plane_d', score: 0.5, targetScore: 0.8 },
-  ], 2);
-  assert.deepEqual(ranked, [[3, 3], [1, 2]]);
-});
 
 test('normalizeNineMatchPairForImageNet composites transparent prompt pixels over white', () => {
   const ques = new Uint8Array(64 * 64 * 4);
@@ -128,7 +119,7 @@ test('NineMatchClassifier retries initialization after warm-up failure', async (
   assert.equal(createCalls, 2);
 });
 
-test('findIconCellsPhoto ranks cells with the nine-match pair scorer', async () => {
+test('findNineMatchCells ranks cells with the nine-match pair scorer', async () => {
   const grid = solidPng(9, 9, [255, 255, 255, 255]);
   const ques = solidPng(3, 3, [0, 0, 0, 255]);
   const scores = new Map([
@@ -143,7 +134,7 @@ test('findIconCellsPhoto ranks cells with the nine-match pair scorer', async () 
     ['3,3', 0.5],
   ]);
 
-  const cells = await findIconCellsPhoto(grid, ques, 3, {
+  const cells = await findNineMatchCells(grid, ques, 3, {
     async score(_ques, cell) {
       return scores.get(`${cell.row},${cell.col}`) ?? 0;
     },
@@ -152,13 +143,13 @@ test('findIconCellsPhoto ranks cells with the nine-match pair scorer', async () 
   assert.deepEqual(cells, [[2, 3], [1, 2], [2, 1]]);
 });
 
-test('findIconCellsPhoto uses one batched scorer call when available', async () => {
+test('findNineMatchCells uses one batched scorer call when available', async () => {
   const grid = solidPng(9, 9, [255, 255, 255, 255]);
   const ques = solidPng(3, 3, [0, 0, 0, 255]);
   let singleCalls = 0;
   let batchCalls = 0;
 
-  const cells = await findIconCellsPhoto(grid, ques, 2, {
+  const cells = await findNineMatchCells(grid, ques, 2, {
     async score() {
       singleCalls += 1;
       return 0;

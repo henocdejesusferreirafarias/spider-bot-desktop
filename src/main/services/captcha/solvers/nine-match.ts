@@ -1,21 +1,6 @@
 import { decodeImage } from '../image-utils.js';
 import { getNineMatchClassifier, type NineMatchImage } from '../onnx-session.js';
 
-export interface RankedPhotoCell {
-  row: number;
-  col: number;
-  label: string;
-  score: number;
-  targetScore: number;
-}
-
-export function rankPhotoCellsForTarget(targetLabel: string, cells: RankedPhotoCell[], nineNums: number): Array<[number, number]> {
-  return [...cells]
-    .sort((a, b) => b.targetScore - a.targetScore || Number(b.label === targetLabel) - Number(a.label === targetLabel) || b.score - a.score)
-    .slice(0, nineNums)
-    .map((cell) => [cell.row, cell.col]);
-}
-
 export interface RankedNineMatchCell {
   row: number;
   col: number;
@@ -56,7 +41,7 @@ function cropCell(grid: { data: Uint8Array; width: number; height: number }, row
   return { row, col, data, width, height };
 }
 
-export async function findIconCellsPhoto(
+export async function findNineMatchCells(
   gridBuf: Buffer,
   quesBuf: Buffer,
   nineNums: number,

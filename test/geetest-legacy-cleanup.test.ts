@@ -68,3 +68,21 @@ test("captcha assets and source keep only the nine-match model pipeline", () => 
   );
   assert.doesNotMatch(collectorSource, /getClassifier|targetClass|targetScore|useClassifier/);
 });
+
+test("active captcha visual solver uses nine-match naming only", () => {
+  assert.equal(existsSync(join(root, "src/main/services/captcha/solvers/nine-match.ts")), true);
+  assert.equal(existsSync(join(root, "src/main/services/captcha/solvers/nine-photo.ts")), false);
+  assert.equal(existsSync(join(root, "test/captcha-nine-match.test.ts")), true);
+  assert.equal(existsSync(join(root, "test/captcha-photo-classifier.test.ts")), false);
+
+  const signer = readFileSync(join(root, "src/main/services/captcha/signer.ts"), "utf8");
+  const matcher = readFileSync(
+    join(root, "src/main/services/captcha/solvers/nine-match.ts"),
+    "utf8",
+  );
+  assert.match(signer, /findNineMatchCells/);
+  assert.doesNotMatch(
+    `${signer}\n${matcher}`,
+    /nine-photo|findIconCellsPhoto|rankPhotoCellsForTarget|RankedPhotoCell/,
+  );
+});
