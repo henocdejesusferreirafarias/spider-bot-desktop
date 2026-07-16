@@ -2447,37 +2447,15 @@ export class AutomationRuntimeService {
       await this.fastClickControl(runId, page, submitButton);
 
       try {
-        let handledCaptcha = await this.waitForManualCaptchaIfPresent(
+        const initialOutcome = await this.waitForRegistrationOrCaptcha(
           runId,
           page,
+          accountInput,
           profile.name,
-          "cadastro",
-          {
-            appearanceTimeoutMs: 2500,
-          },
+          25_000,
         );
-        let registered = await accountInput
-          .waitFor({ state: "hidden", timeout: handledCaptcha ? 15000 : 25000 })
-          .then(() => true)
-          .catch(() => false);
-
-        if (!registered && !handledCaptcha) {
-          handledCaptcha = await this.waitForManualCaptchaIfPresent(
-            runId,
-            page,
-            profile.name,
-            "cadastro",
-            {
-              appearanceTimeoutMs: 1200,
-            },
-          );
-          if (handledCaptcha) {
-            registered = await accountInput
-              .waitFor({ state: "hidden", timeout: 15000 })
-              .then(() => true)
-              .catch(() => false);
-          }
-        }
+        let handledCaptcha = initialOutcome.handledCaptcha;
+        let registered = initialOutcome.registered;
 
         if (
           !registered &&
@@ -5977,6 +5955,46 @@ export class AutomationRuntimeService {
     throw new Error(
       `captcha em ${stage} nao foi resolvido dentro do tempo limite`,
     );
+  }
+
+  private async waitForRegistrationOrCaptcha(
+    runId: string,
+    page: Page,
+    accountInput: Locator,
+    profileName: string,
+    timeoutMs: number,
+  ): Promise<{ handledCaptcha: boolean; registered: boolean }> {
+    const deadlineAt = this.nowMs() + timeoutMs;
+    let handledCaptcha = false;
+
+    while (true) {
+      this.ensureRunActive(runId);
+      if (!(await accountInput.isVisible().catch(() => false))) {
+        return { handledCaptcha, registered: true };
+      }
+
+      if (
+        await this.waitForManualCaptchaIfPresent(
+          runId,
+          page,
+          profileName,
+          "cadastro",
+          { appearanceTimeoutMs: 0 },
+        )
+      ) {
+        handledCaptcha = true;
+      }
+
+      if (!(await accountInput.isVisible().catch(() => false))) {
+        return { handledCaptcha, registered: true };
+      }
+
+      const remaining = deadlineAt - this.nowMs();
+      if (remaining <= 0) {
+        return { handledCaptcha, registered: false };
+      }
+      await this.waitForRunDelay(runId, page, Math.min(180, remaining));
+    }
   }
 
   private async waitForGeetestDismissal(
