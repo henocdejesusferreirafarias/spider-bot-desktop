@@ -5,7 +5,7 @@ import type {
   ProfileSummary
 } from "../../shared/contracts.js";
 import { formatRelativeTime } from "../lib/format.js";
-import { canManagePixKey, pixKeyStatusLabel } from "../lib/pix-key-status.js";
+import { canDeletePixKey, canEditPixKey, pixKeyStatusLabel } from "../lib/pix-key-status.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Icon } from "./Icon.js";
 import { Modal } from "./Modal.js";
@@ -177,7 +177,7 @@ export function PixKeysPanel({
   };
 
   const openEditModal = (pixKey: PixPhoneKeyRecord) => {
-    if (!canManagePixKey(pixKey.status)) return;
+    if (!canEditPixKey(pixKey.status)) return;
     setEditingKey(pixKey);
     setModalOpen(true);
   };
@@ -214,7 +214,7 @@ export function PixKeysPanel({
                 <td className="token">{index + 1}</td>
                 <td className="token" style={{ userSelect: "text" }}>{formatPhoneNumber(pixKey.phoneNumber)}</td>
                 <td>
-                  <span className={`status-pill ${pixKey.status === "available" ? "success" : pixKey.status === "used" ? "warning" : "neutral"}`}>
+                  <span className={`status-pill ${pixKey.status === "available" ? "success" : pixKey.status === "rejected" ? "danger" : pixKey.status === "used" ? "warning" : "neutral"}`}>
                     {pixKeyStatusLabel(pixKey.status)}
                   </span>
                 </td>
@@ -223,19 +223,23 @@ export function PixKeysPanel({
                 </td>
                 <td>{formatRelativeTime(pixKey.usedAt ?? pixKey.pendingAt ?? pixKey.assignedAt ?? pixKey.createdAt)}</td>
                 <td>
-                  {canManagePixKey(pixKey.status) ? (
+                  {canEditPixKey(pixKey.status) || canDeletePixKey(pixKey.status) ? (
                     <div className="act-cell">
-                      <button className="table-action-button" onClick={() => openEditModal(pixKey)} type="button">
-                        Editar
-                      </button>
-                      <button
-                        className="table-action-button danger"
-                        disabled={deleting}
-                        onClick={() => setDeleteTarget(pixKey)}
-                        type="button"
-                      >
-                        Excluir
-                      </button>
+                      {canEditPixKey(pixKey.status) ? (
+                        <button className="table-action-button" onClick={() => openEditModal(pixKey)} type="button">
+                          Editar
+                        </button>
+                      ) : null}
+                      {canDeletePixKey(pixKey.status) ? (
+                        <button
+                          className="table-action-button danger"
+                          disabled={deleting}
+                          onClick={() => setDeleteTarget(pixKey)}
+                          type="button"
+                        >
+                          Excluir
+                        </button>
+                      ) : null}
                     </div>
                   ) : "—"}
                 </td>

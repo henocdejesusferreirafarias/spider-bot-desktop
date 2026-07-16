@@ -227,6 +227,8 @@ interface PixPhoneKeyRow {
   pending_profile_id: string | null;
   pending_run_id: string | null;
   pending_at: string | null;
+  rejected_at: string | null;
+  rejection_reason: PixPhoneKeyRecord["rejectionReason"] | null;
   used_profile_id: string | null;
   used_account_id: string | null;
   used_at: string | null;
@@ -1054,6 +1056,8 @@ export class PredatorDatabase {
         pending_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
         pending_run_id TEXT,
         pending_at TEXT,
+        rejected_at TEXT,
+        rejection_reason TEXT,
         used_profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
         used_account_id TEXT,
         used_at TEXT,
@@ -2184,10 +2188,10 @@ export class PredatorDatabase {
 
   deletePixPhoneKey(pixKeyId: string): void {
     const result = this.db
-      .prepare("DELETE FROM pix_phone_keys WHERE id = ? AND status = 'available'")
+      .prepare("DELETE FROM pix_phone_keys WHERE id = ? AND status IN ('available', 'rejected')")
       .run(pixKeyId);
     if (result.changes !== 1) {
-      throw new Error("Somente chaves PIX disponiveis podem ser excluidas.");
+      throw new Error("Somente chaves PIX disponiveis ou recusadas podem ser excluidas.");
     }
   }
 
@@ -2285,6 +2289,27 @@ export class PredatorDatabase {
         AND assigned_profile_id = ?
         AND reservation_run_id = ?
     `).run(input.profileId, input.runId, now, now, pixKeyId, input.profileId, input.runId).changes === 1;
+  }
+
+  rejectPixPhoneKey(
+    pixKeyId: string,
+    input: { profileId: string; reason: "withdrawal-account-already-linked" }
+  ): boolean {
+    const now = new Date().toISOString();
+    return this.db.prepare(`
+      UPDATE pix_phone_keys
+      SET status = 'rejected',
+          assigned_profile_id = NULL,
+          assigned_at = NULL,
+          reservation_run_id = NULL,
+          pending_profile_id = NULL,
+          pending_run_id = NULL,
+          pending_at = NULL,
+          rejected_at = ?,
+          rejection_reason = ?,
+          updated_at = ?
+      WHERE id = ? AND status = 'pending_confirmation' AND pending_profile_id = ?
+    `).run(now, input.reason, now, pixKeyId, input.profileId).changes === 1;
   }
 
   findPendingPixPhoneKey(profileId: string): PixPhoneKeyRecord | undefined {
@@ -2462,7 +2487,9 @@ export class PredatorDatabase {
       { name: "reservation_run_id", definition: "reservation_run_id TEXT" },
       { name: "pending_profile_id", definition: "pending_profile_id TEXT" },
       { name: "pending_run_id", definition: "pending_run_id TEXT" },
-      { name: "pending_at", definition: "pending_at TEXT" }
+      { name: "pending_at", definition: "pending_at TEXT" },
+      { name: "rejected_at", definition: "rejected_at TEXT" },
+      { name: "rejection_reason", definition: "rejection_reason TEXT" }
     ];
 
     for (const column of columns) {
@@ -3126,6 +3153,8 @@ export class PredatorDatabase {
       pendingProfileId: row.pending_profile_id ?? undefined,
       pendingRunId: row.pending_run_id ?? undefined,
       pendingAt: row.pending_at ?? undefined,
+      rejectedAt: row.rejected_at ?? undefined,
+      rejectionReason: row.rejection_reason ?? undefined,
       usedProfileId: row.used_profile_id ?? undefined,
       usedAccountId: row.used_account_id ?? undefined,
       usedAt: row.used_at ?? undefined,

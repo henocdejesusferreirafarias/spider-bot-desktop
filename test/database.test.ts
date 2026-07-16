@@ -268,6 +268,41 @@ test("confirma chave PIX no perfil e a remove do estoque", () => {
   assert.equal(db.listPixPhoneKeys().some((candidate) => candidate.id === key.id), false);
 });
 
+test("marca uma chave PIX pendente como recusada sem vincula-la ao perfil", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Rejected Pix Key",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("41980042690");
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+
+  assert.equal(
+    db.rejectPixPhoneKey(key.id, {
+      profileId: profile.id,
+      reason: "withdrawal-account-already-linked"
+    }),
+    true
+  );
+
+  const rejected = db.getPixPhoneKey(key.id);
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.pendingProfileId, undefined);
+  assert.equal(rejected.rejectionReason, "withdrawal-account-already-linked");
+  assert.ok(rejected.rejectedAt);
+  assert.equal(db.getOrCreateProfileAccount(profile.id).pixPhoneKey, undefined);
+  assert.equal(db.reservePixPhoneKey(profile.id, "run-b"), undefined);
+  assert.throws(() => db.updatePixPhoneKeyPhoneNumber(key.id, "11988887777"), /disponiveis/);
+
+  db.deletePixPhoneKey(key.id);
+  assert.equal(db.listPixPhoneKeys().some((candidate) => candidate.id === key.id), false);
+});
+
 test("nao consome chave PIX pendente de outro perfil", () => {
   const db = new PredatorDatabase(createPaths(), plainStore);
   const owner = db.createProfile({
