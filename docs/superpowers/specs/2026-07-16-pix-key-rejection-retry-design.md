@@ -49,7 +49,7 @@ Toasts genéricos, antigos, não visíveis ou sem mensagem classificada não pro
 2. Promover a chave a `pending_confirmation` imediatamente antes do submit.
 3. Observar o resultado da tentativa com o observador de toast e os sinais estruturais já existentes.
 4. Se houver confirmação estrutural, persistir a chave no perfil e removê-la do estoque, como hoje.
-5. Se houver rejeição explícita classificada, mover a chave para `rejected` de forma guardada pelo mesmo perfil e execução.
+5. Se houver rejeição explícita classificada, mover a chave para `rejected` de forma guardada pelo mesmo perfil. Uma pendência retomada após o navegador fechar continua pertencendo ao perfil, embora tenha sido criada por uma execução anterior.
 6. Sem reiniciar o navegador, navegar ou pedir senha novamente, limpar/substituir apenas o campo de telefone no formulário vivo, validar o novo preenchimento e tentar a próxima chave disponível.
 7. Repetir somente enquanto uma chave elegível puder ser reservada. Cada recusa deixa a chave fora do conjunto elegível, portanto o laço é finito e não repete uma mesma chave.
 8. Se não houver mais chave disponível, encerrar apenas aquele perfil como revisão/falha controlada. Os demais perfis em paralelo continuam normalmente.
@@ -71,7 +71,7 @@ Os logs detalhados registram a recusa e cada nova tentativa sem imprimir o telef
 
 ## Concorrência e segurança
 
-A mudança para `rejected` será uma atualização condicional: a linha precisa continuar em `pending_confirmation` e pertencer ao mesmo perfil e à mesma execução. Assim, uma tentativa atrasada não pode recusar a chave de outro perfil nem alterar uma chave já confirmada.
+A mudança para `rejected` será uma atualização condicional: a linha precisa continuar em `pending_confirmation` e pertencer ao mesmo perfil. O runtime já impede duas execuções simultâneas para um mesmo perfil; esse vínculo também permite tratar com segurança uma pendência retomada após interrupção. Assim, uma tentativa atrasada não pode recusar a chave de outro perfil nem alterar uma chave já confirmada.
 
 Cada retry reserva a próxima chave através da operação atômica já usada pelo estoque. Janelas paralelas não recebem a mesma chave. Se o navegador fechar após a promoção a pendente e antes de haver uma mensagem classificada, a regra existente de pendência é preservada; a chave não é recusada por inferência.
 
