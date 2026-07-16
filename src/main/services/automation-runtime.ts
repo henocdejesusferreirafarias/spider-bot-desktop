@@ -60,6 +60,7 @@ import {
 } from "./pix-password-confirmation.js";
 import { fillPixPhoneAddForm } from "./pix-add-form-fill.js";
 import { confirmPixPhoneSubmission, inspectPixReceivingAccounts } from "./pix-phone-key-confirmation.js";
+import { retryRejectedPixPhoneKeys } from "./pix-phone-key-retry.js";
 import { decidePixPhonePreflight } from "./pix-phone-key-lifecycle.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1003,12 +1004,12 @@ export class AutomationRuntimeService {
         this.log(run.id, "error", `[${profile.name}] Chave PIX pendente requer revisao (${preflight}).`);
         return { error: preflight, pixType, profileId: profile.id, profileName: profile.name, status: resultStatus, step };
       }
-      const phoneKey = pendingPhoneKey ?? this.database.reservePixPhoneKey(profile.id, run.id);
-      if (!phoneKey) {
+      const initialPhoneKey = pendingPhoneKey ?? this.database.reservePixPhoneKey(profile.id, run.id);
+      if (!initialPhoneKey) {
         throw new Error("chave PIX PHONE disponivel ausente para este perfil");
       }
-      if (phoneKey.status === "reserved") {
-        reservedPhoneKeyId = phoneKey.id;
+      if (initialPhoneKey.status === "reserved") {
+        reservedPhoneKeyId = initialPhoneKey.id;
       }
 
       step = "pix-add-password";
@@ -1054,39 +1055,70 @@ export class AutomationRuntimeService {
       }
       resultStatus = "pix_add_form_ready";
 
-      step = "pix-add-form-fill";
       const account = this.database.getOrCreateProfileAccount(profile.id);
       const cpf = this.database.resolveCpfForProfile(profile.id);
-      const formFill = await fillPixPhoneAddForm(spa, {
-        realName: account.realName,
-        phoneNumber: phoneKey.phoneNumber,
-        cpf,
-      });
-      if (!formFill.ok) {
-        throw new Error(
-          `formulario PIX nao confirmou preenchimento (${formFill.reason ?? "desconhecido"}${formFill.diag ? `; ${formFill.diag}` : ""})`,
-        );
-      }
-      resultStatus = "pix_add_form_filled";
+      let submissionReason: string | undefined;
+      const retriedSubmission = await retryRejectedPixPhoneKeys(
+        initialPhoneKey,
+        async (phoneKey) => {
+          step = "pix-add-form-fill";
+          const formFill = await fillPixPhoneAddForm(spa, {
+            realName: account.realName,
+            phoneNumber: phoneKey.phoneNumber,
+            cpf,
+          });
+          if (!formFill.ok) {
+            throw new Error(
+              `formulario PIX nao confirmou preenchimento (${formFill.reason ?? "desconhecido"}${formFill.diag ? `; ${formFill.diag}` : ""})`,
+            );
+          }
+          resultStatus = "pix_add_form_filled";
 
-      if (phoneKey.status === "reserved") {
-        if (!this.database.markPixPhoneKeyPendingConfirmation(phoneKey.id, { profileId: profile.id, runId: run.id })) {
-          throw new Error("nao foi possivel proteger a chave PIX antes da confirmacao");
-        }
-        reservedPhoneKeyId = undefined;
-      }
-      step = "pix-submit";
-      const submission = await confirmPixPhoneSubmission(spa, phoneKey.phoneNumber, PIX_MS(12000));
-      step = "pix-submission-confirmation";
-      if (submission.result === "confirmed") {
-        if (!this.database.confirmPixPhoneKeyRegistration(phoneKey.id, { profileId: profile.id, origin: pixType })) {
-          throw new Error("a chave PIX foi listada, mas nao foi possivel registra-la como cadastrada");
-        }
+          if (phoneKey.status === "reserved") {
+            if (!this.database.markPixPhoneKeyPendingConfirmation(phoneKey.id, { profileId: profile.id, runId: run.id })) {
+              throw new Error("nao foi possivel proteger a chave PIX antes da confirmacao");
+            }
+            reservedPhoneKeyId = undefined;
+          }
+          step = "pix-submit";
+          const submission = await confirmPixPhoneSubmission(spa, phoneKey.phoneNumber, PIX_MS(12000));
+          step = "pix-submission-confirmation";
+          submissionReason = submission.reason;
+          if (submission.result === "confirmed") {
+            if (!this.database.confirmPixPhoneKeyRegistration(phoneKey.id, { profileId: profile.id, origin: pixType })) {
+              throw new Error("a chave PIX foi listada, mas nao foi possivel registra-la como cadastrada");
+            }
+            return "confirmed";
+          }
+          if (submission.result === "rejected") {
+            if (submission.reason !== "withdrawal-account-already-linked") {
+              throw new Error("recusa PIX sem motivo reconhecido");
+            }
+            if (!this.database.rejectPixPhoneKey(phoneKey.id, { profileId: profile.id, reason: submission.reason })) {
+              throw new Error("nao foi possivel marcar a chave PIX como recusada");
+            }
+            this.log(run.id, "warning", `[${profile.name}] Chave PIX recusada pela plataforma; tentando a proxima chave.`);
+            return "rejected";
+          }
+          return submission.result === "conflict" ? "conflict" : "pending";
+        },
+        () => {
+          const next = this.database.reservePixPhoneKey(profile.id, run.id);
+          if (next) {
+            reservedPhoneKeyId = next.id;
+          }
+          return next;
+        },
+      );
+      if (retriedSubmission.result === "confirmed") {
         resultStatus = "pix_key_registered";
-      } else if (submission.result === "conflict") {
+      } else if (retriedSubmission.result === "conflict") {
         resultStatus = "pix_key_conflict";
-      } else {
+      } else if (retriedSubmission.result === "pending") {
         resultStatus = "pix_key_pending_confirmation";
+      } else {
+        resultStatus = "pix_key_conflict";
+        submissionReason = "pix-keys-exhausted-after-rejection";
       }
 
       if (resultStatus === "pix_key_conflict" || resultStatus === "pix_key_pending_confirmation") {
@@ -1096,7 +1128,7 @@ export class AutomationRuntimeService {
           metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
         });
         this.database.updateProfileStatus(profile.id, "active");
-        const reason = submission.reason ?? "confirmacao-inconclusiva";
+        const reason = submissionReason ?? "confirmacao-inconclusiva";
         this.log(run.id, "error", `[${profile.name}] Cadastro PIX requer revisao (${resultStatus}; ${reason}).`);
         return { error: reason, pixType, profileId: profile.id, profileName: profile.name, status: resultStatus, step };
       }

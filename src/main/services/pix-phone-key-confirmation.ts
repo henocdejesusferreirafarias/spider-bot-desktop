@@ -55,8 +55,8 @@ function isPixRejectionReason(value: unknown): value is PixRejectionReason {
   return value === "withdrawal-account-already-linked";
 }
 
-async function startPixRejectionObserver(surface: SpaHandle): Promise<void> {
-  await surface.evaluate((key: string) => {
+async function startPixRejectionObserver(surface: SpaHandle): Promise<boolean> {
+  return surface.evaluate((key: string) => {
     type ObserverState = { reason?: string; observer?: MutationObserver };
     const runtime = globalThis as unknown as Record<string, unknown>;
     const previous = runtime[key] as ObserverState | undefined;
@@ -98,7 +98,8 @@ async function startPixRejectionObserver(surface: SpaHandle): Promise<void> {
     });
     state.observer.observe(globalThis.document.documentElement, { childList: true, subtree: true });
     runtime[key] = state;
-  }, PIX_REJECTION_OBSERVER_KEY, MAIN_WORLD).catch(() => undefined);
+    return true;
+  }, PIX_REJECTION_OBSERVER_KEY, MAIN_WORLD).then((installed) => installed === true).catch(() => false);
 }
 
 async function readPixRejectionObserver(surface: SpaHandle): Promise<PixRejectionReason | undefined> {
@@ -279,7 +280,7 @@ export async function confirmPixPhoneSubmission(
     return { actionAttempted: false, clickRejected: false, result: "error", reason: "source-unstable" };
   }
 
-  await startPixRejectionObserver(surface);
+  const observerInstalled = await startPixRejectionObserver(surface);
   let clickRejected = false;
   try {
     try {
@@ -296,7 +297,8 @@ export async function confirmPixPhoneSubmission(
     const startedAt = Date.now();
     do {
       const current = await inspectPixReceivingAccounts(surface);
-      const rejectionReason = current.rejectionReason ?? await readPixRejectionObserver(surface);
+      const rejectionReason = await readPixRejectionObserver(surface)
+        ?? (observerInstalled ? undefined : current.rejectionReason);
       if (rejectionReason) {
         return { actionAttempted: true, clickRejected, result: "rejected", reason: rejectionReason };
       }
