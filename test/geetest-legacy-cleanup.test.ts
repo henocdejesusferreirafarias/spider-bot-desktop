@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -29,4 +29,42 @@ test("desktop package has no legacy Python GeeTest runtime", () => {
   }
   assert.equal(existsSync(join(root, "assets/captcha/GeekedTest-LICENSE.txt")), true);
   assert.match(packageJson.scripts["train:nine-match"] ?? "", /captcha-train-nine-match\.py/);
+});
+
+test("captcha assets and source keep only the nine-match model pipeline", () => {
+  const assetNames = readdirSync(join(root, "assets/captcha"), { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  assert.deepEqual(assetNames, [
+    "GeekedTest-LICENSE.txt",
+    "nine_match.json",
+    "nine_match.onnx",
+  ]);
+
+  for (const relativePath of [
+    "src/main/services/captcha/solvers/nine.ts",
+    "scripts/captcha-oracle-ques.py",
+    "scripts/captcha-train-photo.py",
+    "scripts/captcha-gate3-nine.mjs",
+    "test/captcha-onnx.test.ts",
+    "test/captcha-nine.test.ts",
+  ]) {
+    assert.equal(existsSync(join(root, relativePath)), false, relativePath);
+  }
+
+  const onnxSource = readFileSync(
+    join(root, "src/main/services/captcha/onnx-session.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    onnxSource,
+    /IconClassifier|PhotoClassifier|getClassifier|getPhotoClassifier|nine_photo|geetest_v4_icon|charsets\.json/,
+  );
+
+  const collectorSource = readFileSync(
+    join(root, "scripts/captcha-collect-nine-dataset.mjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(collectorSource, /getClassifier|targetClass|targetScore|useClassifier/);
 });

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { InferenceSession } from 'onnxruntime-node';
 import { PNG } from 'pngjs';
-import { NineMatchClassifier, NineMatchInferenceQueue, normalizeNineMatchPairForImageNet, normalizePhotoRgbForImageNet } from '../src/main/services/captcha/onnx-session.js';
+import { NineMatchClassifier, NineMatchInferenceQueue, normalizeNineMatchPairForImageNet } from '../src/main/services/captcha/onnx-session.js';
 import { findIconCellsPhoto, rankPhotoCellsForTarget } from '../src/main/services/captcha/solvers/nine-photo.js';
 
 function solidPng(width: number, height: number, rgba: [number, number, number, number]): Buffer {
@@ -15,20 +15,6 @@ function solidPng(width: number, height: number, rgba: [number, number, number, 
   }
   return PNG.sync.write(png);
 }
-
-test('normalizePhotoRgbForImageNet returns CHW ImageNet-normalized 64x64 RGB', () => {
-  const rgba = new Uint8Array(2 * 2 * 4);
-  rgba.set([
-    255, 0, 0, 255, 0, 255, 0, 255,
-    0, 0, 255, 255, 255, 255, 255, 255,
-  ]);
-  const out = normalizePhotoRgbForImageNet(rgba, 2, 2);
-  assert.equal(out.length, 3 * 64 * 64);
-  assert.ok(Number.isFinite(out[0]));
-  assert.ok(Math.abs(out[0]! - ((1 - 0.485) / 0.229)) < 0.0001);
-  assert.ok(Math.abs(out[64 * 64]! - ((0 - 0.456) / 0.224)) < 0.0001);
-  assert.ok(Math.abs(out[2 * 64 * 64]! - ((0 - 0.406) / 0.225)) < 0.0001);
-});
 
 test('rankPhotoCellsForTarget prefers target score and keeps 1-indexed cells', () => {
   const ranked = rankPhotoCellsForTarget('plane_d', [
