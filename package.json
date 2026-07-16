@@ -28,8 +28,7 @@
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "check": "npm run typecheck",
     "test": "tsx --test test/*.test.ts",
-    "postinstall": "patch-package && npm run napi:build -w @spider-bot/license-core && node scripts/setup-python.mjs",
-    "setup:python": "node scripts/setup-python.mjs"
+    "postinstall": "patch-package && npm run napi:build -w @spider-bot/license-core"
   },
   "build": {
     "appId": "com.spiderbot.desktop",
@@ -54,18 +53,6 @@
       {
         "from": "assets/icon.png",
         "to": "icon.png"
-      },
-      {
-        "from": "scripts",
-        "to": "scripts",
-        "filter": [
-          "geetest_solver_bridge.py",
-          "geetest_solver_worker.py"
-        ]
-      },
-      {
-        "from": "GeekedTest-main",
-        "to": "GeekedTest-main"
       }
     ],
     "asar": true,
