@@ -4108,6 +4108,15 @@ a:focus-visible,
   border-color: var(--line-strong);
 }
 
+.profile-editor-password-field {
+  display: flex;
+  gap: 6px;
+}
+
+.profile-editor-password-field input {
+  min-width: 0;
+}
+
 .screen-layout-panel {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;

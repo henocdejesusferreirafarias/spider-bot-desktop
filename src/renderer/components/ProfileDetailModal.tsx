@@ -112,7 +112,7 @@ export function ProfileDetailModal({
           }
         />
         <DetailItem label="Nome real" value={profile.account?.realName} />
-        <DetailItem label="CPF PIX" value={maskCpf(profile.account?.cpf)} />
+        <DetailItem label="CPF" value={maskCpf(profile.account?.cpf)} />
         <SecretDetailItem label="Senha de saque" value={profile.account?.withdrawalPassword} />
         <DetailItem label="Chave PIX" value={maskPixPhoneKey(profile.account?.pixPhoneKey)} />
         <DetailItem label="PIX cadastrado" value={formatRelativeTime(profile.account?.pixKeyRegisteredAt)} />
