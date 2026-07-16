@@ -21,9 +21,17 @@ import type {
 } from "@spider-bot/licensing-contracts";
 import { PredatorDatabase } from "./database.js";
 import { BrowserRuntimeService } from "./browser-runtime.js";
-import { shouldProbeGeetestChallenge, solveNineGeetestWithClient } from "./geetest-solver.js";
-import type { GeetestCaptchaData, GeetestSolution } from "./geetest-solver.js";
+import {
+  findNineChallengeWithClient,
+  GEETEST_NINE_ANSWER_LIMIT,
+  GEETEST_NINE_DEADLINE_MS,
+  GEETEST_NINE_RETRY_DELAY_MS,
+  solveLoadedNineGeetestWithClient,
+} from "./geetest-solver.js";
+import type { GeetestCaptchaData, GeetestNineClient, GeetestSolution } from "./geetest-solver.js";
 import { GeetestClient } from "./captcha/geetest-client.js";
+import { warmNineMatchClassifier } from "./captcha/onnx-session.js";
+import type { GeetestChallengeData } from "./captcha/signer.js";
 import {
   resolveRemoteActionTimeoutMs,
   resolveRemoteNavigationTimeoutMs,
@@ -86,8 +94,6 @@ import {
   qrOverlayTheme,
   QR_DETECT_SELECTOR,
 } from "./qr-dom.js";
-
-const GEETEST_AUTO_SOLVE_ATTEMPTS = 5;
 
 export function isPlausibleQrImageDimensions(
   width: number,
@@ -2334,6 +2340,13 @@ export class AutomationRuntimeService {
     if (autoCaptchaSolverEnabled) {
       this.autoCaptchaSolverRuns.add(runId);
       this.setupGeetestInterception(runId, page);
+      void warmNineMatchClassifier().catch((error: unknown) => {
+        this.log(
+          runId,
+          "warning",
+          `[${profile.name}] Nao foi possivel preaquecer o modelo nine: ${error instanceof Error ? error.message : String(error)}.`,
+        );
+      });
       await this.installGeetestBridge(page).catch(() => undefined);
     }
 
@@ -6814,6 +6827,22 @@ export class AutomationRuntimeService {
     });
   }
 
+  private nowMs(): number {
+    return Date.now();
+  }
+
+  private createGeetestClient(page: Page, baseUrl: string): GeetestNineClient {
+    return new GeetestClient(page.context().request, baseUrl);
+  }
+
+  private solveLoadedNineChallenge(
+    client: GeetestNineClient,
+    captchaId: string,
+    data: GeetestChallengeData,
+  ): Promise<GeetestSolution | null> {
+    return solveLoadedNineGeetestWithClient(client, captchaId, data);
+  }
+
   private setupGeetestInterception(runId: string, page: Page): void {
     const listener = (request: unknown) => {
       const url = String((request as { url: () => string }).url?.() ?? "");
@@ -6869,37 +6898,68 @@ export class AutomationRuntimeService {
       return false;
     }
 
-    if (captured && !shouldProbeGeetestChallenge(captured.riskType)) {
-      return false;
-    }
-
-    const client = new GeetestClient(
-      page.context().request,
+    const client = this.createGeetestClient(
+      page,
       captured?.baseUrl ?? "https://gcaptcha4.geevisit.com",
     );
+    const deadlineAt = this.nowMs() + GEETEST_NINE_DEADLINE_MS;
+    let totalSearchAttempts = 0;
 
-    for (
-      let attempt = 1;
-      attempt <= GEETEST_AUTO_SOLVE_ATTEMPTS;
-      attempt += 1
-    ) {
+    for (let answerAttempt = 1; answerAttempt <= GEETEST_NINE_ANSWER_LIMIT; answerAttempt += 1) {
       this.ensureRunActive(runId);
-      const solution = await solveNineGeetestWithClient(
-        client,
-        captchaId,
-        captured?.riskType,
-      );
+      const selection = await findNineChallengeWithClient(client, captchaId, {
+        deadlineAt,
+        now: () => this.nowMs(),
+        wait: (delayMs) => this.waitForRunDelay(runId, page, delayMs),
+      });
+      totalSearchAttempts += selection.searchAttempts;
 
-      if (!solution || !solution.lot_number || !solution.pass_token) {
-        if (attempt < GEETEST_AUTO_SOLVE_ATTEMPTS) {
-          await this.waitForRunDelay(runId, page, 180);
-          continue;
-        }
-
+      if (selection.status !== "found") {
+        const reason = selection.status === "deadline"
+          ? "limite total de 60 segundos atingido"
+          : `nenhum captcha nine em ${selection.searchAttempts} busca(s)`;
         this.log(
           runId,
           "warning",
-          `[${profileName}] Resolucao automatica do Geetest falhou apos ${GEETEST_AUTO_SOLVE_ATTEMPTS} tentativa(s); aguardando solucao manual.`,
+          `[${profileName}] ${reason}; aguardando solucao manual.`,
+        );
+        return false;
+      }
+
+      let solution: GeetestSolution | null = null;
+      try {
+        solution = await this.solveLoadedNineChallenge(client, captchaId, selection.data);
+      } catch {
+        solution = null;
+      }
+
+      if (this.nowMs() >= deadlineAt) {
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] Limite total de 60 segundos atingido; aguardando solucao manual.`,
+        );
+        return false;
+      }
+
+      if (!solution || !solution.lot_number || !solution.pass_token) {
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] Resposta nine rejeitada (${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT}).`,
+        );
+        if (answerAttempt < GEETEST_NINE_ANSWER_LIMIT && this.nowMs() < deadlineAt) {
+          await this.waitForRunDelay(runId, page, GEETEST_NINE_RETRY_DELAY_MS);
+          continue;
+        }
+
+        const reason = this.nowMs() >= deadlineAt
+          ? "limite total de 60 segundos atingido"
+          : `${GEETEST_NINE_ANSWER_LIMIT} resposta(s) nine rejeitada(s)`;
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] ${reason} apos ${totalSearchAttempts} busca(s); aguardando solucao manual.`,
         );
         return false;
       }
@@ -6909,11 +6969,21 @@ export class AutomationRuntimeService {
         solution,
       );
       if (bridgeResult.resolved) {
+        this.log(
+          runId,
+          "success",
+          `[${profileName}] Captcha nine resolvido na tentativa ${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT} apos ${totalSearchAttempts} busca(s).`,
+        );
         return true;
       }
 
       const interacted = await this.interactWithGeetestWidget(page, solution);
       if (interacted) {
+        this.log(
+          runId,
+          "success",
+          `[${profileName}] Captcha nine resolvido na tentativa ${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT} apos ${totalSearchAttempts} busca(s).`,
+        );
         return true;
       }
 

@@ -58,6 +58,18 @@ type RegistrationRuntimeHarness = RuntimeHarness & {
   ): Promise<{ cpf: boolean; phone: boolean; realName: boolean }>;
 };
 
+type GeetestRuntimeHarness = {
+  geetestCapturedData: Map<string, { captchaId: string; baseUrl: string; riskType?: string }>;
+  createGeetestClient(page: Page, baseUrl: string): unknown;
+  solveLoadedNineChallenge(client: unknown, captchaId: string, data: unknown): Promise<unknown>;
+  tryAutoSolveGeetestCaptcha(runId: string, page: Page, profileName: string): Promise<boolean>;
+  resolveGeetestWithPageBridge(page: Page, solution: unknown): Promise<{ resolved: boolean }>;
+  waitForRunDelay(runId: string, page: Page, delayMs: number): Promise<void>;
+  ensureRunActive(runId: string): void;
+  nowMs(): number;
+  log(...args: unknown[]): void;
+};
+
 function createRuntime(accountPhoneNumber = "", browserRuntime: Record<string, unknown> = {}) {
   const persisted: string[] = [];
   const database = {
@@ -272,4 +284,122 @@ test("post-registration deposit with an amount bypasses Profile navigation", asy
   );
 
   assert.deepEqual(deposits, [{ amount: "30", profileName: "Teste" }]);
+});
+
+test("Geetest runtime gives each rejected nine answer a fresh search budget", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let loads = 0;
+  let answers = 0;
+  const fakeClient = {
+    async load() {
+      loads += 1;
+      const isNine = loads % 10 === 0;
+      return {
+        lot_number: `lot-${loads}`,
+        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
+        pt: "0",
+        captcha_type: isNine ? "nine" : "icon",
+        payload: `payload-${loads}`,
+        process_token: `process-${loads}`,
+        imgs: "grid.jpg",
+        ques: ["ques.png"],
+        nine_nums: 3
+      };
+    }
+  };
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com",
+    riskType: "icon"
+  });
+  geetest.createGeetestClient = () => fakeClient;
+  geetest.solveLoadedNineChallenge = async () => {
+    answers += 1;
+    return null;
+  };
+  geetest.waitForRunDelay = async () => undefined;
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => 0;
+  geetest.log = () => undefined;
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, false);
+  assert.equal(loads, 50);
+  assert.equal(answers, 5);
+});
+
+test("Geetest runtime searches for nine when the captured risk type is icon", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let loads = 0;
+  let answers = 0;
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com",
+    riskType: "icon"
+  });
+  geetest.createGeetestClient = () => ({
+    async load() {
+      loads += 1;
+      return {
+        lot_number: "lot-1",
+        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
+        pt: "0",
+        captcha_type: "nine",
+        payload: "payload-1",
+        process_token: "process-1",
+        imgs: "grid.jpg",
+        ques: ["ques.png"],
+        nine_nums: 3
+      };
+    }
+  });
+  geetest.solveLoadedNineChallenge = async () => {
+    answers += 1;
+    return { lot_number: "lot-1", pass_token: "pass-1" };
+  };
+  geetest.resolveGeetestWithPageBridge = async () => ({ resolved: true });
+  geetest.waitForRunDelay = async () => undefined;
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => 0;
+  geetest.log = () => undefined;
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, true);
+  assert.equal(loads, 1);
+  assert.equal(answers, 1);
+});
+
+test("Geetest runtime stops searching at the 60 second deadline", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let now = 0;
+  let loads = 0;
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com"
+  });
+  geetest.createGeetestClient = () => ({
+    async load() {
+      loads += 1;
+      return {
+        lot_number: `lot-${loads}`,
+        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
+        pt: "0",
+        captcha_type: "icon"
+      };
+    }
+  });
+  geetest.waitForRunDelay = async () => { now += 30_000; };
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => now;
+  geetest.log = () => undefined;
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, false);
+  assert.equal(loads, 2);
 });

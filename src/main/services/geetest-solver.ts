@@ -65,10 +65,6 @@ export function shouldAttemptAutomaticGeetestSolve(riskType?: string | null): bo
   return riskType?.trim().toLowerCase() === "nine";
 }
 
-export function shouldProbeGeetestChallenge(riskType?: string | null): boolean {
-  return !riskType || shouldAttemptAutomaticGeetestSolve(riskType);
-}
-
 export interface GeetestNineClient {
   load(captchaId: string, riskType?: string | null): Promise<GeetestChallengeData & { captcha_type?: string }>;
   fetchImage(path: string): Promise<Buffer>;
@@ -188,25 +184,6 @@ export async function solveLoadedNineGeetestWithClient(
   };
 }
 
-export async function solveNineGeetestWithClient(
-  client: GeetestNineClient,
-  captchaId: string,
-  riskType?: string | null,
-  generateGeetestW?: GenerateGeetestW,
-): Promise<GeetestSolution | null> {
-  if (!shouldProbeGeetestChallenge(riskType)) {
-    return null;
-  }
-  const selection = await findNineChallengeWithClient(client, captchaId, {
-    deadlineAt: Date.now() + GEETEST_NINE_DEADLINE_MS,
-    maxAttempts: 1,
-    wait: async () => undefined,
-  });
-  if (selection.status !== "found") {
-    return null;
-  }
-  return solveLoadedNineGeetestWithClient(client, captchaId, selection.data, generateGeetestW);
-}
 
 function findPython(): string | null {
   for (const candidate of ["python", "python3", "py"]) {
