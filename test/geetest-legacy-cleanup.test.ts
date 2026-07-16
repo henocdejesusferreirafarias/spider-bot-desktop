@@ -90,6 +90,7 @@ test("active captcha visual solver uses nine-match naming only", () => {
 test("runtime signer exposes only the nine visual challenge path", () => {
   for (const relativePath of [
     "src/main/services/captcha/solvers/slide.ts",
+    "test/captcha-geetest-client.test.ts",
     "test/captcha-slide.test.ts",
     "test/captcha-image-utils.test.ts",
     "test/fixtures/captcha/slide",
