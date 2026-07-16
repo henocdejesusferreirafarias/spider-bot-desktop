@@ -5923,9 +5923,9 @@ export class AutomationRuntimeService {
         profileName,
       ).catch(() => false);
       if (autoSolved) {
-        await this.waitForRunDelay(runId, page, 1200);
+        const dismissed = await this.waitForGeetestDismissal(runId, page);
         await this.restoreGeetestAutoSolveMask(page).catch(() => undefined);
-        if (!(await this.detectCaptchaChallenge(page)).active) {
+        if (dismissed) {
           this.log(
             runId,
             "success",
@@ -5977,6 +5977,24 @@ export class AutomationRuntimeService {
     throw new Error(
       `captcha em ${stage} nao foi resolvido dentro do tempo limite`,
     );
+  }
+
+  private async waitForGeetestDismissal(
+    runId: string,
+    page: Page,
+    maxMs = 1200,
+  ): Promise<boolean> {
+    const deadlineAt = this.nowMs() + maxMs;
+    while (true) {
+      if (!(await this.detectCaptchaChallenge(page)).active) {
+        return true;
+      }
+      const remaining = deadlineAt - this.nowMs();
+      if (remaining <= 0) {
+        return false;
+      }
+      await this.waitForRunDelay(runId, page, Math.min(100, remaining));
+    }
   }
 
   private async waitForCaptchaChallenge(

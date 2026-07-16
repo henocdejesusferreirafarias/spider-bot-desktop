@@ -146,20 +146,28 @@ export interface GeetestChallengeData {
   [k: string]: unknown;
 }
 
+export type FindNineMatchCells = (
+  gridBuf: Buffer,
+  quesBuf: Buffer,
+  nineNums: number,
+) => Promise<Array<[number, number]>>;
+
 export async function generateNineW(
   data: GeetestChallengeData,
   captchaId: string,
   fetchImage: (path: string) => Promise<Buffer>,
+  findCells?: FindNineMatchCells,
 ): Promise<string> {
   const lotNumber = data.lot_number;
   const pow = data.pow_detail;
-  const gridBuf = await fetchImage(data.imgs!);
   const quesPaths = (data.ques as string[] | undefined) ?? [];
-  const quesBuf = quesPaths[0]
-    ? await fetchImage(quesPaths[0])
-    : Buffer.alloc(0);
-  const { findNineMatchCells } = await import('./solvers/nine-match.js');
-  const cells = await findNineMatchCells(
+  const [gridBuf, quesBuf] = await Promise.all([
+    fetchImage(data.imgs!),
+    quesPaths[0] ? fetchImage(quesPaths[0]) : Promise.resolve(Buffer.alloc(0)),
+  ]);
+  const matchCells = findCells
+    ?? (await import('./solvers/nine-match.js')).findNineMatchCells;
+  const cells = await matchCells(
     gridBuf,
     quesBuf,
     Number(data.nine_nums ?? 3),

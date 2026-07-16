@@ -59,11 +59,18 @@ type RegistrationRuntimeHarness = RuntimeHarness & {
 };
 
 type GeetestRuntimeHarness = {
+  autoCaptchaSolverRuns: Set<string>;
   geetestCapturedData: Map<string, { captchaId: string; baseUrl: string; riskType?: string }>;
+  applyGeetestAutoSolveMask(page: Page): Promise<void>;
   createGeetestClient(page: Page, baseUrl: string): unknown;
+  detectCaptchaChallenge(page: Page): Promise<{ active: boolean; label: string }>;
+  restoreGeetestAutoSolveMask(page: Page): Promise<void>;
   solveLoadedNineChallenge(client: unknown, captchaId: string, data: unknown): Promise<unknown>;
   tryAutoSolveGeetestCaptcha(runId: string, page: Page, profileName: string): Promise<boolean>;
   resolveGeetestWithPageBridge(page: Page, solution: unknown): Promise<{ resolved: boolean }>;
+  waitForCaptchaChallenge(runId: string, page: Page, timeoutMs: number): Promise<{ active: boolean; label: string }>;
+  waitForGeetestDismissal(runId: string, page: Page, maxMs?: number): Promise<boolean>;
+  waitForManualCaptchaIfPresent(runId: string, page: Page, profileName: string, stage: string): Promise<boolean>;
   waitForRunDelay(runId: string, page: Page, delayMs: number): Promise<void>;
   ensureRunActive(runId: string): void;
   nowMs(): number;
@@ -438,4 +445,62 @@ test("Geetest runtime stops searching at the 60 second deadline", async () => {
 
   assert.equal(solved, false);
   assert.equal(loads, 2);
+});
+
+test("Geetest runtime settles a successful solve conditionally", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  const delays: number[] = [];
+  let settleCalls = 0;
+  geetest.autoCaptchaSolverRuns.add("run-1");
+  geetest.waitForCaptchaChallenge = async () => ({ active: true, label: "Geetest" });
+  geetest.applyGeetestAutoSolveMask = async () => undefined;
+  geetest.tryAutoSolveGeetestCaptcha = async () => true;
+  geetest.waitForGeetestDismissal = async () => {
+    settleCalls += 1;
+    return true;
+  };
+  geetest.restoreGeetestAutoSolveMask = async () => undefined;
+  geetest.detectCaptchaChallenge = async () => ({ active: false, label: "" });
+  geetest.waitForRunDelay = async (_runId, _page, delayMs) => {
+    delays.push(delayMs);
+  };
+  geetest.log = () => undefined;
+
+  const solved = await geetest.waitForManualCaptchaIfPresent(
+    "run-1",
+    {} as Page,
+    "Teste",
+    "cadastro",
+  );
+
+  assert.equal(solved, true);
+  assert.equal(settleCalls, 1);
+  assert.deepEqual(delays, []);
+});
+
+test("Geetest dismissal polling returns after the challenge disappears", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let now = 0;
+  let detections = 0;
+  const delays: number[] = [];
+  geetest.nowMs = () => now;
+  geetest.detectCaptchaChallenge = async () => ({
+    active: detections++ === 0,
+    label: "Geetest",
+  });
+  geetest.waitForRunDelay = async (_runId, _page, delayMs) => {
+    delays.push(delayMs);
+    now += delayMs;
+  };
+
+  const dismissed = await geetest.waitForGeetestDismissal(
+    "run-1",
+    {} as Page,
+  );
+
+  assert.equal(dismissed, true);
+  assert.equal(now, 100);
+  assert.deepEqual(delays, [100]);
 });

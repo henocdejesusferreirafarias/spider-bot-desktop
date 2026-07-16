@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { LotParser, randUid, encryptSymmetrical1, encryptAsymmetric1, generatePow, getPubKey } from '../src/main/services/captcha/signer.js';
+import { LotParser, randUid, encryptSymmetrical1, encryptAsymmetric1, generatePow, generateNineW, getPubKey } from '../src/main/services/captcha/signer.js';
 import { CURRENT_CONSTANTS } from '../src/main/services/captcha/constants.js';
 
 test('LotParser.getDict produz o dict esperado (fixture)', () => {
@@ -37,4 +37,32 @@ test('encryptAsymmetric1 (RSA PKCS1v1.5) gera 128 bytes (256 hex)', () => {
 test('encryptAsymmetric1 usa chave RSA com exponent 65537 (e=AQAB)', () => {
   const jwk = getPubKey().export({ format: 'jwk' }) as { e: string };
   assert.equal(jwk.e, 'AQAB', 'e deve ser 65537 (AQAB em base64url), não 4096');
+});
+
+test('generateNineW starts grid and prompt downloads concurrently', async () => {
+  const started: string[] = [];
+  const releases = new Map<string, () => void>();
+  const fetchImage = (path: string) => new Promise<Buffer>((resolve) => {
+    started.push(path);
+    releases.set(path, () => resolve(Buffer.from(path)));
+  });
+  const resultPromise = generateNineW(
+    {
+      lot_number: '0123456789abcdefghijklmnopqrstuvwxyz',
+      pow_detail: { hashfunc: 'md5', version: '1', bits: 0, datetime: '2026-07-16' },
+      pt: '0',
+      imgs: 'grid.jpg',
+      ques: ['ques.png'],
+      nine_nums: 3,
+    },
+    'captcha-1',
+    fetchImage,
+    async () => [[1, 1], [2, 2], [3, 3]],
+  );
+
+  await Promise.resolve();
+  assert.deepEqual(started, ['grid.jpg', 'ques.png']);
+  releases.get('grid.jpg')?.();
+  releases.get('ques.png')?.();
+  assert.match(await resultPromise, /userresponse/);
 });
