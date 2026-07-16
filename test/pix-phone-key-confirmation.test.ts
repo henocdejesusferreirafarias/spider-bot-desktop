@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { SpaHandle } from "../src/main/services/spa-navigation.js";
 import {
+  classifyPixRejectionToast,
   confirmPixPhoneSubmission,
   inspectPixReceivingAccounts,
   type PixReceivingAccountSnapshot,
@@ -136,5 +137,27 @@ test("confirmation makes one scoped click and leaves ambiguous output pending", 
 
   assert.equal(result.result, "pending");
   assert.equal(result.actionAttempted, true);
+  assert.equal(fake.clicks(), 1);
+});
+
+test("classifica o toast de conta de saque vinculada sem depender de acento", () => {
+  assert.equal(
+    classifyPixRejectionToast("Esta conta de saque ja foi vinculada por outro membro"),
+    "withdrawal-account-already-linked"
+  );
+  assert.equal(classifyPixRejectionToast("Falha temporaria"), undefined);
+});
+
+test("submission retorna rejected quando o observador captura o toast novo", async () => {
+  const fake = fakeSurface([
+    snapshot(),
+    snapshot(),
+    snapshot({ rejectionReason: "withdrawal-account-already-linked" }),
+  ]);
+
+  const result = await confirmPixPhoneSubmission(fake.surface, "41980042690", 300);
+
+  assert.equal(result.result, "rejected");
+  assert.equal(result.reason, "withdrawal-account-already-linked");
   assert.equal(fake.clicks(), 1);
 });

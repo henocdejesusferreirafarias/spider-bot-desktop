@@ -6,6 +6,9 @@ import {
 
 const MAIN_WORLD = false;
 const POLL_INTERVAL_MS = 180;
+const PIX_REJECTION_OBSERVER_KEY = "__spiderPixRejectionObserver";
+
+export type PixRejectionReason = "withdrawal-account-already-linked";
 
 export interface PixReceivingAccountSnapshot {
   routeActive10: boolean;
@@ -15,13 +18,14 @@ export interface PixReceivingAccountSnapshot {
   buttonIndex?: number;
   accounts: PixReceivingAccount[];
   hasError: boolean;
+  rejectionReason?: PixRejectionReason;
 }
 
 export interface PixPhoneSubmissionResult {
   actionAttempted: boolean;
   clickRejected: boolean;
-  result: "confirmed" | "conflict" | "pending" | "error";
-  reason?: string;
+  result: "confirmed" | "conflict" | "pending" | "rejected" | "error";
+  reason?: string | PixRejectionReason;
 }
 
 const emptySnapshot = (): PixReceivingAccountSnapshot => ({
@@ -31,6 +35,87 @@ const emptySnapshot = (): PixReceivingAccountSnapshot => ({
   accounts: [],
   hasError: false,
 });
+
+function normalizeToastText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+export function classifyPixRejectionToast(text: string): PixRejectionReason | undefined {
+  return normalizeToastText(text) === "esta conta de saque ja foi vinculada por outro membro"
+    ? "withdrawal-account-already-linked"
+    : undefined;
+}
+
+function isPixRejectionReason(value: unknown): value is PixRejectionReason {
+  return value === "withdrawal-account-already-linked";
+}
+
+async function startPixRejectionObserver(surface: SpaHandle): Promise<void> {
+  await surface.evaluate((key: string) => {
+    type ObserverState = { reason?: string; observer?: MutationObserver };
+    const runtime = globalThis as unknown as Record<string, unknown>;
+    const previous = runtime[key] as ObserverState | undefined;
+    previous?.observer?.disconnect();
+
+    const normalize = (value: string | null | undefined) => (value ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    const visible = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      const style = globalThis.getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 8 && rect.height > 8;
+    };
+    const state: ObserverState = {};
+    const inspect = (element: Element) => {
+      const candidates = [
+        ...(element.matches(".ui-toast__toast--error") ? [element] : []),
+        ...Array.from(element.querySelectorAll(".ui-toast__toast--error")),
+      ];
+      for (const toast of candidates) {
+        if (!visible(toast)) continue;
+        const message = toast.querySelector(".ui-toast__toast-message")?.textContent;
+        if (normalize(message) === "esta conta de saque ja foi vinculada por outro membro") {
+          state.reason = "withdrawal-account-already-linked";
+          return;
+        }
+      }
+    };
+    state.observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of Array.from(mutation.addedNodes)) {
+          if (node instanceof Element) inspect(node);
+          if (state.reason) return;
+        }
+      }
+    });
+    state.observer.observe(globalThis.document.documentElement, { childList: true, subtree: true });
+    runtime[key] = state;
+  }, PIX_REJECTION_OBSERVER_KEY, MAIN_WORLD).catch(() => undefined);
+}
+
+async function readPixRejectionObserver(surface: SpaHandle): Promise<PixRejectionReason | undefined> {
+  const reason = await surface.evaluate((key: string) => {
+    const state = (globalThis as unknown as Record<string, { reason?: unknown }>)[key];
+    return state?.reason;
+  }, PIX_REJECTION_OBSERVER_KEY, MAIN_WORLD).catch(() => undefined);
+  return isPixRejectionReason(reason) ? reason : undefined;
+}
+
+async function stopPixRejectionObserver(surface: SpaHandle): Promise<void> {
+  await surface.evaluate((key: string) => {
+    const runtime = globalThis as unknown as Record<string, { observer?: MutationObserver } | undefined>;
+    runtime[key]?.observer?.disconnect();
+    delete runtime[key];
+  }, PIX_REJECTION_OBSERVER_KEY, MAIN_WORLD).catch(() => undefined);
+}
 
 export async function inspectPixReceivingAccounts(surface: SpaHandle): Promise<PixReceivingAccountSnapshot> {
   return surface.evaluate(() => {
@@ -145,6 +230,12 @@ export async function inspectPixReceivingAccounts(surface: SpaHandle): Promise<P
     const bodyText = normalize(document.body?.textContent);
     const hasError = /(erro|falha|invalid|inval|nao foi|failed|denied|recus)/.test(bodyText)
       && !/(sucesso|success)/.test(bodyText);
+    const rejectionReason = Array.from(document.querySelectorAll<HTMLElement>(".ui-toast__toast--error"))
+      .filter(visible)
+      .map((toast) => normalize(toast.querySelector(".ui-toast__toast-message")?.textContent))
+      .find((message) => message === "esta conta de saque ja foi vinculada por outro membro")
+      ? "withdrawal-account-already-linked" as const
+      : undefined;
 
     return {
       routeActive10,
@@ -154,6 +245,7 @@ export async function inspectPixReceivingAccounts(surface: SpaHandle): Promise<P
       buttonIndex: source?.confirmIndexes[0],
       accounts,
       hasError,
+      rejectionReason,
     };
   }, undefined, MAIN_WORLD).catch(emptySnapshot);
 }
@@ -187,38 +279,47 @@ export async function confirmPixPhoneSubmission(
     return { actionAttempted: false, clickRejected: false, result: "error", reason: "source-unstable" };
   }
 
+  await startPixRejectionObserver(surface);
   let clickRejected = false;
   try {
-    await surface
-      .locator(".ui-popup.ui-dialog")
-      .nth(second.modalIndex!)
-      .locator(".ui-button, button")
-      .nth(second.buttonIndex!)
-      .click({ timeout: 1_500 });
-  } catch {
-    clickRejected = true;
+    try {
+      await surface
+        .locator(".ui-popup.ui-dialog")
+        .nth(second.modalIndex!)
+        .locator(".ui-button, button")
+        .nth(second.buttonIndex!)
+        .click({ timeout: 1_500 });
+    } catch {
+      clickRejected = true;
+    }
+
+    const startedAt = Date.now();
+    do {
+      const current = await inspectPixReceivingAccounts(surface);
+      const rejectionReason = current.rejectionReason ?? await readPixRejectionObserver(surface);
+      if (rejectionReason) {
+        return { actionAttempted: true, clickRejected, result: "rejected", reason: rejectionReason };
+      }
+      if (current.hasError) {
+        return { actionAttempted: true, clickRejected, result: "error", reason: "error-surface" };
+      }
+      const decision = decidePixPhonePreflight({
+        pendingKeyId: "submitted",
+        phoneNumber,
+        accounts: current.accounts,
+      });
+      if (current.visiblePixFormModals === 0 && decision === "pending-used") {
+        return { actionAttempted: true, clickRejected, result: "confirmed" };
+      }
+      if (current.visiblePixFormModals === 0 && decision === "conflict") {
+        return { actionAttempted: true, clickRejected, result: "conflict", reason: "different-account" };
+      }
+      if (Date.now() - startedAt >= timeoutMs) break;
+      await surface.waitForTimeout(POLL_INTERVAL_MS).catch(() => undefined);
+    } while (true);
+
+    return { actionAttempted: true, clickRejected, result: "pending", reason: "destination-unconfirmed" };
+  } finally {
+    await stopPixRejectionObserver(surface);
   }
-
-  const startedAt = Date.now();
-  do {
-    const current = await inspectPixReceivingAccounts(surface);
-    if (current.hasError) {
-      return { actionAttempted: true, clickRejected, result: "error", reason: "error-surface" };
-    }
-    const decision = decidePixPhonePreflight({
-      pendingKeyId: "submitted",
-      phoneNumber,
-      accounts: current.accounts,
-    });
-    if (current.visiblePixFormModals === 0 && decision === "pending-used") {
-      return { actionAttempted: true, clickRejected, result: "confirmed" };
-    }
-    if (current.visiblePixFormModals === 0 && decision === "conflict") {
-      return { actionAttempted: true, clickRejected, result: "conflict", reason: "different-account" };
-    }
-    if (Date.now() - startedAt >= timeoutMs) break;
-    await surface.waitForTimeout(POLL_INTERVAL_MS).catch(() => undefined);
-  } while (true);
-
-  return { actionAttempted: true, clickRejected, result: "pending", reason: "destination-unconfirmed" };
 }
