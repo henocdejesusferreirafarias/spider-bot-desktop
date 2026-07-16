@@ -23,12 +23,12 @@
     "sourceRaw": "dataset\\raw",
     "sourceLabels": "dataset\\manual-labels.jsonl",
     "seed": 20260710,
-    "samples": 3510,
-    "trainSamples": 2466,
-    "valSamples": 522,
-    "testSamples": 522,
+    "samples": 4500,
+    "trainSamples": 3150,
+    "valSamples": 675,
+    "testSamples": 675,
     "epochs": 18,
-    "heldoutBinary": 0.921455938697318,
-    "heldoutChallengeTopk": 0.9137931034482759
+    "heldoutBinary": 0.9703703703703703,
+    "heldoutChallengeTopk": 0.92
   }
 }

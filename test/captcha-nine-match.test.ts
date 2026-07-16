@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import * as ort from 'onnxruntime-node';
 import type { InferenceSession } from 'onnxruntime-node';
 import { PNG } from 'pngjs';
 import { NineMatchClassifier, NineMatchInferenceQueue, normalizeNineMatchPairForImageNet } from '../src/main/services/captcha/onnx-session.js';
@@ -163,4 +166,57 @@ test('findNineMatchCells uses one batched scorer call when available', async () 
   assert.equal(batchCalls, 1);
   assert.equal(singleCalls, 0);
   assert.deepEqual(cells, [[3, 1], [1, 3]]);
+});
+
+test('committed nine-match ONNX exposes the runtime tensor contract', async () => {
+  const modelPath = join(process.cwd(), 'assets', 'captcha', 'nine_match.onnx');
+  const session = await ort.InferenceSession.create(modelPath);
+  assert.deepEqual(session.inputNames, ['input']);
+  assert.deepEqual(session.outputNames, ['logit']);
+
+  const input = new ort.Tensor(
+    'float32',
+    new Float32Array(2 * 3 * 64 * 128),
+    [2, 3, 64, 128],
+  );
+  const output = await session.run({ input });
+  assert.equal(output.logit?.data.length, 2);
+  for (const value of output.logit?.data ?? []) {
+    assert.equal(Number.isFinite(Number(value)), true);
+  }
+
+  const prompt = { data: new Uint8Array(64 * 64 * 4), width: 64, height: 64 };
+  const cell = { data: new Uint8Array(64 * 64 * 4).fill(255), width: 64, height: 64 };
+  const scores = await new NineMatchClassifier().scoreCells(prompt, [cell, cell]);
+  assert.equal(scores.length, 2);
+  assert.equal(scores.every((score) => Number.isFinite(score) && score >= 0 && score <= 1), true);
+});
+
+test('committed nine-match metadata describes the accepted training run', () => {
+  const metadata = JSON.parse(
+    readFileSync(
+      join(process.cwd(), 'assets', 'captcha', 'nine_match.json'),
+      'utf8',
+    ),
+  ) as {
+    kind: string;
+    input: { width: number; height: number; channels: number; layout: string };
+    training: {
+      samples: number;
+      heldoutBinary: number;
+      heldoutChallengeTopk: number;
+    };
+  };
+  assert.equal(metadata.kind, 'nine_match_pair_binary');
+  assert.deepEqual(
+    [metadata.input.width, metadata.input.height, metadata.input.channels],
+    [128, 64, 3],
+  );
+  assert.equal(
+    metadata.input.layout,
+    'prompt_64x64_left_cell_64x64_right',
+  );
+  assert.equal(metadata.training.samples, 4500);
+  assert.ok(metadata.training.heldoutBinary >= 0.97);
+  assert.ok(metadata.training.heldoutChallengeTopk >= 0.92);
 });
