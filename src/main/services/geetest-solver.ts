@@ -82,6 +82,76 @@ export interface GeetestNineClient {
   }): Promise<GeetestVerifyResult>;
 }
 
+export const GEETEST_NINE_SEARCH_LIMIT = 10;
+export const GEETEST_NINE_ANSWER_LIMIT = 5;
+export const GEETEST_NINE_RETRY_DELAY_MS = 180;
+export const GEETEST_NINE_DEADLINE_MS = 60_000;
+
+export type NineChallengeSearchResult =
+  | { status: "found"; data: GeetestChallengeData; searchAttempts: number }
+  | { status: "exhausted" | "deadline"; searchAttempts: number };
+
+export interface NineChallengeSearchOptions {
+  deadlineAt: number;
+  maxAttempts?: number;
+  now?: () => number;
+  wait?: (delayMs: number) => Promise<void>;
+}
+
+function hasText(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isUsableNineChallenge(
+  data: GeetestChallengeData & { captcha_type?: string },
+): boolean {
+  const questions = Array.isArray(data.ques) ? data.ques : [];
+  return shouldAttemptAutomaticGeetestSolve(data.captcha_type)
+    && hasText(data.lot_number)
+    && hasText(data.payload)
+    && hasText(data.process_token)
+    && hasText(data.imgs)
+    && hasText(questions[0]);
+}
+
+export async function findNineChallengeWithClient(
+  client: GeetestNineClient,
+  captchaId: string,
+  options: NineChallengeSearchOptions,
+): Promise<NineChallengeSearchResult> {
+  const maxAttempts = options.maxAttempts ?? GEETEST_NINE_SEARCH_LIMIT;
+  const now = options.now ?? Date.now;
+  const wait = options.wait ?? ((delayMs: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+  let searchAttempts = 0;
+
+  while (searchAttempts < maxAttempts) {
+    if (now() >= options.deadlineAt) {
+      return { status: "deadline", searchAttempts };
+    }
+    searchAttempts += 1;
+    try {
+      const data = await client.load(captchaId, "nine");
+      if (now() >= options.deadlineAt) {
+        return { status: "deadline", searchAttempts };
+      }
+      if (isUsableNineChallenge(data)) {
+        return { status: "found", data, searchAttempts };
+      }
+    } catch {
+      // A failed load consumes this search attempt.
+    }
+    if (searchAttempts < maxAttempts) {
+      if (now() >= options.deadlineAt) {
+        return { status: "deadline", searchAttempts };
+      }
+      await wait(GEETEST_NINE_RETRY_DELAY_MS);
+    }
+  }
+
+  return { status: "exhausted", searchAttempts };
+}
+
 export type GenerateGeetestW = (
   data: GeetestChallengeData,
   captchaId: string,
@@ -89,21 +159,12 @@ export type GenerateGeetestW = (
   fetchImage: (path: string) => Promise<Buffer>,
 ) => Promise<string>;
 
-export async function solveNineGeetestWithClient(
+export async function solveLoadedNineGeetestWithClient(
   client: GeetestNineClient,
   captchaId: string,
-  riskType?: string | null,
+  data: GeetestChallengeData,
   generateGeetestW: GenerateGeetestW = (data, id, type, fetchImage) => generateW(data, id, type, fetchImage, () => 0),
 ): Promise<GeetestSolution | null> {
-  if (!shouldProbeGeetestChallenge(riskType)) {
-    return null;
-  }
-
-  const data = await client.load(captchaId, shouldAttemptAutomaticGeetestSolve(riskType) ? "nine" : undefined);
-  if (data.captcha_type && !shouldAttemptAutomaticGeetestSolve(data.captcha_type)) {
-    return null;
-  }
-
   const w = await generateGeetestW(data, captchaId, "nine", (path) => client.fetchImage(path));
   const result = await client.verify({
     captchaId,
@@ -125,6 +186,26 @@ export async function solveNineGeetestWithClient(
     gen_time: seccode.gen_time,
     captcha_output: seccode.captcha_output,
   };
+}
+
+export async function solveNineGeetestWithClient(
+  client: GeetestNineClient,
+  captchaId: string,
+  riskType?: string | null,
+  generateGeetestW?: GenerateGeetestW,
+): Promise<GeetestSolution | null> {
+  if (!shouldProbeGeetestChallenge(riskType)) {
+    return null;
+  }
+  const selection = await findNineChallengeWithClient(client, captchaId, {
+    deadlineAt: Date.now() + GEETEST_NINE_DEADLINE_MS,
+    maxAttempts: 1,
+    wait: async () => undefined,
+  });
+  if (selection.status !== "found") {
+    return null;
+  }
+  return solveLoadedNineGeetestWithClient(client, captchaId, selection.data, generateGeetestW);
 }
 
 function findPython(): string | null {
