@@ -20,9 +20,19 @@ import type {
 } from "@spider-bot/licensing-contracts";
 import { PredatorDatabase } from "./database.js";
 import { BrowserRuntimeService } from "./browser-runtime.js";
-import { GeetestSolverService } from "./geetest-solver.js";
+import {
+  findNineChallengeWithClient,
+  GEETEST_NINE_ANSWER_LIMIT,
+  GEETEST_NINE_DEADLINE_MS,
+  GEETEST_NINE_RETRY_DELAY_MS,
+  GEETEST_NINE_SEARCH_LIMIT,
+  solveLoadedNineGeetestWithClient,
+} from "./geetest-solver.js";
+import type { GeetestCaptchaData, GeetestNineClient, GeetestSolution } from "./geetest-solver.js";
+import { GeetestClient } from "./captcha/geetest-client.js";
+import { warmNineMatchClassifier } from "./captcha/onnx-session.js";
+import type { GeetestChallengeData } from "./captcha/signer.js";
 import { AsyncSemaphore } from "./async-semaphore.js";
-import type { GeetestCaptchaData, GeetestSolution } from "./geetest-solver.js";
 import {
   resolveRemoteActionTimeoutMs,
   resolveRemoteNavigationTimeoutMs,
@@ -104,8 +114,6 @@ import {
   qrOverlayTheme,
   QR_DETECT_SELECTOR,
 } from "./qr-dom.js";
-
-const GEETEST_AUTO_SOLVE_ATTEMPTS = 5;
 
 export function isPlausibleQrImageDimensions(
   width: number,
@@ -295,6 +303,12 @@ interface ManualCaptchaOptions {
   solvedTimeoutMs?: number;
 }
 
+interface RegistrationCompletionOutcome {
+  registered: boolean;
+  via: string;
+  reason?: string;
+}
+
 interface GeetestBridgeResult {
   resolved: boolean;
   callbacks: number;
@@ -308,7 +322,6 @@ export class AutomationRuntimeService {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly activeAutomationIds = new Set<string>();
   private readonly activeProfileIds = new Set<string>();
-  private geetestSolver: GeetestSolverService | undefined;
   private readonly geetestCapturedData = new Map<string, GeetestCaptchaData>();
   // Guarda a ref do listener de `request` por run para poder fazer page.off no dispose.
   // Sem isto o listener vazava: as janelas ficam abertas entre execucoes e cada run
@@ -318,9 +331,6 @@ export class AutomationRuntimeService {
     { page: Page; listener: (...args: unknown[]) => void }
   >();
   private readonly autoCaptchaSolverRuns = new Set<string>();
-  // Runs que de fato aqueceram o worker do solver (lazy): begin so ocorre no 1o sinal de
-  // rede geetest; usamos isto para liberar o warm-session de forma balanceada no finally.
-  private readonly warmedSolverRuns = new Set<string>();
 
   // --- Interacao adaptativa (generica p/ QUALQUER plataforma; sem regras por dominio) ---
   // Plataformas lentas levam ate 10s+ para deixar um ponto realmente acionavel (medido
@@ -2626,13 +2636,15 @@ export class AutomationRuntimeService {
       automation.params.autoCaptchaSolverEnabled === "true";
     if (autoCaptchaSolverEnabled) {
       this.autoCaptchaSolverRuns.add(runId);
-      // Worker do solver sobe SOB DEMANDA (lazy): so ao ver o 1o trafego de rede geetest
-      // (em setupGeetestInterception). Evita carregar CLIP/torch no inicio de TODO run e
-      // disputar CPU com a abertura dos navegadores quando a plataforma nem tem captcha.
       this.setupGeetestInterception(runId, page);
+      void warmNineMatchClassifier().catch((error: unknown) => {
+        this.log(
+          runId,
+          "warning",
+          `[${profile.name}] Nao foi possivel preaquecer o modelo nine: ${error instanceof Error ? error.message : String(error)}.`,
+        );
+      });
       await this.installGeetestBridge(page).catch(() => undefined);
-    } else {
-      await this.geetestSolver?.stopIfIdle().catch(() => undefined);
     }
 
     this.log(
@@ -2731,46 +2743,19 @@ export class AutomationRuntimeService {
       await this.fastClickControl(runId, page, submitButton);
 
       try {
-        let handledCaptcha = await this.waitForManualCaptchaIfPresent(
+        const initialOutcome = await this.waitForRegistrationOrCaptcha(
           runId,
           page,
           profile.name,
-          "cadastro",
-          {
-            appearanceTimeoutMs: 2500,
-          },
+          25_000,
         );
+        let handledCaptcha = initialOutcome.handledCaptcha;
+        let outcome = initialOutcome.outcome;
         // Confirmacao por SINAL ESTRUTURAL (nao por espera fixa nem pelo simples
         // "campo de conta sumiu"): so consideramos cadastrada quando a tela de
         // cadastro realmente saiu (campos de conta/senha ausentes) E a sessao
         // logada apareceu -- ou, sem sessao explicita, o formulario ficou ausente
         // de forma estavel. Erro da plataforma encerra na hora.
-        let outcome = await this.confirmRegistrationCompleted(runId, page, {
-          timeoutMs: handledCaptcha ? 15000 : 25000,
-        });
-
-        // O captcha pode so ter aparecido AGORA (PC lento): tenta trata-lo e
-        // reconfirma. Nao reesperamos quando ja houve erro definitivo da plataforma.
-        if (
-          !outcome.registered &&
-          outcome.via !== "erro-plataforma" &&
-          !handledCaptcha
-        ) {
-          handledCaptcha = await this.waitForManualCaptchaIfPresent(
-            runId,
-            page,
-            profile.name,
-            "cadastro",
-            {
-              appearanceTimeoutMs: 1200,
-            },
-          );
-          if (handledCaptcha) {
-            outcome = await this.confirmRegistrationCompleted(runId, page, {
-              timeoutMs: 15000,
-            });
-          }
-        }
 
         if (
           !outcome.registered &&
@@ -2886,11 +2871,6 @@ export class AutomationRuntimeService {
     } finally {
       this.disposeGeetestInterception(runId);
       this.autoCaptchaSolverRuns.delete(runId);
-      // Libera o warm-session apenas se realmente aquecemos (lazy). Sem isto, plataformas
-      // sem captcha — que nunca dao begin — fariam um release indevido no contador.
-      if (this.warmedSolverRuns.delete(runId)) {
-        this.geetestSolver?.releaseWarmSession();
-      }
     }
   }
 
@@ -2908,7 +2888,7 @@ export class AutomationRuntimeService {
     runId: string,
     page: Page,
     options: { timeoutMs: number },
-  ): Promise<{ registered: boolean; via: string; reason?: string }> {
+  ): Promise<RegistrationCompletionOutcome> {
     const startedAt = Date.now();
     let consecutiveFormAbsences = 0;
 
@@ -5721,11 +5701,6 @@ export class AutomationRuntimeService {
     return Number.isFinite(amount) && amount > 0 ? amount : undefined;
   }
 
-  private getGeetestSolver(): GeetestSolverService {
-    this.geetestSolver ??= new GeetestSolverService();
-    return this.geetestSolver;
-  }
-
   private isAutoCaptchaSolverEnabled(runId: string): boolean {
     return this.autoCaptchaSolverRuns.has(runId);
   }
@@ -5760,9 +5735,9 @@ export class AutomationRuntimeService {
         profileName,
       ).catch(() => false);
       if (autoSolved) {
-        await this.waitForRunDelay(runId, page, 1200);
+        const dismissed = await this.waitForGeetestDismissal(runId, page);
         await this.restoreGeetestAutoSolveMask(page).catch(() => undefined);
-        if (!(await this.detectCaptchaChallenge(page)).active) {
+        if (dismissed) {
           this.log(
             runId,
             "success",
@@ -5814,6 +5789,76 @@ export class AutomationRuntimeService {
     throw new Error(
       `captcha em ${stage} nao foi resolvido dentro do tempo limite`,
     );
+  }
+
+  private async waitForRegistrationOrCaptcha(
+    runId: string,
+    page: Page,
+    profileName: string,
+    timeoutMs: number,
+  ): Promise<{
+    handledCaptcha: boolean;
+    outcome: RegistrationCompletionOutcome;
+  }> {
+    let deadlineAt = this.nowMs() + timeoutMs;
+    let handledCaptcha = false;
+    let lastOutcome: RegistrationCompletionOutcome | undefined;
+
+    while (true) {
+      this.ensureRunActive(runId);
+      const handledNow = await this.waitForManualCaptchaIfPresent(
+        runId,
+        page,
+        profileName,
+        "cadastro",
+        { appearanceTimeoutMs: 0 },
+      );
+      if (handledNow) {
+        handledCaptcha = true;
+        deadlineAt = Math.max(deadlineAt, this.nowMs() + 15_000);
+      }
+
+      const remaining = deadlineAt - this.nowMs();
+      if (remaining <= 0) {
+        return {
+          handledCaptcha,
+          outcome: lastOutcome ?? {
+            registered: false,
+            via: "timeout-formulario-presente",
+            reason: "cadastro nao confirmou dentro do tempo limite",
+          },
+        };
+      }
+
+      const outcome = await this.confirmRegistrationCompleted(runId, page, {
+        timeoutMs: Math.min(700, remaining),
+      });
+      lastOutcome = outcome;
+      if (outcome.registered || outcome.via === "erro-plataforma") {
+        return { handledCaptcha, outcome };
+      }
+      if (this.nowMs() >= deadlineAt) {
+        return { handledCaptcha, outcome };
+      }
+    }
+  }
+
+  private async waitForGeetestDismissal(
+    runId: string,
+    page: Page,
+    maxMs = 1200,
+  ): Promise<boolean> {
+    const deadlineAt = this.nowMs() + maxMs;
+    while (true) {
+      if (!(await this.detectCaptchaChallenge(page)).active) {
+        return true;
+      }
+      const remaining = deadlineAt - this.nowMs();
+      if (remaining <= 0) {
+        return false;
+      }
+      await this.waitForRunDelay(runId, page, Math.min(100, remaining));
+    }
   }
 
   private async waitForCaptchaChallenge(
@@ -6665,21 +6710,27 @@ export class AutomationRuntimeService {
     });
   }
 
+  private nowMs(): number {
+    return Date.now();
+  }
+
+  private createGeetestClient(page: Page, baseUrl: string): GeetestNineClient {
+    return new GeetestClient(page.context().request, baseUrl);
+  }
+
+  private solveLoadedNineChallenge(
+    client: GeetestNineClient,
+    captchaId: string,
+    data: GeetestChallengeData,
+  ): Promise<GeetestSolution | null> {
+    return solveLoadedNineGeetestWithClient(client, captchaId, data);
+  }
+
   private setupGeetestInterception(runId: string, page: Page): void {
     const listener = (request: unknown) => {
       const url = String((request as { url: () => string }).url?.() ?? "");
       if (!/geetest|geevisit|gcaptcha/.test(url.toLowerCase())) {
         return;
-      }
-      // 1o sinal de rede geetest neste run = ha captcha real chegando. Pre-aquece o worker
-      // AGORA (em paralelo com o widget montando) para esconder o cold-start do CLIP, sem
-      // nunca aquecer quando a plataforma nao tem captcha. So enquanto o run esta ativo.
-      if (
-        this.autoCaptchaSolverRuns.has(runId) &&
-        !this.warmedSolverRuns.has(runId)
-      ) {
-        this.warmedSolverRuns.add(runId);
-        this.getGeetestSolver().beginWarmSession();
       }
       const parsed = this.extractGeetestDataFromUrl(url);
       if (parsed) {
@@ -6711,7 +6762,6 @@ export class AutomationRuntimeService {
       return {
         captchaId,
         baseUrl: `${parsed.protocol}//${parsed.host}`,
-        riskType: parsed.searchParams.get("risk_type") || undefined,
       };
     } catch {
       return null;
@@ -6730,32 +6780,92 @@ export class AutomationRuntimeService {
       return false;
     }
 
-    const solver = this.getGeetestSolver();
+    const client = this.createGeetestClient(
+      page,
+      captured?.baseUrl ?? "https://gcaptcha4.geevisit.com",
+    );
+    const deadlineAt = this.nowMs() + GEETEST_NINE_DEADLINE_MS;
+    let totalLoadAttempts = 0;
+    let rerollAttempts = 0;
 
-    for (
-      let attempt = 1;
-      attempt <= GEETEST_AUTO_SOLVE_ATTEMPTS;
-      attempt += 1
-    ) {
+    for (let answerAttempt = 1; answerAttempt <= GEETEST_NINE_ANSWER_LIMIT; answerAttempt += 1) {
       this.ensureRunActive(runId);
-      const solution = await solver.solve(
-        captchaId,
-        captured?.riskType || null,
-        captured?.baseUrl,
-        undefined,
-        1,
-      );
-
-      if (!solution || !solution.lot_number || !solution.pass_token) {
-        if (attempt < GEETEST_AUTO_SOLVE_ATTEMPTS) {
-          await this.waitForRunDelay(runId, page, 180);
-          continue;
-        }
-
+      const remainingRerolls = GEETEST_NINE_SEARCH_LIMIT - rerollAttempts;
+      if (remainingRerolls <= 0) {
         this.log(
           runId,
           "warning",
-          `[${profileName}] Resolucao automatica do Geetest falhou apos ${GEETEST_AUTO_SOLVE_ATTEMPTS} tentativa(s); aguardando solucao manual.`,
+          `[${profileName}] ${rerollAttempts} reroll(s) sem novo captcha nine; aguardando solucao manual.`,
+        );
+        return false;
+      }
+      const selection = await findNineChallengeWithClient(client, captchaId, {
+        deadlineAt,
+        maxRerolls: remainingRerolls,
+        now: () => this.nowMs(),
+        wait: (delayMs) => this.waitForRunDelay(runId, page, delayMs),
+      });
+      totalLoadAttempts += selection.loadAttempts;
+      rerollAttempts += selection.rerollAttempts;
+
+      if (selection.status !== "found") {
+        const reason = selection.status === "deadline"
+          ? "limite total de 60 segundos atingido"
+          : `${rerollAttempts} reroll(s) sem novo captcha nine`;
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] ${reason}; aguardando solucao manual.`,
+        );
+        return false;
+      }
+
+      let solution: GeetestSolution | null = null;
+      let solveError: unknown;
+      try {
+        solution = await this.solveLoadedNineChallenge(client, captchaId, selection.data);
+      } catch (error) {
+        solveError = error;
+      }
+
+      if (this.nowMs() >= deadlineAt) {
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] Limite total de 60 segundos atingido; aguardando solucao manual.`,
+        );
+        return false;
+      }
+
+      if (!solution || !solution.lot_number || !solution.pass_token) {
+        if (solveError !== undefined) {
+          const message = solveError instanceof Error
+            ? solveError.message
+            : String(solveError);
+          this.log(
+            runId,
+            "warning",
+            `[${profileName}] Falha ao processar resposta nine (${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT}): ${message}.`,
+          );
+        } else {
+          this.log(
+            runId,
+            "warning",
+            `[${profileName}] Resposta nine rejeitada (${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT}).`,
+          );
+        }
+        if (answerAttempt < GEETEST_NINE_ANSWER_LIMIT && this.nowMs() < deadlineAt) {
+          await this.waitForRunDelay(runId, page, GEETEST_NINE_RETRY_DELAY_MS);
+          continue;
+        }
+
+        const reason = this.nowMs() >= deadlineAt
+          ? "limite total de 60 segundos atingido"
+          : `${GEETEST_NINE_ANSWER_LIMIT} resposta(s) nine rejeitada(s)`;
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] ${reason} apos ${totalLoadAttempts} busca(s); aguardando solucao manual.`,
         );
         return false;
       }
@@ -6765,11 +6875,11 @@ export class AutomationRuntimeService {
         solution,
       );
       if (bridgeResult.resolved) {
-        return true;
-      }
-
-      const interacted = await this.interactWithGeetestWidget(page, solution);
-      if (interacted) {
+        this.log(
+          runId,
+          "success",
+          `[${profileName}] Captcha nine resolvido na tentativa ${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT} apos ${totalLoadAttempts} busca(s).`,
+        );
         return true;
       }
 
@@ -6913,70 +7023,6 @@ export class AutomationRuntimeService {
     }
 
     return latest;
-  }
-
-  private async interactWithGeetestWidget(
-    page: Page,
-    solution: GeetestSolution,
-  ): Promise<boolean> {
-    try {
-      const frame = page
-        .frameLocator('iframe[src*="geetest" i], iframe[src*="gcaptcha" i]')
-        .first();
-
-      const slider = frame
-        .locator(
-          ".geetest_slider_button, [class*='geetest_slider_button'], [class*='slider_button']",
-        )
-        .first();
-      const sliderVisible = await slider.isVisible().catch(() => false);
-      if (sliderVisible) {
-        const box = await slider.boundingBox().catch(() => null);
-        if (!box) return false;
-
-        const track = frame
-          .locator(
-            ".geetest_slider_track, [class*='geetest_slide_track'], [class*='slider_track']",
-          )
-          .first();
-        const trackBox = await track.boundingBox().catch(() => null);
-        const maxSlide = trackBox ? trackBox.width - box.width : 300;
-
-        const userresponse = Number(
-          solution.setLeft ?? solution.userresponse ?? 0,
-        );
-        const distance = Math.min(maxSlide, Math.max(0, userresponse));
-        const startX = box.x + box.width / 2;
-        const startY = box.y + box.height / 2;
-        const endX = startX + distance;
-
-        await page.mouse.move(startX, startY, { steps: 3 });
-        await page.waitForTimeout(40 + Math.floor(Math.random() * 60));
-        await page.mouse.down();
-        await page.waitForTimeout(20 + Math.floor(Math.random() * 40));
-        for (let step = 1; step <= 6; step++) {
-          const progress = step / 6;
-          const ease =
-            progress < 0.5
-              ? 2 * progress * progress
-              : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-          const currentX = startX + (endX - startX) * ease;
-          const currentY = startY + (Math.random() - 0.5) * 2;
-          await page.mouse.move(currentX, currentY, { steps: 1 });
-          await page.waitForTimeout(6 + Math.floor(Math.random() * 12));
-        }
-        await page.mouse.move(endX, startY, { steps: 2 });
-        await page.waitForTimeout(30 + Math.floor(Math.random() * 80));
-        await page.mouse.up();
-
-        await page.waitForTimeout(1200);
-        return !(await this.detectCaptchaChallenge(page)).active;
-      }
-
-      return false;
-    } catch (_err) {
-      return false;
-    }
   }
 
   private async extractGeetestCaptchaIdFromPage(

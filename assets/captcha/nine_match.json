@@ -1,0 +1,34 @@
+{
+  "kind": "nine_match_pair_binary",
+  "input": {
+    "width": 128,
+    "height": 64,
+    "channels": 3,
+    "layout": "prompt_64x64_left_cell_64x64_right",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "training": {
+    "arch": "pair",
+    "embeddingDim": null,
+    "classBalance": "weighted_sampler_and_positive_loss_weight",
+    "sourceRaw": "dataset\\raw",
+    "sourceLabels": "dataset\\manual-labels.jsonl",
+    "seed": 20260710,
+    "samples": 4500,
+    "trainSamples": 3150,
+    "valSamples": 675,
+    "testSamples": 675,
+    "epochs": 18,
+    "heldoutBinary": 0.9703703703703703,
+    "heldoutChallengeTopk": 0.92
+  }
+}

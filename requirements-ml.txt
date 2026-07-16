@@ -1,0 +1,7 @@
+torch
+torchvision
+onnx
+onnxruntime
+Pillow
+numpy
+open_clip_torch

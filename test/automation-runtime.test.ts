@@ -58,6 +58,39 @@ type RegistrationRuntimeHarness = RuntimeHarness & {
   ): Promise<{ cpf: boolean; phone: boolean; realName: boolean }>;
 };
 
+type GeetestRuntimeHarness = {
+  autoCaptchaSolverRuns: Set<string>;
+  geetestCapturedData: Map<string, { captchaId: string; baseUrl: string; riskType?: string }>;
+  applyGeetestAutoSolveMask(page: Page): Promise<void>;
+  createGeetestClient(page: Page, baseUrl: string): unknown;
+  detectCaptchaChallenge(page: Page): Promise<{ active: boolean; label: string }>;
+  restoreGeetestAutoSolveMask(page: Page): Promise<void>;
+  solveLoadedNineChallenge(client: unknown, captchaId: string, data: unknown): Promise<unknown>;
+  tryAutoSolveGeetestCaptcha(runId: string, page: Page, profileName: string): Promise<boolean>;
+  resolveGeetestWithPageBridge(page: Page, solution: unknown): Promise<{ resolved: boolean }>;
+  waitForCaptchaChallenge(runId: string, page: Page, timeoutMs: number): Promise<{ active: boolean; label: string }>;
+  waitForGeetestDismissal(runId: string, page: Page, maxMs?: number): Promise<boolean>;
+  waitForManualCaptchaIfPresent(runId: string, page: Page, profileName: string, stage: string): Promise<boolean>;
+  confirmRegistrationCompleted(
+    runId: string,
+    page: Page,
+    options: { timeoutMs: number },
+  ): Promise<{ registered: boolean; via: string; reason?: string }>;
+  waitForRegistrationOrCaptcha(
+    runId: string,
+    page: Page,
+    profileName: string,
+    timeoutMs: number,
+  ): Promise<{
+    handledCaptcha: boolean;
+    outcome: { registered: boolean; via: string; reason?: string };
+  }>;
+  waitForRunDelay(runId: string, page: Page, delayMs: number): Promise<void>;
+  ensureRunActive(runId: string): void;
+  nowMs(): number;
+  log(...args: unknown[]): void;
+};
+
 function createRuntime(accountPhoneNumber = "", browserRuntime: Record<string, unknown> = {}) {
   const persisted: string[] = [];
   const database = {
@@ -86,6 +119,20 @@ const profile = {
   name: "Teste",
   homeUrl: "https://platform.example"
 } as ProfileSummary;
+
+function geetestChallenge(captchaType: string, suffix: string) {
+  return {
+    lot_number: `lot-${suffix}`,
+    pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
+    pt: "0",
+    captcha_type: captchaType,
+    payload: `payload-${suffix}`,
+    process_token: `process-${suffix}`,
+    imgs: "grid.jpg",
+    ques: ["ques.png"],
+    nine_nums: 3
+  };
+}
 
 function createPageWithoutCheckbox(): Page {
   return {
@@ -272,4 +319,239 @@ test("post-registration deposit with an amount bypasses Profile navigation", asy
   );
 
   assert.deepEqual(deposits, [{ amount: "30", profileName: "Teste" }]);
+});
+
+test("Geetest runtime shares ten rerolls across rejected nine answers", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let loads = 0;
+  let answers = 0;
+  const messages: string[] = [];
+  const fakeClient = {
+    async load() {
+      loads += 1;
+      return geetestChallenge(loads === 10 ? "nine" : "icon", String(loads));
+    }
+  };
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com"
+  });
+  geetest.createGeetestClient = () => fakeClient;
+  geetest.solveLoadedNineChallenge = async () => {
+    answers += 1;
+    return null;
+  };
+  geetest.waitForRunDelay = async () => undefined;
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => 0;
+  geetest.log = (...args) => { messages.push(String(args.at(-1))); };
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, false);
+  assert.equal(loads, 11);
+  assert.equal(answers, 1);
+  assert.ok(messages.some((message) => /Resposta nine rejeitada/.test(message)));
+  assert.match(messages.at(-1) ?? "", /10 reroll/);
+});
+
+test("Geetest runtime logs pipeline failures separately from rejected answers", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let loads = 0;
+  const messages: string[] = [];
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com"
+  });
+  geetest.createGeetestClient = () => ({
+    async load() {
+      loads += 1;
+      return geetestChallenge("nine", String(loads));
+    }
+  });
+  geetest.solveLoadedNineChallenge = async () => {
+    throw new Error("inference failed");
+  };
+  geetest.waitForRunDelay = async () => undefined;
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => 0;
+  geetest.log = (...args) => { messages.push(String(args.at(-1))); };
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, false);
+  assert.equal(loads, 5);
+  assert.ok(messages.some((message) => /inference failed/.test(message)));
+  assert.equal(messages.some((message) => /Resposta nine rejeitada/.test(message)), false);
+});
+
+test("Geetest runtime searches for nine from a captured GeeTest request", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let loads = 0;
+  let answers = 0;
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com"
+  });
+  geetest.createGeetestClient = () => ({
+    async load() {
+      loads += 1;
+      return {
+        lot_number: "lot-1",
+        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
+        pt: "0",
+        captcha_type: "nine",
+        payload: "payload-1",
+        process_token: "process-1",
+        imgs: "grid.jpg",
+        ques: ["ques.png"],
+        nine_nums: 3
+      };
+    }
+  });
+  geetest.solveLoadedNineChallenge = async () => {
+    answers += 1;
+    return { lot_number: "lot-1", pass_token: "pass-1" };
+  };
+  geetest.resolveGeetestWithPageBridge = async () => ({ resolved: true });
+  geetest.waitForRunDelay = async () => undefined;
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => 0;
+  geetest.log = () => undefined;
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, true);
+  assert.equal(loads, 1);
+  assert.equal(answers, 1);
+});
+
+test("Geetest runtime stops searching at the 60 second deadline", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let now = 0;
+  let loads = 0;
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com"
+  });
+  geetest.createGeetestClient = () => ({
+    async load() {
+      loads += 1;
+      now += 30_000;
+      return {
+        lot_number: `lot-${loads}`,
+        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
+        pt: "0",
+        captcha_type: "icon"
+      };
+    }
+  });
+  geetest.waitForRunDelay = async () => undefined;
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => now;
+  geetest.log = () => undefined;
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, false);
+  assert.equal(loads, 2);
+});
+
+test("Geetest runtime settles a successful solve conditionally", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  const delays: number[] = [];
+  let settleCalls = 0;
+  geetest.autoCaptchaSolverRuns.add("run-1");
+  geetest.waitForCaptchaChallenge = async () => ({ active: true, label: "Geetest" });
+  geetest.applyGeetestAutoSolveMask = async () => undefined;
+  geetest.tryAutoSolveGeetestCaptcha = async () => true;
+  geetest.waitForGeetestDismissal = async () => {
+    settleCalls += 1;
+    return true;
+  };
+  geetest.restoreGeetestAutoSolveMask = async () => undefined;
+  geetest.detectCaptchaChallenge = async () => ({ active: false, label: "" });
+  geetest.waitForRunDelay = async (_runId, _page, delayMs) => {
+    delays.push(delayMs);
+  };
+  geetest.log = () => undefined;
+
+  const solved = await geetest.waitForManualCaptchaIfPresent(
+    "run-1",
+    {} as Page,
+    "Teste",
+    "cadastro",
+  );
+
+  assert.equal(solved, true);
+  assert.equal(settleCalls, 1);
+  assert.deepEqual(delays, []);
+});
+
+test("Geetest dismissal polling returns after the challenge disappears", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let now = 0;
+  let detections = 0;
+  const delays: number[] = [];
+  geetest.nowMs = () => now;
+  geetest.detectCaptchaChallenge = async () => ({
+    active: detections++ === 0,
+    label: "Geetest",
+  });
+  geetest.waitForRunDelay = async (_runId, _page, delayMs) => {
+    delays.push(delayMs);
+    now += delayMs;
+  };
+
+  const dismissed = await geetest.waitForGeetestDismissal(
+    "run-1",
+    {} as Page,
+  );
+
+  assert.equal(dismissed, true);
+  assert.equal(now, 100);
+  assert.deepEqual(delays, [100]);
+});
+
+test("registration observes a captcha that appears just after the initial detection window", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let now = 0;
+  let registered = false;
+  let captchaChecks = 0;
+
+  geetest.nowMs = () => now;
+  geetest.ensureRunActive = () => undefined;
+  geetest.waitForManualCaptchaIfPresent = async () => {
+    captchaChecks += 1;
+    if (now < 2700) return false;
+    registered = true;
+    return true;
+  };
+  geetest.confirmRegistrationCompleted = async () => {
+    now += 350;
+    return registered
+      ? { registered: true, via: "sessao-ativa" }
+      : { registered: false, via: "timeout-formulario-presente" };
+  };
+
+  const result = await geetest.waitForRegistrationOrCaptcha(
+    "run-1",
+    {} as Page,
+    "Teste",
+    25_000,
+  );
+
+  assert.deepEqual(result, {
+    handledCaptcha: true,
+    outcome: { registered: true, via: "sessao-ativa" },
+  });
+  assert.ok(captchaChecks > 1);
+  assert.ok(now < 5000, `captcha was only observed after ${now} ms`);
 });

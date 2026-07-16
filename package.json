@@ -16,13 +16,18 @@
     "build": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build.ps1",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
+    "collect:nine-batch": "tsx scripts/captcha-collect-nine-dataset.mjs --append --count 200 --out dataset/raw",
+    "collect:nine-comumpg": "tsx scripts/captcha-collect-comumpg.mjs --append --count 200 --out dataset/raw --delay-ms 600",
+    "extract:nine-authorized": "tsx scripts/captcha-import-authorized-nine-dataset.mjs",
+    "label": "tsx scripts/captcha-label-server-cli.mjs",
+    "train:nine-match": "python scripts/captcha-train-nine-match.py",
+    "train:nine-siamese": "python scripts/captcha-train-nine-match.py --arch siamese",
     "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish never",
     "publish:win": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package-win.ps1 -Publish always",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "check": "npm run typecheck",
     "test": "tsx --test test/*.test.ts",
-    "postinstall": "patch-package && npm run napi:build -w @spider-bot/license-core && node scripts/setup-python.mjs",
-    "setup:python": "node scripts/setup-python.mjs"
+    "postinstall": "patch-package && npm run napi:build -w @spider-bot/license-core"
   },
   "build": {
     "appId": "com.spiderbot.desktop",
@@ -47,18 +52,6 @@
       {
         "from": "assets/icon.png",
         "to": "icon.png"
-      },
-      {
-        "from": "scripts",
-        "to": "scripts",
-        "filter": [
-          "geetest_solver_bridge.py",
-          "geetest_solver_worker.py"
-        ]
-      },
-      {
-        "from": "GeekedTest-main",
-        "to": "GeekedTest-main"
       }
     ],
     "asar": true,
@@ -105,16 +98,22 @@
     "@spider-bot/license-core": "*",
     "@spider-bot/licensing-contracts": "git+https://github.com/henocdejesusferreirafarias/spider-bot-contracts.git#v1.1.1",
     "electron-updater": "^6.8.3",
+    "jpeg-js": "^0.4.4",
+    "onnxruntime-node": "^1.27.0",
+    "opencv-wasm": "^4.3.0-10",
     "patchright": "^1.60.0",
+    "pngjs": "^7.0.0",
     "proxy-chain": "^3.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@electron/fuses": "^2.1.2",
+    "@types/jpeg-js": "^0.3.0",
     "@types/node": "^24.0.3",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
-    "@electron/fuses": "^2.1.2",
     "@vitejs/plugin-react-swc": "^4.3.1",
     "concurrently": "^10.0.3",
     "electron": "^42.4.0",

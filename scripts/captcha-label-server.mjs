@@ -1,0 +1,866 @@
+import { createServer } from 'node:http';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { PNG } from 'pngjs';
+import { decodeRgba, splitGridCells } from './captcha-nine-dataset-utils.mjs';
+import { JsonlWriter, StateFile, loadChallenges } from './captcha-label-persistence.mjs';
+import { LabelingQueue } from './captcha-label-queue.mjs';
+import { suggestNineCells } from './captcha-label-suggestions.mjs';
+
+const HTML = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Plan 2d - Manual Labeling</title>
+<style>
+:root { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2328; }
+body { margin: 0; padding: 24px; }
+header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
+header h1 { font-size: 18px; margin: 0; }
+header .stats { font-size: 13px; color: #57606a; }
+main { max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; padding: 24px; }
+.ques { text-align: center; margin-bottom: 16px; }
+.ques img { max-height: 140px; background: #fff; border: 1px solid #d0d7de; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; aspect-ratio: 1 / 1; }
+.cell { position: relative; cursor: pointer; border: 2px solid #d0d7de; border-radius: 4px; overflow: hidden; background: #111; }
+.cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cell.selected {
+  border-color: #0969da;
+  outline: 5px solid #2da44e;
+  outline-offset: -7px;
+  box-shadow: 0 0 0 3px #ffffff inset, 0 0 0 999px rgba(45, 164, 78, 0.22) inset;
+}
+.cell.selected::after {
+  content: "OK";
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  background: #2da44e;
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 6px;
+  border-radius: 999px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+}
+.cell .coord { position: absolute; top: 4px; left: 4px; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; padding: 1px 4px; border-radius: 3px; }
+.actions { display: flex; gap: 8px; margin-top: 16px; align-items: center; }
+button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
+button.primary { background: #1f883d; color: #fff; border-color: #1f883d; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.hint { font-size: 13px; color: #57606a; }
+.error { color: #cf222e; font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Plan 2d - Manual Labeling</h1>
+  <div class="stats" id="stats">Carregando...</div>
+</header>
+<main id="main">
+  <div class="ques"><img id="ques" alt="ques"></div>
+  <div class="grid" id="grid"></div>
+  <div class="actions">
+    <button id="save" class="primary" disabled>Salvar (Enter)</button>
+    <button id="clear">Limpar (Esc)</button>
+    <button id="skip">Pular (Right arrow)</button>
+    <span class="hint" id="hint"></span>
+  </div>
+  <div class="error" id="error"></div>
+</main>
+<script>
+const els = {
+  stats: document.getElementById('stats'),
+  ques: document.getElementById('ques'),
+  grid: document.getElementById('grid'),
+  save: document.getElementById('save'),
+  clear: document.getElementById('clear'),
+  skip: document.getElementById('skip'),
+  hint: document.getElementById('hint'),
+  error: document.getElementById('error'),
+  main: document.getElementById('main'),
+};
+let state = { challengeId: null, round: 1, nineNums: 3, selected: new Set() };
+let isSubmitting = false;
+
+function cellKey(row, col) { return row + ',' + col; }
+
+async function refreshStats() {
+  const response = await fetch('/api/stats');
+  const stats = await response.json();
+  els.stats.textContent = stats.labeledRounds + ' / ' + (stats.labeledRounds + stats.remainingRounds + stats.skippedRounds) + ' rodadas | Disputas: ' + stats.disputeCount;
+}
+
+function updateButtons() {
+  els.hint.textContent = 'Selecione ' + state.nineNums + ' celulas. Marcadas: ' + state.selected.size + '.';
+  els.save.disabled = isSubmitting || state.selected.size !== state.nineNums;
+  els.skip.disabled = isSubmitting || !state.challengeId;
+}
+
+function clearSelection() {
+  state.selected.clear();
+  for (const cell of els.grid.querySelectorAll('.cell.selected')) cell.classList.remove('selected');
+  updateButtons();
+}
+
+function toggleCell(row, col) {
+  const key = cellKey(row, col);
+  if (state.selected.has(key)) {
+    state.selected.delete(key);
+  } else {
+    if (state.selected.size >= state.nineNums) return;
+    state.selected.add(key);
+  }
+  const cell = els.grid.querySelector('[data-key="' + key + '"]');
+  if (cell) cell.classList.toggle('selected', state.selected.has(key));
+  updateButtons();
+}
+
+function selectedToCells() {
+  return Array.from(state.selected)
+    .map((key) => key.split(',').map(Number))
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+
+async function loadChallenge() {
+  state.selected.clear();
+  els.error.textContent = '';
+  const response = await fetch('/api/challenge');
+  const body = await response.json();
+  if (body.done) {
+    els.main.innerHTML = '<h2>Sessao completa</h2><p>Todas as rodadas rotuladas. <a href="/disputes">Revisar disputas</a>.</p>';
+    await refreshStats();
+    return;
+  }
+
+  state = { challengeId: body.challengeId, round: body.round, nineNums: body.nineNums, selected: new Set() };
+  for (const cell of body.suggestedCells ?? []) {
+    state.selected.add(cellKey(cell[0], cell[1]));
+  }
+  els.ques.src = body.quesDataUrl;
+  els.grid.innerHTML = '';
+  for (const cell of body.cells) {
+    const element = document.createElement('div');
+    element.className = 'cell';
+    element.dataset.key = cellKey(cell.row, cell.col);
+    const image = document.createElement('img');
+    image.src = cell.dataUrl;
+    image.alt = 'cell ' + cell.row + ',' + cell.col;
+    const coord = document.createElement('span');
+    coord.className = 'coord';
+    coord.textContent = '(' + cell.row + ',' + cell.col + ')';
+    element.appendChild(image);
+    element.appendChild(coord);
+    if (state.selected.has(element.dataset.key)) element.classList.add('selected');
+    element.addEventListener('click', () => toggleCell(cell.row, cell.col));
+    els.grid.appendChild(element);
+  }
+  await refreshStats();
+  updateButtons();
+}
+
+async function submit(path, body) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    els.error.textContent = 'Falha ao salvar: ' + response.status;
+    return false;
+  }
+  return true;
+}
+
+async function submitCurrent(path, body) {
+  if (isSubmitting) return false;
+  isSubmitting = true;
+  updateButtons();
+  try {
+    const saved = await submit(path, body);
+    if (saved) await loadChallenge();
+    return saved;
+  } finally {
+    isSubmitting = false;
+    updateButtons();
+  }
+}
+
+async function save() {
+  if (isSubmitting || state.selected.size !== state.nineNums) return;
+  els.error.textContent = '';
+  await submitCurrent('/api/label', { challengeId: state.challengeId, round: state.round, cells: selectedToCells() });
+}
+
+async function skipRound() {
+  if (isSubmitting) return;
+  els.error.textContent = '';
+  await submitCurrent('/api/skip', { challengeId: state.challengeId, round: state.round });
+}
+
+els.save.addEventListener('click', save);
+els.clear.addEventListener('click', clearSelection);
+els.skip.addEventListener('click', skipRound);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); save(); }
+  else if (event.key === 'Escape' || event.key === 'Backspace') { event.preventDefault(); clearSelection(); }
+  else if (event.key === 'ArrowRight') { event.preventDefault(); skipRound(); }
+  else if (/^[1-9]$/.test(event.key)) {
+    const number = Number(event.key);
+    toggleCell(Math.floor((number - 1) / 3) + 1, ((number - 1) % 3) + 1);
+  }
+});
+
+loadChallenge();
+</script>
+</body>
+</html>`;
+
+const DISPUTES_HTML = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Plan 2d - Disputas</title>
+<style>
+:root { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: #f6f7f9; color: #1f2328; }
+body { margin: 0; padding: 24px; }
+main { max-width: 720px; margin: 0 auto; }
+header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+a { color: #0969da; }
+.case { background: #fff; border: 1px solid #d0d7de; border-radius: 8px; margin-bottom: 12px; padding: 16px; }
+.cells { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.prompt { display: block; max-width: 220px; max-height: 140px; margin: 12px auto; border: 1px solid #d0d7de; }
+.rounds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+.rounds h3 { font-size: 15px; margin: 0 0 8px; }
+.dispute-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.dispute-cell { position: relative; border: 2px solid transparent; min-width: 0; }
+.dispute-cell img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover; }
+.dispute-cell .coord { position: absolute; top: 3px; left: 3px; background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 10px; padding: 1px 3px; }
+.dispute-cell.round1-selected { border-color: #0969da; }
+.dispute-cell.round2-selected { border-color: #bf8700; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+button { font: inherit; padding: 8px 12px; border-radius: 6px; border: 1px solid #d0d7de; background: #f6f8fa; cursor: pointer; }
+button.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
+input { font: inherit; min-width: 150px; padding: 7px; border: 1px solid #d0d7de; border-radius: 6px; }
+.empty, .error { color: #57606a; }
+.error { color: #cf222e; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Disputas pendentes</h1><a href="/">Voltar para rotulagem</a></header>
+  <div id="disputes" class="empty">Carregando...</div>
+</main>
+<script>
+const root = document.getElementById('disputes');
+
+function parseCells(value) {
+  return value.trim().split(/\\s+/).filter(Boolean).map((part) => part.split(',').map(Number));
+}
+
+async function resolveDispute(challengeId, choice, cells) {
+  const body = { challengeId, choice };
+  if (choice === 'relabel') body.cells = cells;
+  const response = await fetch('/api/disputes/resolve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error('Falha ao resolver: ' + response.status);
+}
+
+function button(label, action) {
+  const element = document.createElement('button');
+  element.textContent = label;
+  element.addEventListener('click', action);
+  return element;
+}
+
+function renderRound(label, cells, selectedCells, selectedClass) {
+  const panel = document.createElement('section');
+  const title = document.createElement('h3');
+  title.textContent = label;
+  const grid = document.createElement('div');
+  grid.className = 'dispute-grid';
+  const selected = new Set(selectedCells.map((cell) => cell[0] + ',' + cell[1]));
+  for (const cell of cells) {
+    const element = document.createElement('div');
+    element.className = 'dispute-cell' + (selected.has(cell.row + ',' + cell.col) ? ' ' + selectedClass : '');
+    const image = document.createElement('img');
+    image.src = cell.dataUrl;
+    image.alt = 'cell ' + cell.row + ',' + cell.col;
+    const coord = document.createElement('span');
+    coord.className = 'coord';
+    coord.textContent = '(' + cell.row + ',' + cell.col + ')';
+    element.append(image, coord);
+    grid.appendChild(element);
+  }
+  panel.append(title, grid);
+  return panel;
+}
+
+function renderDispute(dispute) {
+  const card = document.createElement('article');
+  card.className = 'case';
+  const title = document.createElement('h2');
+  title.textContent = dispute.challengeId;
+  const prompt = document.createElement('img');
+  prompt.className = 'prompt';
+  prompt.src = dispute.quesDataUrl;
+  prompt.alt = 'prompt';
+  const rounds = document.createElement('div');
+  rounds.className = 'rounds';
+  rounds.append(
+    renderRound('Round 1', dispute.cells, dispute.round1Cells, 'round1-selected'),
+    renderRound('Round 2', dispute.cells, dispute.round2Cells, 'round2-selected'),
+  );
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  const relabel = document.createElement('input');
+  relabel.placeholder = '1,1 2,2';
+  const showError = (error) => {
+    const message = document.createElement('p');
+    message.className = 'error';
+    message.textContent = error.message;
+    card.appendChild(message);
+  };
+  actions.appendChild(button('Usar round 1', async () => {
+    try { await resolveDispute(dispute.challengeId, 'round1'); await loadDisputes(); } catch (error) { showError(error); }
+  }));
+  actions.appendChild(button('Usar round 2', async () => {
+    try { await resolveDispute(dispute.challengeId, 'round2'); await loadDisputes(); } catch (error) { showError(error); }
+  }));
+  actions.appendChild(relabel);
+  const relabelButton = button('Salvar relabel', async () => {
+    try { await resolveDispute(dispute.challengeId, 'relabel', parseCells(relabel.value)); await loadDisputes(); } catch (error) { showError(error); }
+  });
+  relabelButton.className = 'primary';
+  actions.appendChild(relabelButton);
+  card.append(title, prompt, rounds, actions);
+  return card;
+}
+
+async function loadDisputes() {
+  root.textContent = 'Carregando...';
+  try {
+    const response = await fetch('/api/disputes');
+    if (!response.ok) throw new Error('Falha ao carregar disputas: ' + response.status);
+    const disputes = await response.json();
+    root.innerHTML = '';
+    if (disputes.length === 0) {
+      root.textContent = 'Nenhuma disputa pendente.';
+      return;
+    }
+    for (const dispute of disputes) root.appendChild(renderDispute(dispute));
+  } catch (error) {
+    root.className = 'error';
+    root.textContent = error.message;
+  }
+}
+
+loadDisputes();
+</script>
+</body>
+</html>`;
+
+const LABEL_QUEUE_SEED = 20260710;
+
+function json(res, status, value) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(value));
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function fileToDataUrl(filePath) {
+  const buffer = readFileSync(filePath);
+  const mime = filePath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+  return `data:${mime};base64,${buffer.toString('base64')}`;
+}
+
+function cellsToDataUrls(gridPath) {
+  const decoded = decodeRgba(readFileSync(gridPath));
+  return splitGridCells(decoded.data, decoded.width, decoded.height).map((cell) => {
+    const png = new PNG({ width: cell.width, height: cell.height });
+    png.data = Buffer.from(cell.data);
+    const buffer = PNG.sync.write(png);
+    return {
+      row: cell.row,
+      col: cell.col,
+      dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+    };
+  });
+}
+
+function readAuditEntries(file) {
+  if (!existsSync(file)) return [];
+  const entries = [];
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (entry && typeof entry === 'object') entries.push(entry);
+    } catch {
+      // Keep valid audit history available after a partial final line from a crash.
+    }
+  }
+  return entries;
+}
+
+function isAuditCells(value) {
+  return Array.isArray(value) && value.every((cell) => (
+    Array.isArray(cell)
+    && cell.length === 2
+    && Number.isInteger(cell[0])
+    && Number.isInteger(cell[1])
+  ));
+}
+
+function cellsKey(cells) {
+  return cells.map(([row, col]) => `${row}:${col}`).sort().join(',');
+}
+
+function missingAutomaticFinals(entries, challengeIds) {
+  const roundsByChallenge = new Map();
+  const finalized = new Set();
+
+  for (const entry of entries) {
+    if (!challengeIds.has(entry.challengeId)) continue;
+    if (entry.kind === 'final') {
+      finalized.add(entry.challengeId);
+      continue;
+    }
+    if (entry.kind !== 'round' && entry.kind !== 'skipped') continue;
+    if (entry.round !== 1 && entry.round !== 2) continue;
+
+    let rounds = roundsByChallenge.get(entry.challengeId);
+    if (!rounds) {
+      rounds = new Map();
+      roundsByChallenge.set(entry.challengeId, rounds);
+    }
+    if (entry.kind === 'skipped') {
+      rounds.delete(entry.round);
+    } else if (isAuditCells(entry.cells)) {
+      rounds.set(entry.round, entry.cells);
+    }
+  }
+
+  const repairs = [];
+  for (const [challengeId, rounds] of roundsByChallenge) {
+    if (finalized.has(challengeId)) continue;
+    const round1 = rounds.get(1);
+    const round2 = rounds.get(2);
+    if (!round1 || !round2 || cellsKey(round1) !== cellsKey(round2)) continue;
+    repairs.push({
+      kind: 'final',
+      challengeId,
+      cells: round2,
+      fromDispute: false,
+      disputeResolution: null,
+      labeledAt: new Date().toISOString(),
+    });
+  }
+  return repairs;
+}
+
+function appendAuditEntries(writer, entries) {
+  if (entries.length === 0) return;
+  const currentContents = existsSync(writer.file) ? readFileSync(writer.file, 'utf8') : '';
+  const needsLeadingNewline = currentContents.length > 0 && !currentContents.endsWith('\n');
+  appendFileSync(writer.file, `${needsLeadingNewline ? '\n' : ''}${entries.map((entry) => `${JSON.stringify(entry)}\n`).join('')}`);
+}
+
+function removeInvalidTrailingAuditRecord(file) {
+  if (!existsSync(file)) return false;
+  const contents = readFileSync(file, 'utf8');
+  const lines = contents.split('\n');
+  let lastRecordIndex = lines.length - 1;
+  while (lastRecordIndex >= 0 && !lines[lastRecordIndex].trim()) lastRecordIndex--;
+  if (lastRecordIndex < 0) return false;
+
+  try {
+    JSON.parse(lines[lastRecordIndex]);
+    return false;
+  } catch {
+    let recordStart = 0;
+    for (let index = 0; index < lastRecordIndex; index++) {
+      recordStart += lines[index].length + 1;
+    }
+    writeFileSync(file, contents.slice(0, recordStart), 'utf8');
+    return true;
+  }
+}
+
+function replayAudit(queue, entries, challengeIds) {
+  for (const entry of entries) {
+    if (!challengeIds.has(entry.challengeId)) continue;
+    if (entry.kind === 'round' && (entry.round === 1 || entry.round === 2) && isAuditCells(entry.cells)) {
+      queue.recordLabel(entry.challengeId, entry.round, entry.cells);
+      continue;
+    }
+    if (entry.kind === 'skipped' && (entry.round === 1 || entry.round === 2)) {
+      queue.recordSkip(entry.challengeId, entry.round);
+      continue;
+    }
+    if (entry.kind === 'final' && entry.fromDispute === true) {
+      if (entry.disputeResolution === 'round1' || entry.disputeResolution === 'round2') {
+        queue.resolveDispute(entry.challengeId, entry.disputeResolution);
+      } else if (entry.disputeResolution === 'relabel' && isAuditCells(entry.cells)) {
+        queue.resolveDispute(entry.challengeId, 'relabel', entry.cells);
+      }
+    }
+  }
+}
+
+function validatedCells(value, expectedCount) {
+  if (!Array.isArray(value) || value.length !== expectedCount) {
+    return { error: `expected ${expectedCount} cells` };
+  }
+
+  const cells = [];
+  const seen = new Set();
+  for (const cell of value) {
+    if (!Array.isArray(cell) || cell.length !== 2) {
+      return { error: 'cells must be [row, col]' };
+    }
+    const [row, col] = cell;
+    if (!Number.isInteger(row) || !Number.isInteger(col) || row < 1 || row > 3 || col < 1 || col > 3) {
+      return { error: 'cells must use 1-indexed row and col values from 1 to 3' };
+    }
+    const key = `${row}:${col}`;
+    if (seen.has(key)) {
+      return { error: 'cells must be unique' };
+    }
+    seen.add(key);
+    cells.push([row, col]);
+  }
+
+  cells.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  return { cells };
+}
+
+export async function startLabelServer(opts = {}) {
+  const port = opts.port ?? 8765;
+  const host = opts.host ?? '127.0.0.1';
+  const rawDir = opts.rawDir ?? join(process.cwd(), 'dataset', 'raw');
+  const datasetDir = opts.datasetDir ?? join(process.cwd(), 'dataset');
+  mkdirSync(datasetDir, { recursive: true });
+
+  const { challenges, skipLog } = loadChallenges(rawDir);
+  if (skipLog.length > 0) {
+    writeFileSync(join(datasetDir, 'label-skip.log'), `${skipLog.join('\n')}\n`, 'utf8');
+  }
+  if (challenges.length === 0) {
+    throw new Error(`Nenhum desafio em ${rawDir}. Rode scripts/captcha-collect-nine-dataset.mjs primeiro.`);
+  }
+
+  const labelsWriter = new JsonlWriter(join(datasetDir, 'manual-labels.jsonl'));
+  const disputesWriter = new JsonlWriter(join(datasetDir, 'label-disputes.jsonl'));
+  const stateFile = new StateFile(join(datasetDir, 'label-state.json'), { lockWindowMs: 5000 });
+  const challengeIds = new Set(challenges.map((challenge) => challenge.id));
+  const auditEntries = readAuditEntries(labelsWriter.file);
+  const queue = new LabelingQueue(challenges.map((challenge) => challenge.id), LABEL_QUEUE_SEED);
+  const challengesById = new Map(challenges.map((challenge) => [challenge.id, challenge]));
+  const suggestCells = opts.suggestCells ?? suggestNineCells;
+  let activePointer = null;
+  let stateWrittenByThisServer = false;
+
+  function nextPointer() {
+    if (!activePointer) activePointer = queue.next();
+    return activePointer;
+  }
+
+  function reserveState(nextEntries) {
+    if (existsSync(stateFile.file)) {
+      const currentMtimeMs = statSync(stateFile.file).mtimeMs;
+      if (
+        (!stateWrittenByThisServer || currentMtimeMs !== stateFile.lastKnownMtimeMs)
+        && Date.now() - currentMtimeMs <= stateFile.lockWindowMs
+      ) {
+        return { ok: false, reason: 'state file is locked by another writer' };
+      }
+    }
+
+    const prospectiveQueue = new LabelingQueue(challenges.map((challenge) => challenge.id), LABEL_QUEUE_SEED);
+    replayAudit(prospectiveQueue, [...auditEntries, ...nextEntries], challengeIds);
+    const stats = prospectiveQueue.getStats();
+    const result = stateFile.save({
+      version: 1,
+      seed: prospectiveQueue.seed,
+      totalRounds: stats.labeledRounds + stats.skippedRounds + stats.remainingRounds,
+      currentIndex: stats.labeledRounds + stats.skippedRounds,
+      labeledKeys: prospectiveQueue.getLabeledKeys(),
+      disputes: prospectiveQueue.getDisputes().map((dispute) => dispute.challengeId),
+      lastSavedAt: new Date().toISOString(),
+    });
+    if (result.ok) stateWrittenByThisServer = true;
+    return result.ok ? result : { ok: false, reason: 'state file is locked by another writer' };
+  }
+
+  function appendReservedAuditEntries(entries) {
+    removeInvalidTrailingAuditRecord(labelsWriter.file);
+    appendAuditEntries(labelsWriter, entries);
+  }
+
+  function recoverMissingFinals() {
+    const recoveredFinals = missingAutomaticFinals(auditEntries, challengeIds);
+    if (recoveredFinals.length === 0 || !reserveState(recoveredFinals).ok) return;
+    appendReservedAuditEntries(recoveredFinals);
+    auditEntries.push(...recoveredFinals);
+  }
+
+  recoverMissingFinals();
+  replayAudit(queue, auditEntries, challengeIds);
+
+  const server = createServer(async (req, res) => {
+    try {
+      recoverMissingFinals();
+      const url = new URL(req.url ?? '/', `http://${host}:${port}`);
+      if (req.method === 'GET' && url.pathname === '/') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(HTML);
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/disputes') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(DISPUTES_HTML);
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/challenge') {
+        const pointer = nextPointer();
+        if (!pointer) {
+          json(res, 200, { done: true });
+          return;
+        }
+        const challenge = challengesById.get(pointer.challengeId);
+        if (!challenge) throw new Error(`missing challenge ${pointer.challengeId}`);
+        let suggestedCells = null;
+        try {
+          suggestedCells = await suggestCells(challenge.gridPath, challenge.quesPath, challenge.nineNums);
+        } catch (error) {
+          console.warn('label suggestion failed:', error instanceof Error ? error.message : String(error));
+        }
+        json(res, 200, {
+          challengeId: pointer.challengeId,
+          round: pointer.round,
+          totalRounds: pointer.totalRounds,
+          currentIndex: pointer.currentIndex,
+          nineNums: challenge.nineNums,
+          quesDataUrl: fileToDataUrl(challenge.quesPath),
+          cells: cellsToDataUrls(challenge.gridPath),
+          suggestedCells,
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/stats') {
+        json(res, 200, queue.getStats());
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/disputes') {
+        const disputes = queue.getDisputes().map((dispute) => {
+          const challenge = challengesById.get(dispute.challengeId);
+          if (!challenge) throw new Error(`missing challenge ${dispute.challengeId}`);
+          return {
+            ...dispute,
+            quesDataUrl: fileToDataUrl(challenge.quesPath),
+            cells: cellsToDataUrls(challenge.gridPath),
+          };
+        });
+        json(res, 200, disputes);
+        return;
+      }
+
+      if (req.method === 'POST' && (url.pathname === '/api/label' || url.pathname === '/api/skip')) {
+        let body;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          json(res, 400, { saved: false, error: 'invalid JSON body' });
+          return;
+        }
+
+        const pointer = nextPointer();
+        if (!pointer) {
+          json(res, 400, { saved: false, error: 'queue exhausted' });
+          return;
+        }
+        if (typeof body?.challengeId !== 'string') {
+          json(res, 400, { saved: false, error: 'challengeId required' });
+          return;
+        }
+        if (body.challengeId !== pointer.challengeId) {
+          json(res, 409, { saved: false, error: `expected challenge ${pointer.challengeId}` });
+          return;
+        }
+        if (body?.round !== pointer.round) {
+          json(res, 400, { saved: false, error: `expected round ${pointer.round}` });
+          return;
+        }
+        const challenge = challengesById.get(pointer.challengeId);
+        if (!challenge) throw new Error(`missing challenge ${pointer.challengeId}`);
+
+        if (url.pathname === '/api/skip') {
+          const skippedEntry = {
+            kind: 'skipped',
+            challengeId: pointer.challengeId,
+            round: pointer.round,
+            labeledAt: new Date().toISOString(),
+          };
+          const stateResult = reserveState([skippedEntry]);
+          if (!stateResult.ok) {
+            json(res, 409, { saved: false, error: stateResult.reason });
+            return;
+          }
+          appendReservedAuditEntries([skippedEntry]);
+          auditEntries.push(skippedEntry);
+          queue.recordSkip(pointer.challengeId, pointer.round);
+          activePointer = null;
+          json(res, 200, { saved: true, stats: queue.getStats() });
+          return;
+        }
+
+        const result = validatedCells(body?.cells, challenge.nineNums);
+        if (result.error) {
+          json(res, 400, { saved: false, error: result.error });
+          return;
+        }
+
+        const roundEntry = {
+          kind: 'round',
+          challengeId: pointer.challengeId,
+          round: pointer.round,
+          cells: result.cells,
+          labeledAt: new Date().toISOString(),
+        };
+        const stateResult = reserveState([roundEntry]);
+        if (!stateResult.ok) {
+          json(res, 409, { saved: false, error: stateResult.reason });
+          return;
+        }
+        const automaticFinals = missingAutomaticFinals([...auditEntries, roundEntry], challengeIds);
+        appendReservedAuditEntries([roundEntry, ...automaticFinals]);
+        auditEntries.push(roundEntry, ...automaticFinals);
+        const labelResult = queue.recordLabel(pointer.challengeId, pointer.round, result.cells);
+        activePointer = null;
+        if (labelResult.bothRoundsNowLabeled) {
+          const dispute = queue.getDisputes().find((item) => item.challengeId === pointer.challengeId);
+          if (dispute) {
+            if (labelResult.isNewDispute) {
+              disputesWriter.append({
+                challengeId: pointer.challengeId,
+                round1Cells: dispute.round1Cells,
+                round2Cells: dispute.round2Cells,
+                detectedAt: new Date().toISOString(),
+              });
+            }
+          }
+        }
+        json(res, 200, { saved: true, stats: queue.getStats() });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/disputes/resolve') {
+        let body;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          json(res, 400, { saved: false, error: 'invalid JSON body' });
+          return;
+        }
+        if (typeof body?.challengeId !== 'string' || typeof body.choice !== 'string') {
+          json(res, 400, { saved: false, error: 'challengeId and choice required' });
+          return;
+        }
+        const dispute = queue.getDisputes().find((item) => item.challengeId === body.challengeId);
+        if (!dispute) {
+          json(res, 404, { saved: false, error: 'dispute not found' });
+          return;
+        }
+
+        const challenge = challengesById.get(body.challengeId);
+        if (!challenge) throw new Error(`missing challenge ${body.challengeId}`);
+        let finalCells;
+        if (body.choice === 'round1') finalCells = dispute.round1Cells;
+        else if (body.choice === 'round2') finalCells = dispute.round2Cells;
+        else if (body.choice === 'relabel') {
+          const result = validatedCells(body.cells, challenge.nineNums);
+          if (result.error) {
+            json(res, 400, { saved: false, error: result.error });
+            return;
+          }
+          finalCells = result.cells;
+        } else {
+          json(res, 400, { saved: false, error: 'choice must be round1, round2, or relabel' });
+          return;
+        }
+
+        const finalEntry = {
+          kind: 'final',
+          challengeId: body.challengeId,
+          cells: finalCells,
+          fromDispute: true,
+          disputeResolution: body.choice,
+          labeledAt: new Date().toISOString(),
+        };
+        const stateResult = reserveState([finalEntry]);
+        if (!stateResult.ok) {
+          json(res, 409, { saved: false, error: stateResult.reason });
+          return;
+        }
+        appendReservedAuditEntries([finalEntry]);
+        auditEntries.push(finalEntry);
+        disputesWriter.append({
+          challengeId: body.challengeId,
+          round1Cells: dispute.round1Cells,
+          round2Cells: dispute.round2Cells,
+          choice: body.choice,
+          finalCells,
+          resolvedAt: new Date().toISOString(),
+        });
+        queue.resolveDispute(body.challengeId, body.choice, body.choice === 'relabel' ? finalCells : undefined);
+        json(res, 200, { saved: true });
+        return;
+      }
+
+      json(res, 404, { error: 'not found' });
+    } catch (error) {
+      console.error('label server error:', error);
+      json(res, 500, { saved: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, resolve);
+  });
+  const address = server.address();
+  const actualPort = typeof address === 'object' && address ? address.port : port;
+  return {
+    port: actualPort,
+    close: () => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+  };
+}
+
+if (import.meta.url === new URL(process.argv[1], 'file:').href) {
+  const port = Number(process.env.LABEL_PORT ?? 8765);
+  const server = await startLabelServer({ port });
+  console.log(`Listening on http://127.0.0.1:${server.port}`);
+}

@@ -6,13 +6,13 @@ Electron desktop client for SpiderBOT (multi-login browser profile manager). Ext
 
 - Electron + React 19 (Vite renderer)
 - `native/license-core` — Rust/napi module (offline license validation)
-- Python Geetest solver (`GeekedTest-main`, optional at runtime)
+- TypeScript GeeTest `nine` solver with singleton ONNX inference
 - Shared contracts: `@spider-bot/licensing-contracts` (pinned by Git tag)
 
 ## Develop
 
 ```powershell
-npm install        # patch-package + napi build (needs Rust/cargo) + Python setup
+npm install        # patch-package + napi build (needs Rust/cargo)
 npm run dev
 ```
 
@@ -48,4 +48,5 @@ The release workflow (`.github/workflows/desktop-release.yml`) runs on `desktop-
 
 ## Prerequisites
 
-- Node 22+, Rust toolchain (for `license-core`), Python 3 (optional, for the Geetest solver)
+- Node 22+ and Rust toolchain (for `license-core`)
+- Python 3 with training dependencies (optional, only for offline captcha model training)
