@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { InferenceSession } from 'onnxruntime-node';
 import { PNG } from 'pngjs';
-import { NineMatchInferenceQueue, normalizeNineMatchPairForImageNet, normalizePhotoRgbForImageNet } from '../src/main/services/captcha/onnx-session.js';
+import { NineMatchClassifier, NineMatchInferenceQueue, normalizeNineMatchPairForImageNet, normalizePhotoRgbForImageNet } from '../src/main/services/captcha/onnx-session.js';
 import { findIconCellsPhoto, rankPhotoCellsForTarget } from '../src/main/services/captcha/solvers/nine-photo.js';
 
 function solidPng(width: number, height: number, rgba: [number, number, number, number]): Buffer {
@@ -95,6 +96,50 @@ test('NineMatchInferenceQueue limits concurrent inference work', async () => {
 
   assert.deepEqual(await Promise.all(jobs), [10, 20, 30]);
   assert.equal(maxActive, 1);
+});
+
+function fakeNineSession(): InferenceSession {
+  return {
+    async run() {
+      return { logit: { data: new Float32Array([0]) } };
+    },
+  } as unknown as InferenceSession;
+}
+
+test('NineMatchClassifier shares initialization between warm-up and first inference', async () => {
+  let createCalls = 0;
+  let release: ((session: InferenceSession) => void) | undefined;
+  const pendingSession = new Promise<InferenceSession>((resolve) => {
+    release = resolve;
+  });
+  const classifier = new NineMatchClassifier(async () => {
+    createCalls += 1;
+    return pendingSession;
+  });
+  const image = { data: new Uint8Array(4), width: 1, height: 1 };
+
+  const warming = classifier.warmup();
+  const scoring = classifier.scoreCells(image, [image]);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(createCalls, 1);
+  release?.(fakeNineSession());
+  await warming;
+  assert.deepEqual(await scoring, [0.5]);
+});
+
+test('NineMatchClassifier retries initialization after warm-up failure', async () => {
+  let createCalls = 0;
+  const classifier = new NineMatchClassifier(async () => {
+    createCalls += 1;
+    if (createCalls === 1) throw new Error('warm-up failed');
+    return fakeNineSession();
+  });
+
+  await assert.rejects(classifier.warmup(), /warm-up failed/);
+  await classifier.warmup();
+
+  assert.equal(createCalls, 2);
 });
 
 test('findIconCellsPhoto ranks cells with the nine-match pair scorer', async () => {

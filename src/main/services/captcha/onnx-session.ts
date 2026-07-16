@@ -229,13 +229,28 @@ function resolveNineMatchInferenceConcurrency(): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
 }
 
+type NineMatchSessionFactory = () => Promise<ort.InferenceSession>;
+
 export class NineMatchClassifier {
-  private session: ort.InferenceSession | undefined;
+  private sessionPromise: Promise<ort.InferenceSession> | undefined;
   private readonly queue = new NineMatchInferenceQueue(resolveNineMatchInferenceConcurrency());
 
-  private async ensure(): Promise<ort.InferenceSession> {
-    if (!this.session) this.session = await ort.InferenceSession.create(NINE_MATCH_MODEL);
-    return this.session;
+  constructor(
+    private readonly createSession: NineMatchSessionFactory = () => ort.InferenceSession.create(NINE_MATCH_MODEL),
+  ) {}
+
+  private ensure(): Promise<ort.InferenceSession> {
+    if (!this.sessionPromise) {
+      this.sessionPromise = this.createSession().catch((error: unknown) => {
+        this.sessionPromise = undefined;
+        throw error;
+      });
+    }
+    return this.sessionPromise;
+  }
+
+  async warmup(): Promise<void> {
+    await this.ensure();
   }
 
   async score(ques: NineMatchImage, cell: NineMatchImage): Promise<number> {
@@ -278,3 +293,4 @@ let _photoClassifier: PhotoClassifier | undefined;
 export function getPhotoClassifier(): PhotoClassifier { return _photoClassifier ??= new PhotoClassifier(); }
 let _nineMatchClassifier: NineMatchClassifier | undefined;
 export function getNineMatchClassifier(): NineMatchClassifier { return _nineMatchClassifier ??= new NineMatchClassifier(); }
+export async function warmNineMatchClassifier(): Promise<void> { await getNineMatchClassifier().warmup(); }
