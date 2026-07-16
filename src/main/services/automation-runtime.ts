@@ -948,8 +948,10 @@ export class AutomationRuntimeService {
 
       step = "pix-preflight";
       const pendingPhoneKey = this.database.findPendingPixPhoneKey(profile.id);
+      const persistedPhoneNumber = this.database.getOrCreateProfileAccount(profile.id).pixPhoneKey;
       const accountSnapshot = await inspectPixReceivingAccounts(spa);
       const preflight = decidePixPhonePreflight({
+        persistedPhoneNumber,
         pendingKeyId: pendingPhoneKey?.id,
         phoneNumber: pendingPhoneKey?.phoneNumber,
         accounts: accountSnapshot.accounts,
@@ -965,8 +967,19 @@ export class AutomationRuntimeService {
         this.log(run.id, "warning", `[${profile.name}] Cadastro PIX ignorado: a plataforma ja possui uma conta para recebimento.`);
         return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
       }
+      if (preflight === "profile-used") {
+        resultStatus = "pix_key_registered";
+        this.database.updateRun(run.id, {
+          status: "succeeded",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "success", `[${profile.name}] Chave PIX persistida confirmada pela conta de recebimento.`);
+        return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
+      }
       if (preflight === "pending-used") {
-        if (!pendingPhoneKey || !this.database.markPixPhoneKeyUsed(pendingPhoneKey.id, { profileId: profile.id })) {
+        if (!pendingPhoneKey || !this.database.confirmPixPhoneKeyRegistration(pendingPhoneKey.id, { profileId: profile.id, origin: pixType })) {
           throw new Error("nao foi possivel confirmar a chave PIX pendente como cadastrada");
         }
         resultStatus = "pix_key_registered";
@@ -1066,7 +1079,7 @@ export class AutomationRuntimeService {
       const submission = await confirmPixPhoneSubmission(spa, phoneKey.phoneNumber, PIX_MS(12000));
       step = "pix-submission-confirmation";
       if (submission.result === "confirmed") {
-        if (!this.database.markPixPhoneKeyUsed(phoneKey.id, { profileId: profile.id })) {
+        if (!this.database.confirmPixPhoneKeyRegistration(phoneKey.id, { profileId: profile.id, origin: pixType })) {
           throw new Error("a chave PIX foi listada, mas nao foi possivel registra-la como cadastrada");
         }
         resultStatus = "pix_key_registered";

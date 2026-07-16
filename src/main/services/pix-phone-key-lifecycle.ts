@@ -6,12 +6,14 @@ export type PixReceivingAccount = {
 export type PixPhonePreflightDecision =
   | "clean"
   | "manual-account"
+  | "profile-used"
   | "resume-pending"
   | "pending-used"
   | "conflict"
   | "insufficient-evidence";
 
 export type PixPhonePreflightInput = {
+  persistedPhoneNumber?: string;
   pendingKeyId?: string;
   phoneNumber?: string;
   accounts: readonly PixReceivingAccount[];
@@ -21,6 +23,7 @@ export type PixPhonePreflightResult =
   | { reservation: "reserve" }
   | { reservation: "resume-pending" }
   | { status: "pix_already_registered"; reservation: "none" }
+  | { status: "pix_key_registered"; reservation: "none" }
   | { status: "pix_key_registered"; reservation: "consume-pending" }
   | { status: "pix_key_conflict"; reservation: "keep-pending" };
 
@@ -52,6 +55,25 @@ export function matchesMaskedPixPhone(mask: string, phoneNumber: string): boolea
 }
 
 export function decidePixPhonePreflight(input: PixPhonePreflightInput): PixPhonePreflightDecision {
+  if (input.persistedPhoneNumber) {
+    if (!input.accounts.length) {
+      return "insufficient-evidence";
+    }
+
+    const phoneAccounts = input.accounts.filter((account) => account.kind === "pix-phone");
+    if (!phoneAccounts.length) {
+      return "conflict";
+    }
+
+    if (phoneAccounts.some((account) => account.maskedPhone && matchesMaskedPixPhone(account.maskedPhone, input.persistedPhoneNumber!))) {
+      return "profile-used";
+    }
+
+    return phoneAccounts.some((account) => !account.maskedPhone || !maskEvidence(account.maskedPhone))
+      ? "insufficient-evidence"
+      : "conflict";
+  }
+
   if (!input.pendingKeyId) {
     return input.accounts.length ? "manual-account" : "clean";
   }
@@ -91,6 +113,8 @@ export function pixResultForPreflight(decision: PixPhonePreflightDecision): PixP
       return { reservation: "resume-pending" };
     case "manual-account":
       return { status: "pix_already_registered", reservation: "none" };
+    case "profile-used":
+      return { status: "pix_key_registered", reservation: "none" };
     case "pending-used":
       return { status: "pix_key_registered", reservation: "consume-pending" };
     case "conflict":

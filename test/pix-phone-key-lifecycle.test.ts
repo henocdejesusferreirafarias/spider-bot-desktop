@@ -21,6 +21,40 @@ test("clean profile with a manual PIX account never reserves inventory", () => {
   );
 });
 
+test("persisted key with a compatible mask completes without inventory", () => {
+  const decision = decidePixPhonePreflight({
+    persistedPhoneNumber: "41980042690",
+    accounts: [{ kind: "pix-phone", maskedPhone: "41***690" }],
+  });
+
+  assert.equal(decision, "profile-used");
+  assert.deepEqual(pixResultForPreflight(decision), {
+    status: "pix_key_registered",
+    reservation: "none",
+  });
+});
+
+test("persisted key with insufficient or incompatible evidence requires review", () => {
+  assert.equal(
+    decidePixPhonePreflight({
+      persistedPhoneNumber: "41980042690",
+      accounts: [{ kind: "pix-phone" }],
+    }),
+    "insufficient-evidence",
+  );
+  assert.equal(
+    decidePixPhonePreflight({
+      persistedPhoneNumber: "41980042690",
+      accounts: [{ kind: "pix-phone", maskedPhone: "55***123" }],
+    }),
+    "conflict",
+  );
+  assert.equal(
+    decidePixPhonePreflight({ persistedPhoneNumber: "41980042690", accounts: [] }),
+    "insufficient-evidence",
+  );
+});
+
 test("pending key resolves as used, resume, or conflict", () => {
   assert.equal(
     decidePixPhonePreflight({
