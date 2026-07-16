@@ -26,6 +26,7 @@ import {
   GEETEST_NINE_ANSWER_LIMIT,
   GEETEST_NINE_DEADLINE_MS,
   GEETEST_NINE_RETRY_DELAY_MS,
+  GEETEST_NINE_SEARCH_LIMIT,
   solveLoadedNineGeetestWithClient,
 } from "./geetest-solver.js";
 import type { GeetestCaptchaData, GeetestNineClient, GeetestSolution } from "./geetest-solver.js";
@@ -6902,21 +6903,33 @@ export class AutomationRuntimeService {
       captured?.baseUrl ?? "https://gcaptcha4.geevisit.com",
     );
     const deadlineAt = this.nowMs() + GEETEST_NINE_DEADLINE_MS;
-    let totalSearchAttempts = 0;
+    let totalLoadAttempts = 0;
+    let rerollAttempts = 0;
 
     for (let answerAttempt = 1; answerAttempt <= GEETEST_NINE_ANSWER_LIMIT; answerAttempt += 1) {
       this.ensureRunActive(runId);
+      const remainingRerolls = GEETEST_NINE_SEARCH_LIMIT - rerollAttempts;
+      if (remainingRerolls <= 0) {
+        this.log(
+          runId,
+          "warning",
+          `[${profileName}] ${rerollAttempts} reroll(s) sem novo captcha nine; aguardando solucao manual.`,
+        );
+        return false;
+      }
       const selection = await findNineChallengeWithClient(client, captchaId, {
         deadlineAt,
+        maxRerolls: remainingRerolls,
         now: () => this.nowMs(),
         wait: (delayMs) => this.waitForRunDelay(runId, page, delayMs),
       });
-      totalSearchAttempts += selection.loadAttempts;
+      totalLoadAttempts += selection.loadAttempts;
+      rerollAttempts += selection.rerollAttempts;
 
       if (selection.status !== "found") {
         const reason = selection.status === "deadline"
           ? "limite total de 60 segundos atingido"
-          : `nenhum captcha nine em ${selection.loadAttempts} busca(s)`;
+          : `${rerollAttempts} reroll(s) sem novo captcha nine`;
         this.log(
           runId,
           "warning",
@@ -6926,10 +6939,11 @@ export class AutomationRuntimeService {
       }
 
       let solution: GeetestSolution | null = null;
+      let solveError: unknown;
       try {
         solution = await this.solveLoadedNineChallenge(client, captchaId, selection.data);
-      } catch {
-        solution = null;
+      } catch (error) {
+        solveError = error;
       }
 
       if (this.nowMs() >= deadlineAt) {
@@ -6942,11 +6956,22 @@ export class AutomationRuntimeService {
       }
 
       if (!solution || !solution.lot_number || !solution.pass_token) {
-        this.log(
-          runId,
-          "warning",
-          `[${profileName}] Resposta nine rejeitada (${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT}).`,
-        );
+        if (solveError !== undefined) {
+          const message = solveError instanceof Error
+            ? solveError.message
+            : String(solveError);
+          this.log(
+            runId,
+            "warning",
+            `[${profileName}] Falha ao processar resposta nine (${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT}): ${message}.`,
+          );
+        } else {
+          this.log(
+            runId,
+            "warning",
+            `[${profileName}] Resposta nine rejeitada (${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT}).`,
+          );
+        }
         if (answerAttempt < GEETEST_NINE_ANSWER_LIMIT && this.nowMs() < deadlineAt) {
           await this.waitForRunDelay(runId, page, GEETEST_NINE_RETRY_DELAY_MS);
           continue;
@@ -6958,7 +6983,7 @@ export class AutomationRuntimeService {
         this.log(
           runId,
           "warning",
-          `[${profileName}] ${reason} apos ${totalSearchAttempts} busca(s); aguardando solucao manual.`,
+          `[${profileName}] ${reason} apos ${totalLoadAttempts} busca(s); aguardando solucao manual.`,
         );
         return false;
       }
@@ -6971,7 +6996,7 @@ export class AutomationRuntimeService {
         this.log(
           runId,
           "success",
-          `[${profileName}] Captcha nine resolvido na tentativa ${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT} apos ${totalSearchAttempts} busca(s).`,
+          `[${profileName}] Captcha nine resolvido na tentativa ${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT} apos ${totalLoadAttempts} busca(s).`,
         );
         return true;
       }

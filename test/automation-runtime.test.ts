@@ -99,6 +99,20 @@ const profile = {
   homeUrl: "https://platform.example"
 } as ProfileSummary;
 
+function geetestChallenge(captchaType: string, suffix: string) {
+  return {
+    lot_number: `lot-${suffix}`,
+    pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
+    pt: "0",
+    captcha_type: captchaType,
+    payload: `payload-${suffix}`,
+    process_token: `process-${suffix}`,
+    imgs: "grid.jpg",
+    ques: ["ques.png"],
+    nine_nums: 3
+  };
+}
+
 function createPageWithoutCheckbox(): Page {
   return {
     locator: () => ({
@@ -286,26 +300,16 @@ test("post-registration deposit with an amount bypasses Profile navigation", asy
   assert.deepEqual(deposits, [{ amount: "30", profileName: "Teste" }]);
 });
 
-test("Geetest runtime gives each rejected nine answer a fresh search budget", async () => {
+test("Geetest runtime shares ten rerolls across rejected nine answers", async () => {
   const { runtime } = createRuntime();
   const geetest = runtime as unknown as GeetestRuntimeHarness;
   let loads = 0;
   let answers = 0;
+  const messages: string[] = [];
   const fakeClient = {
     async load() {
       loads += 1;
-      const isNine = loads % 10 === 0;
-      return {
-        lot_number: `lot-${loads}`,
-        pow_detail: { hashfunc: "md5", version: "1", bits: 0, datetime: "2026-07-16" },
-        pt: "0",
-        captcha_type: isNine ? "nine" : "icon",
-        payload: `payload-${loads}`,
-        process_token: `process-${loads}`,
-        imgs: "grid.jpg",
-        ques: ["ques.png"],
-        nine_nums: 3
-      };
+      return geetestChallenge(loads === 10 ? "nine" : "icon", String(loads));
     }
   };
   geetest.geetestCapturedData.set("run-1", {
@@ -320,13 +324,46 @@ test("Geetest runtime gives each rejected nine answer a fresh search budget", as
   geetest.waitForRunDelay = async () => undefined;
   geetest.ensureRunActive = () => undefined;
   geetest.nowMs = () => 0;
-  geetest.log = () => undefined;
+  geetest.log = (...args) => { messages.push(String(args.at(-1))); };
 
   const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
 
   assert.equal(solved, false);
-  assert.equal(loads, 50);
-  assert.equal(answers, 5);
+  assert.equal(loads, 11);
+  assert.equal(answers, 1);
+  assert.ok(messages.some((message) => /Resposta nine rejeitada/.test(message)));
+  assert.match(messages.at(-1) ?? "", /10 reroll/);
+});
+
+test("Geetest runtime logs pipeline failures separately from rejected answers", async () => {
+  const { runtime } = createRuntime();
+  const geetest = runtime as unknown as GeetestRuntimeHarness;
+  let loads = 0;
+  const messages: string[] = [];
+  geetest.geetestCapturedData.set("run-1", {
+    captchaId: "0123456789abcdef0123456789abcdef",
+    baseUrl: "https://gcaptcha4.geevisit.com"
+  });
+  geetest.createGeetestClient = () => ({
+    async load() {
+      loads += 1;
+      return geetestChallenge("nine", String(loads));
+    }
+  });
+  geetest.solveLoadedNineChallenge = async () => {
+    throw new Error("inference failed");
+  };
+  geetest.waitForRunDelay = async () => undefined;
+  geetest.ensureRunActive = () => undefined;
+  geetest.nowMs = () => 0;
+  geetest.log = (...args) => { messages.push(String(args.at(-1))); };
+
+  const solved = await geetest.tryAutoSolveGeetestCaptcha("run-1", {} as Page, "Teste");
+
+  assert.equal(solved, false);
+  assert.equal(loads, 5);
+  assert.ok(messages.some((message) => /inference failed/.test(message)));
+  assert.equal(messages.some((message) => /Resposta nine rejeitada/.test(message)), false);
 });
 
 test("Geetest runtime searches for nine from a captured GeeTest request", async () => {
