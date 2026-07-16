@@ -142,7 +142,7 @@ test("reservePixPhoneKey returns undefined when no user-provided keys are availa
     color: "#d6d6d6"
   });
 
-  const reserved = db.reservePixPhoneKey(profile.id);
+  const reserved = db.reservePixPhoneKey(profile.id, "run-empty");
   assert.equal(reserved, undefined);
 });
 
@@ -160,14 +160,283 @@ test("reservePixPhoneKey returns a user-provided key when the pool has one and m
   assert.equal(imported.created.length, 1);
   assert.equal(imported.invalid.length, 0);
 
-  const reserved = db.reservePixPhoneKey(profile.id);
+  const reserved = db.reservePixPhoneKey(profile.id, "run-first");
   assert.ok(reserved);
   assert.equal(reserved.status, "reserved");
   assert.equal(reserved.phoneNumber, "11988887777");
   assert.equal(reserved.assignedProfileId, profile.id);
 
-  const second = db.reservePixPhoneKey(profile.id);
-  assert.equal(second, undefined);
+  const second = db.reservePixPhoneKey(profile.id, "run-first");
+  assert.ok(second);
+  assert.equal(second.id, reserved.id);
+});
+
+test("reabrir o banco libera uma reserva PIX vinculada a uma execucao interrompida", () => {
+  const paths = createPaths();
+  const db = new PredatorDatabase(paths, plainStore);
+  const profile = db.createProfile({
+    name: "Persistent Pix Reservation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  const secondProfile = db.createProfile({
+    name: "Other Pix Reservation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777\n11988886666");
+  const reserved = db.reservePixPhoneKey(profile.id, "run-interrupted");
+  assert.ok(reserved);
+  db.close();
+
+  const reopened = new PredatorDatabase(paths, plainStore);
+  const otherReservation = reopened.reservePixPhoneKey(secondProfile.id, "run-next");
+  assert.ok(otherReservation);
+  assert.equal(otherReservation.id, reserved.id);
+  const resumed = reopened.reservePixPhoneKey(profile.id, "run-resumed");
+
+  assert.ok(resumed);
+  assert.notEqual(resumed.id, reserved.id);
+  assert.equal(resumed.status, "reserved");
+  assert.equal(resumed.assignedProfileId, profile.id);
+  reopened.close();
+});
+
+test("PIX key releases a run-scoped reservation after an unsubmitted failure", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Released Pix Reservation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777");
+
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.equal(key?.status, "reserved");
+  db.releasePixPhoneKeyReservation(key!.id, "run-other");
+  assert.equal(db.listPixPhoneKeys().find((candidate) => candidate.id === key!.id)?.status, "reserved");
+  db.releasePixPhoneKeyReservation(key!.id, "run-a");
+
+  assert.equal(db.listPixPhoneKeys().find((candidate) => candidate.id === key!.id)?.status, "available");
+});
+
+test("PIX key survives an ambiguous final click as pending and leaves the stock only after confirmation", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Pending Pix Confirmation",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777");
+
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+  assert.equal(db.findPendingPixPhoneKey(profile.id)?.status, "pending_confirmation");
+  assert.equal(db.confirmPixPhoneKeyRegistration(key.id, { profileId: profile.id, origin: "Telefone" }), true);
+  assert.equal(db.listPixPhoneKeys().find((candidate) => candidate.id === key.id), undefined);
+  assert.equal(db.getOrCreateProfileAccount(profile.id).pixPhoneKey, "11988887777");
+});
+
+test("confirma chave PIX no perfil e a remove do estoque", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Confirmed Pix Profile",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("41980042690");
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+
+  assert.equal(
+    db.confirmPixPhoneKeyRegistration(key.id, { profileId: profile.id, origin: "Telefone" }),
+    true
+  );
+  assert.equal(db.getOrCreateProfileAccount(profile.id).pixPhoneKey, "41980042690");
+  assert.equal(db.listPixPhoneKeys().some((candidate) => candidate.id === key.id), false);
+});
+
+test("marca uma chave PIX pendente como recusada sem vincula-la ao perfil", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Rejected Pix Key",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("41980042690");
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+
+  assert.equal(
+    db.rejectPixPhoneKey(key.id, {
+      profileId: profile.id,
+      reason: "withdrawal-account-already-linked"
+    }),
+    true
+  );
+
+  const rejected = db.getPixPhoneKey(key.id);
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.pendingProfileId, undefined);
+  assert.equal(rejected.rejectionReason, "withdrawal-account-already-linked");
+  assert.ok(rejected.rejectedAt);
+  assert.equal(db.getOrCreateProfileAccount(profile.id).pixPhoneKey, undefined);
+  assert.equal(db.reservePixPhoneKey(profile.id, "run-b"), undefined);
+  assert.throws(() => db.updatePixPhoneKeyPhoneNumber(key.id, "11988887777"), /disponiveis/);
+
+  db.deletePixPhoneKey(key.id);
+  assert.equal(db.listPixPhoneKeys().some((candidate) => candidate.id === key.id), false);
+});
+
+test("nao consome chave PIX pendente de outro perfil", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const owner = db.createProfile({
+    name: "Pix Key Owner",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  const other = db.createProfile({
+    name: "Other Pix Profile",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("41980042690");
+  const key = db.reservePixPhoneKey(owner.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: owner.id, runId: "run-a" }), true);
+
+  assert.equal(
+    db.confirmPixPhoneKeyRegistration(key.id, { profileId: other.id, origin: "Telefone" }),
+    false
+  );
+  assert.equal(db.findPendingPixPhoneKey(owner.id)?.id, key.id);
+  assert.equal(db.getOrCreateProfileAccount(other.id).pixPhoneKey, undefined);
+});
+
+test("migra chave PIX usada para o perfil e remove a linha legada", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Legacy Pix Profile",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("41980042690");
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+  const raw = (db as unknown as { db: DatabaseSync }).db;
+  raw.prepare(`
+    UPDATE pix_phone_keys
+    SET status = 'used', pending_profile_id = NULL, used_profile_id = ?, used_at = ?
+    WHERE id = ?
+  `).run(profile.id, new Date().toISOString(), key.id);
+
+  assert.equal(db.migrateLegacyUsedPixPhoneKeys(), 1);
+  assert.equal(db.getOrCreateProfileAccount(profile.id).pixPhoneKey, "41980042690");
+  assert.equal(db.listPixPhoneKeys().some((candidate) => candidate.id === key.id), false);
+});
+
+test("recovery releases only inactive reserved PIX keys and keeps pending keys", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Pix Recovery",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  const pendingProfile = db.createProfile({
+    name: "Pending Pix Recovery",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777\n11988886666");
+
+  const reserved = db.reservePixPhoneKey(profile.id, "run-reserved");
+  assert.ok(reserved);
+  const pending = db.reservePixPhoneKey(pendingProfile.id, "run-pending");
+  assert.ok(pending);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(pending.id, { profileId: pendingProfile.id, runId: "run-pending" }), true);
+
+  db.recoverInactivePixPhoneKeyReservations([]);
+
+  const records = db.listPixPhoneKeys();
+  assert.equal(records.find((candidate) => candidate.id === reserved.id)?.status, "available");
+  assert.equal(records.find((candidate) => candidate.id === pending.id)?.status, "pending_confirmation");
+});
+
+test("reimporting a confirmed PIX key creates a new available stock entry", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Used Pix Audit",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  db.addPixPhoneKeys("11988887777");
+  const key = db.reservePixPhoneKey(profile.id, "run-a");
+  assert.ok(key);
+  assert.equal(db.markPixPhoneKeyPendingConfirmation(key.id, { profileId: profile.id, runId: "run-a" }), true);
+  assert.equal(db.confirmPixPhoneKeyRegistration(key.id, { profileId: profile.id, origin: "Telefone" }), true);
+
+  const imported = db.addPixPhoneKeys("11988887777");
+
+  assert.equal(imported.created.length, 1);
+  assert.equal(imported.skipped.length, 0);
+  assert.equal(db.listPixPhoneKeys()[0]?.status, "available");
+});
+
+test("ensureProfileWithdrawalPassword reuses a persisted password containing zero", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Recovery-safe password",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+
+  db.setProfileWithdrawalPassword(profile.id, "102345");
+
+  assert.equal(db.ensureProfileWithdrawalPassword(profile.id), "102345");
+});
+
+test("getPersistedProfileWithdrawalPassword nao gera senha quando ela esta ausente", () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Missing persisted withdrawal password",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+
+  assert.equal(db.getPersistedProfileWithdrawalPassword(profile.id), undefined);
+  assert.equal(db.getPersistedProfileWithdrawalPassword(profile.id), undefined);
 });
 
 test("createProxy round-trips mode and usernameSuffixTemplate", () => {

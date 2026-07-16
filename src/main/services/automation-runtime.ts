@@ -8,7 +8,6 @@ import type {
   ManualDepositControlResult,
   PixKeyRegistrationControlResult,
   PixRegistrationType,
-  PixPhoneKeyRecord,
   ProfileSummary,
   RuntimeEvent,
   WithdrawalPreparationControlResult,
@@ -33,6 +32,7 @@ import type { GeetestCaptchaData, GeetestNineClient, GeetestSolution } from "./g
 import { GeetestClient } from "./captcha/geetest-client.js";
 import { warmNineMatchClassifier } from "./captcha/onnx-session.js";
 import type { GeetestChallengeData } from "./captcha/signer.js";
+import { AsyncSemaphore } from "./async-semaphore.js";
 import {
   resolveRemoteActionTimeoutMs,
   resolveRemoteNavigationTimeoutMs,
@@ -45,15 +45,33 @@ import type { LicenseService } from "./license-service.js";
 import {
   detectPlatformDescriptor,
   describeSpaState,
-  hasSpaRouter,
   waitForSpaRouter,
   programmaticDeposit,
   programmaticPixUiAction,
+  programmaticWithdrawalManagementAction,
+  buildPixReceivingAccountTarget,
+  getCurrentRoute,
   resolvePlatformDescriptor,
   resolveRouteTarget,
   routerPush,
 } from "./spa-navigation.js";
-import type { PlatformDescriptor, SpaHandle } from "./spa-navigation.js";
+import type { PlatformDescriptor } from "./spa-navigation.js";
+import {
+  confirmAndVerifyWithdrawalPasswordSetup,
+  fillExistingWithdrawalPassword,
+  fillWithdrawalPasswordSetup,
+} from "./withdrawal-password-setup.js";
+import { programmaticPixAddAction } from "./pix-add-action.js";
+import { waitForUniqueWithdrawalPasswordModalSurface } from "./withdrawal-password-modal-context.js";
+import {
+  confirmExistingWithdrawalPassword,
+  formatPixAddFormDiagnostics,
+  waitForPixAddForm,
+} from "./pix-password-confirmation.js";
+import { fillPixPhoneAddForm } from "./pix-add-form-fill.js";
+import { confirmPixPhoneSubmission, inspectPixReceivingAccounts } from "./pix-phone-key-confirmation.js";
+import { retryRejectedPixPhoneKeys } from "./pix-phone-key-retry.js";
+import { decidePixPhonePreflight } from "./pix-phone-key-lifecycle.js";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -71,23 +89,24 @@ import {
   detectLoginErrorMessage,
   detectRegistrationErrorMessage,
   hasWithdrawalPasswordSetupSurface,
-  hasWithdrawalPasswordRequiredCallToAction,
   hasExistingWithdrawalPasswordModal,
+  hasWithdrawalPasswordRequiredCallToAction,
   hasVisibleNumberKeyboard,
   detectRegistrationUiFamily,
+  decideRegistrationCompletion,
   isDetachedDepositRouteState,
 } from "./screen-detection.js";
 import {
   waitForLoginSuccess,
-  waitForWithdrawalPasswordSetupToClose,
   waitForWithdrawalOrPasswordSignal,
-  waitForWithdrawalAccountSurface,
   waitForWithdrawalRequestSurface,
-  waitForAddPixModal,
-  waitForPixRegistrationSaved,
   waitForVisibleNumberKeyboard,
   waitForDepositSurface,
   waitForProfileSurface,
+  waitForWithdrawalManagementDestination,
+  waitForWithdrawalPasswordConfirmationDestination,
+  waitForPixReceivingAccountSurface,
+  waitForExistingWithdrawalPasswordModal,
 } from "./screen-waits.js";
 import {
   extractQrCode,
@@ -136,7 +155,128 @@ type RemoteSecretRef = Extract<
 const LOGIN_WORKFLOW_ID = "login";
 const POST_REGISTRATION_DEPOSIT_WORKFLOW_ID = "post-registration-deposit";
 const MANUAL_DEPOSIT_WORKFLOW_ID = "manual-deposit";
-const PIX_PHONE_REGISTRATION_WORKFLOW_ID = "pix-phone-registration";
+
+// Etapas do cadastro PIX PHONE. Uma falha carrega a etapa onde ocorreu para que o
+// log da rotina/suporte veja um motivo acionavel em vez de um texto solto.
+export type PixRegistrationStep =
+  | "router"
+  | "withdrawalPassword"
+  | "receivingTab"
+  | "openModal"
+  | "selectPhone"
+  | "fillForm"
+  | "submit"
+  | "confirm"
+  | "persistenceCheck";
+
+export class PixRegistrationError extends Error {
+  constructor(
+    readonly step: PixRegistrationStep,
+    readonly reason: string,
+    readonly diag?: string,
+    readonly code = step,
+  ) {
+    super(`[pix:${step}] ${reason}`);
+    this.name = "PixRegistrationError";
+  }
+}
+
+// Multiplicador unico para os deadlines do caminho critico do PIX. Em maquinas de
+// clientes muito lentas, exportar SPIDERBOT_PIX_SLOWNESS=1.5/2 estica todos os prazos
+// de uma vez sem tocar cada literal. Padrao 1 = comportamento identico ao anterior.
+const PIX_SLOWNESS = (() => {
+  const parsed = Number(process.env.SPIDERBOT_PIX_SLOWNESS);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 6 ? parsed : 1;
+})();
+const PIX_MS = (base: number): number => Math.round(base * PIX_SLOWNESS);
+
+// Decide qual prompt de senha de saque tratar quando ambos/nenhum podem estar na tela.
+// ENTRAR (modal existente) tem prioridade sobre DEFINIR: o modal "Inserir PIN" e
+// inequivoco, enquanto a heuristica de DEFINIR ja deu falso-positivo somando o campo
+// inline da tela de saque com o do modal. Funcao pura -> testavel sem browser.
+export function classifyWithdrawalPasswordPrompt(input: {
+  hasEnterModal: boolean;
+  hasSetupSurface: boolean;
+}): "enter" | "setup" | "done" {
+  if (input.hasEnterModal) return "enter";
+  if (input.hasSetupSurface) return "setup";
+  return "done";
+}
+
+export interface PixFormInputDescriptor {
+  index: number;
+  placeholder: string;
+  name: string;
+  id: string;
+  className: string;
+  precedesSelector: boolean;
+  followsSelector: boolean;
+  writable: boolean;
+  hasSelector: boolean;
+}
+
+// Resolve quais inputs sao nome / chave PIX / CPF a partir dos metadados coletados na
+// pagina. Estrutura comum das skins Pinia: nome ANTES do seletor `.ui-popover__wrapper`;
+// chave PIX e CPF, nessa ordem, DEPOIS dele. Placeholders/name/id entram so como fallback
+// (variam por traducao e skin). Puro -> testavel com descritores fake.
+export function resolvePixFormFieldRoles(descriptors: PixFormInputDescriptor[]): {
+  nameIndex?: number;
+  pixIndex?: number;
+  cpfIndex?: number;
+} {
+  const normalize = (value: string) =>
+    (value || "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const attrs = (d: PixFormInputDescriptor) =>
+    normalize(`${d.placeholder} ${d.name} ${d.id} ${d.className}`);
+  const writable = descriptors.filter((d) => d.writable);
+  const hasSelector = descriptors.some((d) => d.hasSelector);
+  const beforeSelector = hasSelector
+    ? descriptors.filter((d) => d.precedesSelector)
+    : [];
+  const afterWritable = hasSelector
+    ? descriptors.filter((d) => d.followsSelector && d.writable)
+    : [];
+
+  const nameInput =
+    beforeSelector.at(-1) ??
+    writable.find((d) => /nome|name|titular|beneficiario/.test(attrs(d)));
+  const pixInput =
+    afterWritable[0] ?? writable.find((d) => /chave do pix|pix/.test(attrs(d)));
+  const cpfInput =
+    afterWritable[1] ??
+    writable.find((d) => d !== pixInput && /cpf|11 digitos/.test(attrs(d)));
+
+  return {
+    nameIndex: nameInput?.index,
+    pixIndex: pixInput?.index,
+    cpfIndex: cpfInput?.index,
+  };
+}
+
+// Payload/retorno da etapa de preenchimento do form PIX (avaliada na pagina em 2 fases).
+type PixFormFillPayload =
+  | { mode: "gather" }
+  | {
+      mode: "set";
+      roles: { nameIndex?: number; pixIndex?: number; cpfIndex?: number };
+      pixPhone: string;
+      cpfValue: string;
+      realNameValue: string;
+    };
+
+interface PixFormStepResult {
+  phase: "gather" | "set" | "error";
+  descriptors: PixFormInputDescriptor[];
+  pix: boolean;
+  cpf: boolean;
+  nameFilled: boolean;
+  debug: unknown;
+}
 
 interface RemoteExecutionContext {
   depositAmount?: string;
@@ -161,6 +301,12 @@ interface CaptchaChallengeInfo {
 interface ManualCaptchaOptions {
   appearanceTimeoutMs?: number;
   solvedTimeoutMs?: number;
+}
+
+interface RegistrationCompletionOutcome {
+  registered: boolean;
+  via: string;
+  reason?: string;
 }
 
 interface GeetestBridgeResult {
@@ -521,21 +667,16 @@ export class AutomationRuntimeService {
       );
     }
 
-    const availablePixKeyCount = this.database.listPixPhoneKeys().length;
-    if (availablePixKeyCount < uniqueProfileIds.length) {
-      throw new Error(
-        `Voce selecionou ${uniqueProfileIds.length} perfil(is), mas ha apenas ${availablePixKeyCount} chave(s) PIX telefone disponiveis.`,
-      );
-    }
-
+    const semaphore = new AsyncSemaphore(2);
     const settled = await Promise.allSettled(
-      uniqueProfileIds.map((profileId) =>
-        this.runManualPixKeyRegistrationForProfile(
-          profileId,
-          pixType,
-          settings,
-        ),
-      ),
+      uniqueProfileIds.map(async (profileId) => {
+        const release = await semaphore.acquire();
+        try {
+          return await this.runPixWithdrawalEntryForProfile(profileId, pixType, settings);
+        } finally {
+          release();
+        }
+      }),
     );
 
     return settled.map((result, index) => {
@@ -710,7 +851,7 @@ export class AutomationRuntimeService {
     }
   }
 
-  private async runManualPixKeyRegistrationForProfile(
+  private async runPixWithdrawalEntryForProfile(
     profileId: string,
     pixType: PixRegistrationType,
     settings: AppSettings,
@@ -723,32 +864,14 @@ export class AutomationRuntimeService {
     this.activeProfileIds.add(profile.id);
     const automation = this.database.getSystemAutomationForProfile(profile.id);
     const run = this.database.createRun(automation.id, profile.id);
-    let session:
-      | Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>>
-      | undefined;
-
-    this.database.updateProfileStatus(profile.id, "running-automation");
-    this.log(
-      run.id,
-      "info",
-      `[${profile.name}] Cadastro PIX ${pixType} iniciado.`,
-    );
-
-    let reservedPixKey: PixPhoneKeyRecord | undefined;
-    let pixKeyConsumed = false;
+    let session: Awaited<ReturnType<BrowserRuntimeService["getAutomationSession"]>> | undefined;
+    let step: PixKeyRegistrationControlResult["step"] = "profile";
+    let reservedPhoneKeyId: string | undefined;
 
     try {
-      reservedPixKey = this.database.reservePixPhoneKey(profile.id);
-      if (!reservedPixKey) {
-        throw new Error(
-          "Nenhuma chave PIX telefone disponivel no estoque. Cadastre chaves PIX telefone e tente novamente.",
-        );
-      }
-      session = await this.browserRuntime.getAutomationSession(
-        profile,
-        settings,
-      );
-      await this.browserRuntime.setPageAutoClosePopups(session.page, true);
+      this.database.updateProfileStatus(profile.id, "running-automation");
+      this.log(run.id, "info", `[${profile.name}] Preparando entrada do cadastro PIX.`);
+      session = await this.browserRuntime.getAutomationSession(profile, settings);
       this.activeRuns.set(run.id, {
         run,
         cancelRequested: false,
@@ -756,107 +879,288 @@ export class AutomationRuntimeService {
           await session?.page.keyboard.press("Escape").catch(() => null);
         },
       });
-
       await this.ensureLoggedIn(run.id, profile, session.page);
-      await this.executePixKeyRegistration(
-        run.id,
-        profile,
+
+      const spa = resolveContentFrame(session.page);
+      if (!(await waitForSpaRouter(spa, PIX_MS(8000)))) {
+        throw new Error(`router ausente (${await describeSpaState(spa)})`);
+      }
+      const descriptor = await detectPlatformDescriptor(spa, profile.homeUrl) ?? resolvePlatformDescriptor(profile.homeUrl);
+      const profileTarget = await resolveRouteTarget(spa, "profile", descriptor);
+      if (!profileTarget || !(await routerPush(spa, profileTarget))) {
+        throw new Error(`rota de perfil indisponivel (${await describeSpaState(spa)})`);
+      }
+      if (!(await waitForProfileSurface(session.page, PIX_MS(10000)))) {
+        throw new Error(`superficie de perfil nao confirmada (${await describeSpaState(spa)})`);
+      }
+
+      step = "withdrawal-management";
+      let management = await programmaticWithdrawalManagementAction(spa);
+      const managementDeadline = Date.now() + PIX_MS(8000);
+      while (
+        !management.ok &&
+        management.reason === "management-action-absent" &&
+        Date.now() < managementDeadline
+      ) {
+        await session.page.waitForTimeout(200).catch(() => undefined);
+        management = await programmaticWithdrawalManagementAction(spa);
+      }
+      if (!management.ok) {
+        throw new Error(`gestao de saques indisponivel: ${management.reason ?? "desconhecido"} (${management.diag ?? "sem diagnostico"})`);
+      }
+      const entryDestination = await waitForWithdrawalManagementDestination(session.page, PIX_MS(12000));
+      if (entryDestination === "unknown") {
+        throw new Error(`destino de saque nao confirmado (${await describeSpaState(spa)})`);
+      }
+      let resultStatus: PixKeyRegistrationControlResult["status"] = entryDestination;
+      if (resultStatus === "needs_withdrawal_password") {
+        step = "withdrawal-password";
+        const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(profile.id);
+        const checkpoint = async (passwordStage: "reserved" | "first-field-filled" | "second-field-filled" | "confirmed") => {
+          this.database.updateRun(run.id, {
+            metrics: { manual: true, pixType, pixWithdrawalEntry: entryDestination, pixWithdrawalPasswordStage: passwordStage }
+          });
+        };
+        await checkpoint("reserved");
+        const filled = await fillWithdrawalPasswordSetup(spa, withdrawalPassword, checkpoint);
+        if (!filled.ok || !filled.firstFieldFilled || !filled.secondFieldFilled) {
+          throw new Error(`senha de saque nao confirmou preenchimento (${filled.reason ?? "desconhecido"}${filled.diag ? `; ${filled.diag}` : ""})`);
+        }
+        step = "withdrawal-password-confirmation";
+        const confirmationPage = session.page;
+        const confirmation = await confirmAndVerifyWithdrawalPasswordSetup(
+          spa,
+          () => waitForWithdrawalPasswordConfirmationDestination(confirmationPage, PIX_MS(12000)),
+        );
+        if (!confirmation.ok) {
+          throw new Error(`senha de saque nao confirmou cadastro (${confirmation.reason ?? "desconhecido"}${confirmation.diag ? `; ${confirmation.diag}` : ""})`);
+        }
+        await checkpoint("confirmed");
+        resultStatus = "withdrawal_ready";
+      }
+
+      step = "pix-receiving-account";
+      const withdrawalRoute = await getCurrentRoute(spa);
+      const receivingTarget = withdrawalRoute && buildPixReceivingAccountTarget(withdrawalRoute);
+      if (!receivingTarget || !(await routerPush(spa, receivingTarget))) {
+        throw new Error(`rota de recebimento PIX indisponivel (${await describeSpaState(spa)})`);
+      }
+      const receiving = await waitForPixReceivingAccountSurface(
         session.page,
-        pixType,
-        reservedPixKey.phoneNumber,
+        () => getCurrentRoute(spa),
+        PIX_MS(12000),
       );
-
-      if (reservedPixKey && !pixKeyConsumed) {
-        this.database.getOrCreateProfileAccount(profile.id);
-        this.database.updateProfileAccountPhoneNumber(
-          profile.id,
-          reservedPixKey.phoneNumber,
-        );
-        this.database.deletePixPhoneKey(reservedPixKey.id);
-        pixKeyConsumed = true;
-        void this.browserRuntime.refreshAccountInfoForProfile(
-          profile.id,
-          this.database.getProfile(profile.id),
+      if (!receiving.ready) {
+        throw new Error(
+          `conta para recebimento PIX nao confirmada (active10=${receiving.routeActive10}; receivingArea=${receiving.hasReceivingAccountArea}; pixAddAction=${receiving.hasPixAddAction}; ${await describeSpaState(spa)})`,
         );
       }
+      resultStatus = "pix_receiving_ready";
 
-      const finalRun = this.database.updateRun(run.id, {
+      step = "pix-preflight";
+      const pendingPhoneKey = this.database.findPendingPixPhoneKey(profile.id);
+      const persistedPhoneNumber = this.database.getOrCreateProfileAccount(profile.id).pixPhoneKey;
+      const accountSnapshot = await inspectPixReceivingAccounts(spa);
+      const preflight = decidePixPhonePreflight({
+        persistedPhoneNumber,
+        pendingKeyId: pendingPhoneKey?.id,
+        phoneNumber: pendingPhoneKey?.phoneNumber,
+        accounts: accountSnapshot.accounts,
+      });
+      if (preflight === "manual-account") {
+        resultStatus = "pix_already_registered";
+        this.database.updateRun(run.id, {
+          status: "succeeded",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "warning", `[${profile.name}] Cadastro PIX ignorado: a plataforma ja possui uma conta para recebimento.`);
+        return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
+      }
+      if (preflight === "profile-used") {
+        resultStatus = "pix_key_registered";
+        this.database.updateRun(run.id, {
+          status: "succeeded",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "success", `[${profile.name}] Chave PIX persistida confirmada pela conta de recebimento.`);
+        return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
+      }
+      if (preflight === "pending-used") {
+        if (!pendingPhoneKey || !this.database.confirmPixPhoneKeyRegistration(pendingPhoneKey.id, { profileId: profile.id, origin: pixType })) {
+          throw new Error("nao foi possivel confirmar a chave PIX pendente como cadastrada");
+        }
+        resultStatus = "pix_key_registered";
+        this.database.updateRun(run.id, {
+          status: "succeeded",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "success", `[${profile.name}] Chave PIX pendente confirmada pela conta de recebimento.`);
+        return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
+      }
+      if (preflight === "conflict" || preflight === "insufficient-evidence") {
+        resultStatus = "pix_key_conflict";
+        this.database.updateRun(run.id, {
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        this.log(run.id, "error", `[${profile.name}] Chave PIX pendente requer revisao (${preflight}).`);
+        return { error: preflight, pixType, profileId: profile.id, profileName: profile.name, status: resultStatus, step };
+      }
+      const initialPhoneKey = pendingPhoneKey ?? this.database.reservePixPhoneKey(profile.id, run.id);
+      if (!initialPhoneKey) {
+        throw new Error("chave PIX PHONE disponivel ausente para este perfil");
+      }
+      if (initialPhoneKey.status === "reserved") {
+        reservedPhoneKeyId = initialPhoneKey.id;
+      }
+
+      step = "pix-add-password";
+      if (!(await hasExistingWithdrawalPasswordModal(session.page))) {
+        const opened = await programmaticPixAddAction(spa);
+        if (!opened.actionAttempted) {
+          throw new Error(
+            `acao PIX adicionar indisponivel (${opened.reason ?? "desconhecido"}; ${opened.diag ?? "sem diagnostico"})`,
+          );
+        }
+      }
+      if (!(await waitForExistingWithdrawalPasswordModal(session.page, PIX_MS(12000)))) {
+        throw new Error(`prompt de senha de saque nao confirmado (${await describeSpaState(spa)})`);
+      }
+      step = "pix-enter-password";
+      const withdrawalPassword = this.database.getPersistedProfileWithdrawalPassword(profile.id);
+      if (!withdrawalPassword) {
+        throw new Error("senha de saque reservada ausente");
+      }
+      const modalSurface = await waitForUniqueWithdrawalPasswordModalSurface(
+        session.page,
+        PIX_MS(4000),
+      );
+      if (!modalSurface.ok) {
+        throw new Error(`contexto do modal de senha indisponivel (${modalSurface.reason}; ${modalSurface.diag})`);
+      }
+      const entered = await fillExistingWithdrawalPassword(modalSurface.surface, withdrawalPassword);
+      if (!entered.ok || !entered.passwordEntered) {
+        throw new Error(`senha de saque nao confirmou preenchimento (${entered.reason ?? "desconhecido"}${entered.diag ? `; ${entered.diag}` : ""})`);
+      }
+      step = "pix-password-confirmation";
+      const confirmation = await confirmExistingWithdrawalPassword(modalSurface.surface);
+      if (!confirmation.actionAttempted) {
+        throw new Error(
+          `confirmacao da senha de saque indisponivel (${confirmation.reason ?? "desconhecido"}${confirmation.diag ? `; ${confirmation.diag}` : ""})`,
+        );
+      }
+      const pixAddForm = await waitForPixAddForm(modalSurface.surface, PIX_MS(12000));
+      if (!pixAddForm.ready) {
+        throw new Error(
+          `formulario PIX nao confirmado (clickRejected=${confirmation.clickRejected}; ${formatPixAddFormDiagnostics(pixAddForm)})`,
+        );
+      }
+      resultStatus = "pix_add_form_ready";
+
+      const account = this.database.getOrCreateProfileAccount(profile.id);
+      const cpf = this.database.resolveCpfForProfile(profile.id);
+      let submissionReason: string | undefined;
+      const retriedSubmission = await retryRejectedPixPhoneKeys(
+        initialPhoneKey,
+        async (phoneKey) => {
+          step = "pix-add-form-fill";
+          const formFill = await fillPixPhoneAddForm(spa, {
+            realName: account.realName,
+            phoneNumber: phoneKey.phoneNumber,
+            cpf,
+          });
+          if (!formFill.ok) {
+            throw new Error(
+              `formulario PIX nao confirmou preenchimento (${formFill.reason ?? "desconhecido"}${formFill.diag ? `; ${formFill.diag}` : ""})`,
+            );
+          }
+          resultStatus = "pix_add_form_filled";
+
+          if (phoneKey.status === "reserved") {
+            if (!this.database.markPixPhoneKeyPendingConfirmation(phoneKey.id, { profileId: profile.id, runId: run.id })) {
+              throw new Error("nao foi possivel proteger a chave PIX antes da confirmacao");
+            }
+            reservedPhoneKeyId = undefined;
+          }
+          step = "pix-submit";
+          const submission = await confirmPixPhoneSubmission(spa, phoneKey.phoneNumber, PIX_MS(12000));
+          step = "pix-submission-confirmation";
+          submissionReason = submission.reason;
+          if (submission.result === "confirmed") {
+            if (!this.database.confirmPixPhoneKeyRegistration(phoneKey.id, { profileId: profile.id, origin: pixType })) {
+              throw new Error("a chave PIX foi listada, mas nao foi possivel registra-la como cadastrada");
+            }
+            return "confirmed";
+          }
+          if (submission.result === "rejected") {
+            if (submission.reason !== "withdrawal-account-already-linked") {
+              throw new Error("recusa PIX sem motivo reconhecido");
+            }
+            if (!this.database.rejectPixPhoneKey(phoneKey.id, { profileId: profile.id, reason: submission.reason })) {
+              throw new Error("nao foi possivel marcar a chave PIX como recusada");
+            }
+            this.log(run.id, "warning", `[${profile.name}] Chave PIX recusada pela plataforma; tentando a proxima chave.`);
+            return "rejected";
+          }
+          return submission.result === "conflict" ? "conflict" : "pending";
+        },
+        () => {
+          const next = this.database.reservePixPhoneKey(profile.id, run.id);
+          if (next) {
+            reservedPhoneKeyId = next.id;
+          }
+          return next;
+        },
+      );
+      if (retriedSubmission.result === "confirmed") {
+        resultStatus = "pix_key_registered";
+      } else if (retriedSubmission.result === "conflict") {
+        resultStatus = "pix_key_conflict";
+      } else if (retriedSubmission.result === "pending") {
+        resultStatus = "pix_key_pending_confirmation";
+      } else {
+        resultStatus = "pix_key_conflict";
+        submissionReason = "pix-keys-exhausted-after-rejection";
+      }
+
+      if (resultStatus === "pix_key_conflict" || resultStatus === "pix_key_pending_confirmation") {
+        this.database.updateRun(run.id, {
+          status: "failed",
+          finishedAt: new Date().toISOString(),
+          metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
+        });
+        this.database.updateProfileStatus(profile.id, "active");
+        const reason = submissionReason ?? "confirmacao-inconclusiva";
+        this.log(run.id, "error", `[${profile.name}] Cadastro PIX requer revisao (${resultStatus}; ${reason}).`);
+        return { error: reason, pixType, profileId: profile.id, profileName: profile.name, status: resultStatus, step };
+      }
+
+      this.database.updateRun(run.id, {
         status: "succeeded",
         finishedAt: new Date().toISOString(),
-        metrics: {
-          manual: true,
-          pixType,
-          durationMs: Date.now() - new Date(run.startedAt).getTime(),
-        },
+        metrics: { manual: true, pixType, pixWithdrawalEntry: resultStatus, durationMs: Date.now() - new Date(run.startedAt).getTime() },
       });
       this.database.updateProfileStatus(profile.id, "active");
-      this.database.logActivity({
-        id: crypto.randomUUID(),
-        scope: "automation",
-        scopeId: automation.id,
-        level: "success",
-        message: `[${profile.name}] Chave PIX ${pixType} cadastrada.`,
-        details: {
-          runId: finalRun.id,
-        },
-        createdAt: new Date().toISOString(),
-      });
-
-      return {
-        pixType,
-        profileId: profile.id,
-        profileName: profile.name,
-        status: "succeeded",
-      };
+      this.log(run.id, "success", `[${profile.name}] Formulario PIX preenchido: ${resultStatus}.`);
+      return { pixType, profileId: profile.id, profileName: profile.name, status: resultStatus };
     } catch (error) {
-      if (reservedPixKey && !pixKeyConsumed) {
-        this.database.releasePixPhoneKeyReservation(reservedPixKey.id);
+      if (reservedPhoneKeyId) {
+        this.database.releasePixPhoneKeyReservation(reservedPhoneKeyId, run.id);
       }
-      const failedRun = this.database.updateRun(run.id, {
-        status: this.activeRuns.get(run.id)?.cancelRequested
-          ? "cancelled"
-          : "failed",
-        finishedAt: new Date().toISOString(),
-        metrics: {
-          manual: true,
-          pixType,
-          durationMs: Date.now() - new Date(run.startedAt).getTime(),
-        },
-      });
+      const message = error instanceof Error ? error.message : "erro inesperado";
+      this.database.updateRun(run.id, { status: "failed", finishedAt: new Date().toISOString(), metrics: { manual: true, pixType, pixWithdrawalEntry: "failed", durationMs: Date.now() - new Date(run.startedAt).getTime() } });
       this.database.updateProfileStatus(profile.id, "active");
-      const message =
-        error instanceof Error ? error.message : "erro inesperado";
-      this.log(
-        run.id,
-        "error",
-        `[${profile.name}] Cadastro PIX falhou: ${message}`,
-      );
-      this.database.logActivity({
-        id: crypto.randomUUID(),
-        scope: "automation",
-        scopeId: automation.id,
-        level: "error",
-        message: `[${profile.name}] Cadastro PIX falhou.`,
-        details: {
-          runId: failedRun.id,
-        },
-        createdAt: new Date().toISOString(),
-      });
-
-      return {
-        error: message,
-        pixType,
-        profileId: profile.id,
-        profileName: profile.name,
-        status: "failed",
-      };
+      this.log(run.id, "error", `[${profile.name}] Preparacao PIX falhou na etapa ${step}: ${message}`);
+      return { error: message, pixType, profileId: profile.id, profileName: profile.name, status: "failed", step };
     } finally {
-      if (session) {
-        await this.browserRuntime.setPageAutoClosePopups(
-          session.page,
-          undefined,
-        );
-      }
       await session?.release();
       this.activeRuns.delete(run.id);
       this.activeProfileIds.delete(profile.id);
@@ -1569,17 +1873,9 @@ export class AutomationRuntimeService {
       return;
     }
     if (primitive === "pixPhoneRegistrationFlow") {
-      if (context.pixType !== "PHONE" || !context.pixPhoneNumber) {
-        throw new Error("Contexto PIX PHONE ausente para workflow remoto.");
-      }
-      await this.executeProgrammaticPixKeyRegistration(
-        runId,
-        profile,
-        page,
-        context.pixType,
-        context.pixPhoneNumber,
+      throw new Error(
+        "O workflow remoto de cadastro PIX foi removido. Use a preparacao de entrada PIX.",
       );
-      return;
     }
     if (primitive === "withdrawalPreparationFlow") {
       await this.executeLocalWithdrawalPreparation(runId, profile, page);
@@ -2450,15 +2746,20 @@ export class AutomationRuntimeService {
         const initialOutcome = await this.waitForRegistrationOrCaptcha(
           runId,
           page,
-          accountInput,
           profile.name,
           25_000,
         );
         let handledCaptcha = initialOutcome.handledCaptcha;
-        let registered = initialOutcome.registered;
+        let outcome = initialOutcome.outcome;
+        // Confirmacao por SINAL ESTRUTURAL (nao por espera fixa nem pelo simples
+        // "campo de conta sumiu"): so consideramos cadastrada quando a tela de
+        // cadastro realmente saiu (campos de conta/senha ausentes) E a sessao
+        // logada apareceu -- ou, sem sessao explicita, o formulario ficou ausente
+        // de forma estavel. Erro da plataforma encerra na hora.
 
         if (
-          !registered &&
+          !outcome.registered &&
+          outcome.via !== "erro-plataforma" &&
           handledCaptcha &&
           (await submitButton.isVisible().catch(() => false))
         ) {
@@ -2472,21 +2773,30 @@ export class AutomationRuntimeService {
               appearanceTimeoutMs: 1800,
             },
           );
-          registered = await accountInput
-            .waitFor({ state: "hidden", timeout: 20000 })
-            .then(() => true)
-            .catch(() => false);
+          outcome = await this.confirmRegistrationCompleted(runId, page, {
+            timeoutMs: 20000,
+          });
         }
 
-        if (!registered) {
-          const platformError = await detectRegistrationErrorMessage(page);
-          if (platformError) {
+        if (!outcome.registered) {
+          const reason = outcome.reason || "cadastro nao confirmou apos o envio";
+          // Loga QUAL sinal nao chegou em vez de falhar silenciosamente.
+          this.log(
+            runId,
+            "warning",
+            `[${profile.name}] Cadastro nao confirmado (${outcome.via}): ${reason}`,
+          );
+          if (outcome.via === "erro-plataforma") {
             await this.dismissPlatformErrorDialog(page).catch(() => undefined);
           }
-          throw new Error(
-            platformError || "cadastro nao confirmou apos o envio",
-          );
+          throw new Error(reason);
         }
+
+        this.log(
+          runId,
+          "info",
+          `[${profile.name}] Cadastro confirmado por sinal estrutural (${outcome.via}).`,
+        );
 
         if (registrationContext.registrationPhoneNumber) {
           this.database.updateProfileAccountPhoneNumber(
@@ -2521,7 +2831,13 @@ export class AutomationRuntimeService {
           });
         }
         return;
-      } catch {
+      } catch (error) {
+        // Preserva o motivo REAL ja apurado por confirmRegistrationCompleted (qual
+        // sinal estrutural nao chegou / erro da plataforma) em vez de re-derivar um
+        // motivo generico do texto da pagina. So caimos no scan do corpo quando o
+        // erro nao carrega mensagem util.
+        const thrownReason =
+          error instanceof Error && error.message ? error.message.trim() : "";
         const pageText = await loggedPage
           .locator("body")
           .innerText()
@@ -2539,7 +2855,8 @@ export class AutomationRuntimeService {
           pageText.toLowerCase().includes(snippet.toLowerCase()),
         );
         const reason =
-          knownErrors ??
+          thrownReason ||
+          knownErrors ||
           "Nao foi possivel confirmar o sucesso do cadastro apos o envio do formulario.";
 
         this.database.updateProfileAccountStatus(
@@ -2555,6 +2872,77 @@ export class AutomationRuntimeService {
       this.disposeGeetestInterception(runId);
       this.autoCaptchaSolverRuns.delete(runId);
     }
+  }
+
+  // Confirma a conclusao do cadastro por SINAL ESTRUTURAL, endurecendo o antigo
+  // "assumir cadastrada quando o campo de conta some" -- que dava falso-positivo
+  // em lote/PC lento (a tela re-renderizava e o campo sumia sem o cadastro ter
+  // concluido, marcando a conta como registrada no vazio). Aqui fazemos polling
+  // dos sinais reais e so confirmamos quando o estado esperado aparece:
+  //  - erro da plataforma -> falha imediata com o motivo;
+  //  - campos de conta/senha ainda presentes -> a tela de cadastro nao saiu (pendente);
+  //  - sessao logada visivel -> cadastrada (sinal forte);
+  //  - formulario ausente de forma ESTAVEL, sem erro -> cadastrada (fallback).
+  // No timeout, retorna o motivo dizendo QUAL sinal nao chegou (nunca falha calado).
+  private async confirmRegistrationCompleted(
+    runId: string,
+    page: Page,
+    options: { timeoutMs: number },
+  ): Promise<RegistrationCompletionOutcome> {
+    const startedAt = Date.now();
+    let consecutiveFormAbsences = 0;
+
+    while (Date.now() - startedAt < options.timeoutMs) {
+      this.ensureRunActive(runId);
+
+      const platformError = await detectRegistrationErrorMessage(page).catch(
+        () => undefined,
+      );
+      const registrationFormPresent =
+        (await this.countVisibleRegistrationPasswordInputs(page)) >= 2;
+      consecutiveFormAbsences = registrationFormPresent
+        ? 0
+        : consecutiveFormAbsences + 1;
+      // So pagamos o custo do scan de sessao (varre todos os frames) quando o
+      // formulario ja saiu e nao ha erro -- o caso comum "ainda carregando"
+      // resolve barato com a contagem de campos.
+      const activeSession =
+        !registrationFormPresent && !platformError
+          ? await hasActiveSession(page)
+          : false;
+
+      const decision = decideRegistrationCompletion({
+        platformError: platformError || undefined,
+        registrationFormPresent,
+        activeSession,
+        consecutiveFormAbsences,
+      });
+
+      if (decision.status === "registered") {
+        return { registered: true, via: decision.via };
+      }
+      if (decision.status === "failed") {
+        return {
+          registered: false,
+          via: decision.via,
+          reason: decision.reason,
+        };
+      }
+
+      await page.waitForTimeout(350).catch(() => null);
+    }
+
+    // Teto esgotado: reporta QUAL sinal estrutural nao chegou.
+    const stillPresent =
+      (await this.countVisibleRegistrationPasswordInputs(page).catch(() => 0)) >=
+      2;
+    return {
+      registered: false,
+      via: stillPresent ? "timeout-formulario-presente" : "timeout-sem-sessao",
+      reason: stillPresent
+        ? "cadastro nao confirmou: os campos de conta/senha continuam visiveis apos o envio (a tela de cadastro nao saiu)"
+        : "cadastro nao confirmou: a tela pos-cadastro nao carregou (sem sessao ativa e sem mensagem de erro apos o envio)",
+    };
   }
 
   private async executeManualDeposit(
@@ -3370,546 +3758,7 @@ export class AutomationRuntimeService {
     );
   }
 
-  private async executePixKeyRegistration(
-    runId: string,
-    profile: ProfileSummary,
-    page: Page,
-    pixType: PixRegistrationType,
-    pixPhoneNumber: string,
-  ): Promise<void> {
-    if (this.remoteAutomation) {
-      try {
-        await this.executeRemoteAutomation(
-          runId,
-          PIX_PHONE_REGISTRATION_WORKFLOW_ID,
-          this.database.getSystemAutomationForProfile(profile.id),
-          profile,
-          page,
-          { pixPhoneNumber, pixType },
-        );
-        return;
-      } catch (error) {
-        if (!this.allowLocalAutomationFallback) {
-          throw error;
-        }
-        this.log(
-          runId,
-          "warning",
-          `Workflow remoto de PIX indisponivel em desenvolvimento; usando fluxo router nativo local: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-    await this.executeProgrammaticPixKeyRegistration(
-      runId,
-      profile,
-      page,
-      pixType,
-      pixPhoneNumber,
-    );
-  }
-  // Tail do cadastro de chave PIX: a partir da surface de "conta de
-  // saque" ja visivel, abre "conta para recebimento", lida com o modal de senha
-  // existente (teclado virtual), abre o modal "Adicionar PIX", preenche o form e
-  // confirma. A chegada ate aqui e sempre por router.push.
-  private async completePixReceivingAccountRegistration(
-    runId: string,
-    profile: ProfileSummary,
-    pixPage: Page,
-    pixPhone: string,
-    cpf: string,
-    realName: string,
-  ): Promise<void> {
-    const diag = (...args: unknown[]) => {
-      console.log(`[PIX-DIAG] ${args.join(" ")}`);
-    };
-
-    await this.openPixReceivingAccountTab(runId, pixPage, profile);
-    diag("3-pix receiving tab opened");
-
-    // A senha de saque pode ser pedida AQUI (definir conta nova e/ou entrar), em
-    // qualquer ordem — tratamos onde quer que apareca (reativo, evita o loop).
-    diag("4-handling withdrawal password prompts (if any)");
-    await this.handleWithdrawalPasswordPrompts(runId, profile, pixPage);
-
-    diag("5-disabling popup closer for pix form");
-    await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
-    try {
-      // O gate de senha de saque aparece ENTRE o "adicionar conta" e o form PIX (a
-      // plataforma o exige antes de liberar o modal). E openAddPix as vezes reporta ok
-      // cedo (ve o card "Adicionar PIX" na lista) -- entao o gate so sobe agora. Por isso
-      // a espera do modal PIX trata o gate a CADA ciclo; senao a tela trava no "Inserir
-      // PIN" e estoura "formulario Adicionar PIX nao abriu". Bug confirmado em runtime.
-      let hasPixModal = false;
-      const pixModalDeadline = Date.now() + 12000;
-      while (Date.now() < pixModalDeadline) {
-        this.ensureRunActive(runId);
-        if (await waitForAddPixModal(pixPage, 700)) {
-          hasPixModal = true;
-          break;
-        }
-        await this.handleWithdrawalPasswordPrompts(runId, profile, pixPage);
-      }
-      diag(`5-add pix modal: ${hasPixModal}`);
-      if (!hasPixModal) {
-        const bodyText = await resolveContentFrame(pixPage)
-          .evaluate(() => {
-            return (
-              (
-                globalThis as unknown as {
-                  document?: { body?: { innerText?: string } };
-                }
-              ).document?.body?.innerText?.slice(0, 200) || ""
-            );
-          })
-          .catch(() => "");
-        diag(`5-page text: ${bodyText}`);
-        throw new Error("formulario Adicionar PIX nao abriu");
-      }
-
-      diag("6-selecting phone pix type");
-      await this.selectPhonePixType(runId, pixPage);
-      diag("6-phone type selected");
-      diag("7-filling pix form");
-      await this.fillPixPhoneAccountForm(
-        runId,
-        pixPage,
-        pixPhone,
-        cpf,
-        realName,
-      );
-      diag("7-form filled");
-      const submitted = await programmaticPixUiAction(
-        resolveContentFrame(pixPage),
-        "submit",
-      );
-      diag(
-        `8-submitted: ok=${submitted.ok} via=${submitted.diag ?? submitted.reason ?? "-"}`,
-      );
-      if (!submitted.ok) {
-        throw new Error(
-          `formulario PIX nao submeteu programaticamente (${submitted.reason ?? "motivo desconhecido"})`,
-        );
-      }
-
-      if (!(await waitForPixRegistrationSaved(pixPage, 9000))) {
-        throw new Error("cadastro PIX nao confirmou apos o envio");
-      }
-      diag("9-pix registration saved");
-    } finally {
-      diag("9-reenabling popup closer");
-      await this.browserRuntime
-        .setPageAutoClosePopups(pixPage, true)
-        .catch(() => undefined);
-    }
-
-    this.database.markProfilePixKeyRegistered(profile.id, pixPage.url());
-    this.log(
-      runId,
-      "success",
-      `[${profile.name}] Conta PIX PHONE cadastrada para recebimento.`,
-    );
-  }
-
-  // Fluxo PIX nativo via router: substitui a navegacao por clique de tabbar
-  // (perfil -> saque), fragil sob carga, por salto direto via router.push da
-  // propria SPA. As janelas continuam visiveis (a tela muda ao vivo). A senha
-  // de saque CONTINUA pelo teclado virtual (a plataforma so aceita assim) e o
-  // abertura das surfaces, escolha PHONE e submit tambem usam estado/handlers Vue,
-  // sem coordenadas ou HTMLElement.click(). Sem fallback: falha com diagnostico.
-  private async executeProgrammaticPixKeyRegistration(
-    runId: string,
-    profile: ProfileSummary,
-    page: Page,
-    pixType: PixRegistrationType,
-    pixPhoneNumber: string,
-  ): Promise<void> {
-    const diag = (...args: unknown[]) => {
-      console.log(`[PIX-PROG] ${args.join(" ")}`);
-    };
-    const startUrl = profile.homeUrl.trim();
-    if (!startUrl) {
-      throw new Error("Perfil sem link inicial para cadastrar chave PIX.");
-    }
-    if (pixType !== "PHONE") {
-      throw new Error("Somente PIX PHONE esta disponivel neste fluxo.");
-    }
-
-    let descriptor = resolvePlatformDescriptor(startUrl);
-    diag(
-      `descritor de rota inicial: ${descriptor?.id ?? "nenhum; usando resolucao fuzzy do router"}`,
-    );
-
-    const account = this.database.getOrCreateProfileAccount(profile.id);
-    if (account.status !== "registered") {
-      throw new Error(
-        "Conta do perfil ainda nao esta marcada como registrada.",
-      );
-    }
-
-    const pixPhone = pixPhoneNumber.replace(/\D+/g, "");
-    if (!/^[1-9]{2}(?:9\d{8}|\d{8})$/.test(pixPhone)) {
-      throw new Error(
-        "Telefone PIX valido ausente no estoque. Cadastre chaves PIX telefone e tente novamente.",
-      );
-    }
-    const cpf = this.database.resolveCpfForProfile(profile.id);
-
-    const pixPage = await this.resolveDepositFlowPage(
-      runId,
-      page,
-      profile,
-      startUrl,
-    );
-    await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
-
-    // router.push e navegacao client-side e funciona de QUALQUER rota — nao
-    // precisamos recarregar a home (o reload pesa muito, sobretudo em PC fraco).
-    // So carregamos a home como FALLBACK raro, quando a SPA/router ainda nao esta
-    // montada nesta pagina (ex.: pagina em estado nao-SPA).
-    const spa = resolveContentFrame(pixPage);
-    // router.push e navegacao client-side: funciona de QUALQUER rota, sem recarregar
-    // (o reload pesa muito em PC fraco). Esperamos o router montar (poll curto) antes
-    // de decidir recarregar — assim evitamos o refresh no caso comum em que a SPA ja
-    // esta carregada e so estava se assentando.
-    let routerReady = false;
-    const probeDeadline = Date.now() + 5000;
-    while (Date.now() < probeDeadline) {
-      this.ensureRunActive(runId);
-      if (await hasSpaRouter(spa)) {
-        routerReady = true;
-        break;
-      }
-      await pixPage.waitForTimeout(200).catch(() => undefined);
-    }
-    if (!routerReady) {
-      // Fallback raro: SPA nao montada nesta pagina. Carrega a home UMA vez.
-      diag("router ausente apos 5s; carregando a home (fallback)");
-      await this.ensurePlatformHomeLoaded(runId, pixPage, profile, startUrl);
-      const bootDeadline = Date.now() + 10000;
-      while (Date.now() < bootDeadline) {
-        this.ensureRunActive(runId);
-        if (await hasSpaRouter(spa)) {
-          routerReady = true;
-          break;
-        }
-        await pixPage.waitForTimeout(200).catch(() => undefined);
-      }
-    }
-    if (!routerReady) {
-      throw new Error(
-        "SPA sem router acessivel (modo programatico requer Vue router no main world).",
-      );
-    }
-    descriptor = await detectPlatformDescriptor(spa, pixPage.url() || startUrl);
-    diag(
-      `descritor de rota ativo: ${descriptor?.id ?? "nenhum; usando resolucao fuzzy do router"}`,
-    );
-    diag(`router pronto; rota inicial: ${await describeSpaState(spa)}`);
-
-    // Conta sem senha de saque salva: a plataforma EXIGE definir a senha primeiro.
-    // O salto direto ao saque (router.push) NAO dispara o redirect que leva ao setup,
-    // entao definimos pela rota de setup do descritor ANTES de ir ao saque.
-    const needsPasswordSetup = !this.database.getProfile(profile.id).account
-      ?.withdrawalPassword;
-    diag(`precisa definir senha de saque: ${needsPasswordSetup}`);
-    if (needsPasswordSetup) {
-      await this.defineWithdrawalPasswordViaRoute(
-        runId,
-        profile,
-        pixPage,
-        spa,
-        descriptor,
-      );
-    }
-
-    const withdrawalTarget = await resolveRouteTarget(
-      spa,
-      "withdrawal",
-      descriptor,
-    );
-    if (!withdrawalTarget) {
-      throw new Error(
-        `nao consegui resolver a rota de saque (${await describeSpaState(spa)})`,
-      );
-    }
-    this.ensureRunActive(runId);
-    await routerPush(spa, withdrawalTarget);
-    // Deixa o componente carregar dados; algumas plataformas mostram o setup de senha
-    // ja na propria tela de saque. Espera CONDICIONAL ate algo acionavel aparecer (em vez
-    // de um tempo fixo que mascarava o prompt de senha quando ele demorava).
-    await waitForWithdrawalOrPasswordSignal(pixPage, 6000);
-    await this.handleWithdrawalPasswordPrompts(runId, profile, pixPage);
-
-    if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
-      await routerPush(spa, withdrawalTarget);
-      if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
-        throw new Error(
-          `tela de saque nao abriu via router (${await describeSpaState(spa)})`,
-        );
-      }
-    }
-    diag("tela de saque visivel");
-
-    if (await hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
-      diag(
-        "tela de saque ainda pede adicionar senha; repetindo setup pela rota",
-      );
-      await this.defineWithdrawalPasswordViaRoute(
-        runId,
-        profile,
-        pixPage,
-        spa,
-        descriptor,
-      );
-      await routerPush(spa, withdrawalTarget);
-      await waitForWithdrawalOrPasswordSignal(pixPage, 6000);
-      await this.handleWithdrawalPasswordPrompts(runId, profile, pixPage);
-      if (!(await waitForWithdrawalAccountSurface(pixPage, 6000))) {
-        throw new Error(
-          `tela de saque nao voltou apos definir senha (${await describeSpaState(spa)})`,
-        );
-      }
-      if (await hasWithdrawalPasswordRequiredCallToAction(pixPage)) {
-        throw new Error(
-          "plataforma ainda pede adicionar senha de saque apos o setup programatico",
-        );
-      }
-    }
-
-    await this.completePixReceivingAccountRegistration(
-      runId,
-      profile,
-      pixPage,
-      pixPhone,
-      cpf,
-      account.realName,
-    );
-  }
-
-  // Trata os prompts de senha de saque ONDE QUER que a plataforma os mostre — na tela
-  // de saque ou no passo de "conta para recebimento" — e em qualquer ordem: DEFINIR
-  // (conta nova, 2 campos) e/ou ENTRAR (modal de 1 campo). Reativo em vez de adivinhar
-  // a rota de setup (que varia por plataforma e causava loop). Idempotente: a senha do
-  // perfil e reutilizada (ensureProfileWithdrawalPassword nao regenera se ja valida),
-  // entao DEFINIR e ENTRAR usam sempre o MESMO valor.
-  private async handleWithdrawalPasswordPrompts(
-    runId: string,
-    profile: ProfileSummary,
-    pixPage: Page,
-  ): Promise<void> {
-    const diag = (...args: unknown[]) => {
-      console.log(`[PIX-PROG] ${args.join(" ")}`);
-    };
-    for (let iteration = 0; iteration < 3; iteration += 1) {
-      this.ensureRunActive(runId);
-      // ORDEM IMPORTA: o modal de ENTRAR senha existente ("Inserir PIN" + "Senha de Saque"
-      // + "Proximo") e INEQUIVOCO e um form de CRIAR nunca casa esse detector. Checamos
-      // ENTRAR PRIMEIRO para que ele jamais seja sequestrado pela deteccao de CRIAR (que ja
-      // deu falso-positivo: o campo de senha inline da tela de saque + o do modal somavam 2
-      // e `fillWithdrawalPasswordSetup` achava 1 campo e falhava).
-      if (await hasExistingWithdrawalPasswordModal(pixPage)) {
-        diag(`prompt de senha: ENTRAR (iter ${iteration})`);
-        let withdrawalPassword = this.database.getProfile(profile.id).account
-          ?.withdrawalPassword;
-        if (!withdrawalPassword) {
-          // Tolerante: sem senha salva, gera/define (nao trava). Em tese o define
-          // proativo ja rodou; isto e rede de seguranca.
-          diag("modal ENTRAR sem senha salva -> gerando/definindo");
-          withdrawalPassword = this.database.ensureProfileWithdrawalPassword(
-            profile.id,
-          );
-          void this.browserRuntime.refreshAccountInfoForProfile(
-            profile.id,
-            this.database.getProfile(profile.id),
-          );
-        }
-        await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
-        await this.fillExistingWithdrawalPasswordModal(
-          runId,
-          pixPage,
-          withdrawalPassword,
-        );
-        // espera CONDICIONAL o modal ENTRAR fechar, em vez de um waitForTimeout fixo
-        const modalDeadline = Date.now() + 4000;
-        while (
-          Date.now() < modalDeadline &&
-          (await hasExistingWithdrawalPasswordModal(pixPage))
-        ) {
-          await pixPage.waitForTimeout(80).catch(() => undefined);
-        }
-        continue;
-      }
-      if (await hasWithdrawalPasswordSetupSurface(pixPage)) {
-        diag(`prompt de senha: DEFINIR (iter ${iteration})`);
-        const withdrawalPassword =
-          this.database.ensureProfileWithdrawalPassword(profile.id);
-        void this.browserRuntime.refreshAccountInfoForProfile(
-          profile.id,
-          this.database.getProfile(profile.id),
-        );
-        await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
-        await this.fillWithdrawalPasswordSetup(
-          runId,
-          pixPage,
-          withdrawalPassword,
-        );
-        const setupClosed = await waitForWithdrawalPasswordSetupToClose(
-          pixPage,
-          4500,
-        );
-        diag(`prompt DEFINIR fechou=${setupClosed}`);
-        if (!setupClosed) {
-          throw new Error(
-            "senha de saque nao confirmou na plataforma; tela de definicao continuou aberta",
-          );
-        }
-        continue;
-      }
-      break;
-    }
-  }
-
-  // Define a senha de saque navegando ate a rota de setup do descritor (a plataforma
-  // exige a senha definida antes do cadastro de PIX, e o router.push direto ao saque
-  // nao dispara esse redirect). Diagnostico rico: loga a rota antes/depois para
-  // verificar se a definicao persistiu (a plataforma deve voltar para o saque).
-  private async defineWithdrawalPasswordViaRoute(
-    runId: string,
-    profile: ProfileSummary,
-    pixPage: Page,
-    spa: SpaHandle,
-    descriptor: PlatformDescriptor | undefined,
-  ): Promise<void> {
-    const diag = (...args: unknown[]) => {
-      console.log(`[PIX-PROG] ${args.join(" ")}`);
-    };
-    const setupTarget = await resolveRouteTarget(
-      spa,
-      "passwordSetup",
-      descriptor,
-    );
-    if (!setupTarget) {
-      diag("sem rota de setup de senha no descritor; pulando define proativo");
-      return;
-    }
-    diag(`navegando p/ setup de senha: ${JSON.stringify(setupTarget)}`);
-    await routerPush(spa, setupTarget);
-
-    let appeared = false;
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      this.ensureRunActive(runId);
-      if (await hasWithdrawalPasswordSetupSurface(pixPage)) {
-        appeared = true;
-        break;
-      }
-      await pixPage.waitForTimeout(200).catch(() => undefined);
-    }
-    diag(
-      `setup surface apareceu=${appeared}; rota=${await describeSpaState(spa)}`,
-    );
-    if (!appeared) {
-      diag("setup surface nao apareceu na rota de setup; nao defini a senha");
-      return;
-    }
-
-    const withdrawalPassword = this.database.ensureProfileWithdrawalPassword(
-      profile.id,
-    );
-    void this.browserRuntime.refreshAccountInfoForProfile(
-      profile.id,
-      this.database.getProfile(profile.id),
-    );
-    await this.browserRuntime.setPageAutoClosePopups(pixPage, false);
-    await this.fillWithdrawalPasswordSetup(runId, pixPage, withdrawalPassword);
-    let setupClosed = await waitForWithdrawalPasswordSetupToClose(
-      pixPage,
-      4500,
-    );
-    if (!setupClosed) {
-      diag("setup ainda visivel apos confirmar; reenviando senha uma vez");
-      await this.fillWithdrawalPasswordSetup(
-        runId,
-        pixPage,
-        withdrawalPassword,
-      );
-      setupClosed = await waitForWithdrawalPasswordSetupToClose(pixPage, 4500);
-    }
-    await this.browserRuntime.setPageAutoClosePopups(pixPage, true);
-    diag(
-      `senha definida; setup fechou=${setupClosed}; rota apos definir=${await describeSpaState(spa)}`,
-    );
-    // Fotografa o texto da tela apos a definicao: revela erro de validacao,
-    // "senhas nao conferem", toast de sucesso, ou se continuamos no form de senha.
-    const postDefineText = await resolveContentFrame(pixPage)
-      .evaluate(() => {
-        const w = globalThis as unknown as {
-          document?: { body?: { innerText?: string } };
-        };
-        return (w.document?.body?.innerText || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 300);
-      })
-      .catch(() => "");
-    diag(`texto apos definir: ${postDefineText}`);
-    if (!setupClosed) {
-      throw new Error(
-        "senha de saque nao confirmou na plataforma; tela de definicao continuou aberta",
-      );
-    }
-  }
-
-  private async openPixReceivingAccountTab(
-    runId: string,
-    page: Page,
-    profile: ProfileSummary,
-  ): Promise<void> {
-    const diag = (...args: unknown[]) => {
-      console.log(`[PIX-DIAG] ${args.join(" ")}`);
-    };
-    this.ensureRunActive(runId);
-    const spa = resolveContentFrame(page);
-    const receiving = await programmaticPixUiAction(
-      spa,
-      "openReceivingAccount",
-    );
-    diag(
-      `3-receiving state: ok=${receiving.ok} ${receiving.diag ?? receiving.reason ?? ""}`,
-    );
-    if (!receiving.ok) {
-      throw new Error(
-        `aba Conta para recebimento nao abriu por estado (${receiving.reason ?? "motivo desconhecido"})`,
-      );
-    }
-
-    // ORDEM REAL DA PLATAFORMA: clicar em "adicionar conta" abre PRIMEIRO o gate de
-    // senha de saque (modal "Inserir senha"); o modal "Adicionar PIX" so renderiza DEPOIS
-    // que a senha e confirmada. Por isso tratamos o gate DENTRO do loop, antes de cada
-    // tentativa de openAddPix. Sem isso, openAddPix nunca acha o modal PIX e estoura
-    // ("modal de Pix nao abriu") deixando a senha por preencher -- bug confirmado em runtime.
-    const deadline = Date.now() + 8000;
-    await this.handleWithdrawalPasswordPrompts(runId, profile, page);
-    let addResult = await programmaticPixUiAction(spa, "openAddPix");
-    while (!addResult.ok && Date.now() < deadline) {
-      this.ensureRunActive(runId);
-      await this.handleWithdrawalPasswordPrompts(runId, profile, page);
-      await page.waitForTimeout(150).catch(() => undefined);
-      addResult = await programmaticPixUiAction(spa, "openAddPix");
-    }
-    diag(
-      `3-pix add handler: ok=${addResult.ok} ${addResult.diag ?? addResult.reason ?? ""}`,
-    );
-    if (!addResult.ok) {
-      throw new Error(
-        `modal Adicionar PIX nao abriu pelo handler Vue (${addResult.reason ?? "motivo desconhecido"})`,
-      );
-    }
-  }
-
-  private async fillExistingWithdrawalPasswordModal(
+  async fillExistingWithdrawalPasswordModal(
     runId: string,
     page: Page,
     withdrawalPassword: string,
@@ -4534,7 +4383,7 @@ export class AutomationRuntimeService {
     }
   }
 
-  private async fillWithdrawalPasswordSetup(
+  async fillWithdrawalPasswordSetup(
     runId: string,
     page: Page,
     withdrawalPassword: string,
@@ -5291,7 +5140,7 @@ export class AutomationRuntimeService {
     return target.label;
   }
 
-  private async selectPhonePixType(runId: string, page: Page): Promise<void> {
+  async selectPhonePixType(runId: string, page: Page): Promise<void> {
     const diag = (...args: unknown[]) => {
       console.log(`[PIX-DIAG] ${args.join(" ")}`);
     };
@@ -5304,13 +5153,15 @@ export class AutomationRuntimeService {
       `selectPhone-state: ok=${result.ok} ${result.diag ?? result.reason ?? ""}`,
     );
     if (!result.ok) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "selectPhone",
         `tipo PHONE nao foi aplicado no estado Vue (${result.reason ?? "motivo desconhecido"})`,
+        result.diag,
       );
     }
   }
 
-  private async fillPixPhoneAccountForm(
+  async fillPixPhoneAccountForm(
     runId: string,
     page: Page,
     phoneNumber: string,
@@ -5337,228 +5188,211 @@ export class AutomationRuntimeService {
 
     diag(`fillForm-modal open: ${await pixModalOpen()}`);
 
-    const tryFill = () =>
+    // Etapa avaliada na pagina: no mode "gather" so COLETA metadados dos inputs do modal;
+    // no mode "set" recoleta a MESMA lista (mesma logica/ordem, para os indices baterem) e
+    // seta os valores pelos indices que resolvePixFormFieldRoles decidiu em Node. Assim a
+    // heuristica de escolha de campos fica testavel fora do browser.
+    const pixFormStep = (payload: PixFormFillPayload): Promise<PixFormStepResult> =>
       resolveContentFrame(page)
-        .evaluate(
-          ({ pixPhone, cpfValue, realNameValue }) => {
-            const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
-            const normalize = (value: string | null | undefined) =>
-              (value || "")
-                .normalize("NFD")
-                .replace(/[\u0300-\u036f]/g, "")
-                .replace(/\s+/g, " ")
-                .trim()
-                .toLowerCase();
-            const isVisible = (element: BrowserRuntimeElement) => {
-              const rect = element.getBoundingClientRect();
-              const style = runtimeWindow.getComputedStyle(element);
-              return (
-                style.display !== "none" &&
-                style.visibility !== "hidden" &&
-                rect.width > 8 &&
-                rect.height > 8
-              );
-            };
-            const isInputElement = (
-              element: BrowserRuntimeElement,
-            ): element is BrowserRuntimeInputElement =>
-              typeof element.value === "string";
-            const setValue = (
-              input: BrowserRuntimeInputElement,
-              value: string,
-            ) => {
-              const setter = runtimeWindow.HTMLInputElement?.prototype
-                ? (Object.getOwnPropertyDescriptor(
-                    runtimeWindow.HTMLInputElement.prototype,
-                    "value",
-                  )?.set as
-                    | ((
-                        this: BrowserRuntimeInputElement,
-                        value: string,
-                      ) => void)
-                    | undefined)
-                : undefined;
-              setter?.call(input, value);
-              if (input.value !== value) {
-                input.value = value;
-              }
-              const RuntimeEvent = runtimeWindow.Event;
-              if (RuntimeEvent) {
-                input.dispatchEvent?.(
-                  new RuntimeEvent("input", { bubbles: true }),
-                );
-                input.dispatchEvent?.(
-                  new RuntimeEvent("change", { bubbles: true }),
-                );
-              }
-            };
-            const roots = Array.from(
-              runtimeWindow.document.querySelectorAll(
-                ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.modal,.popup,form",
-              ),
+        .evaluate((input: PixFormFillPayload): PixFormStepResult => {
+          const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+          const normalize = (value: string | null | undefined) =>
+            (value || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          const isVisible = (element: BrowserRuntimeElement) => {
+            const rect = element.getBoundingClientRect();
+            const style = runtimeWindow.getComputedStyle(element);
+            return (
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              rect.width > 8 &&
+              rect.height > 8
+            );
+          };
+          const isInputElement = (
+            element: BrowserRuntimeElement,
+          ): element is BrowserRuntimeInputElement =>
+            typeof element.value === "string";
+          const setValue = (
+            target: BrowserRuntimeInputElement,
+            value: string,
+          ) => {
+            const setter = runtimeWindow.HTMLInputElement?.prototype
+              ? (Object.getOwnPropertyDescriptor(
+                  runtimeWindow.HTMLInputElement.prototype,
+                  "value",
+                )?.set as
+                  | ((this: BrowserRuntimeInputElement, value: string) => void)
+                  | undefined)
+              : undefined;
+            setter?.call(target, value);
+            if (target.value !== value) {
+              target.value = value;
+            }
+            const RuntimeEvent = runtimeWindow.Event;
+            if (RuntimeEvent) {
+              target.dispatchEvent?.(new RuntimeEvent("input", { bubbles: true }));
+              target.dispatchEvent?.(new RuntimeEvent("change", { bubbles: true }));
+            }
+          };
+          const roots = Array.from(
+            runtimeWindow.document.querySelectorAll(
+              ".ui-popup,.ui-dialog,.van-popup,.van-dialog,.modal,.popup,form",
+            ),
+          )
+            .filter(
+              (element) =>
+                isVisible(element) &&
+                /adicionar\s+pix/i.test(normalize(element.textContent)),
             )
-              .filter(
-                (element) =>
-                  isVisible(element) &&
-                  /adicionar\s+pix/i.test(normalize(element.textContent)),
-              )
-              .sort((a, b) => {
-                const aHasInput = a.querySelector?.("input") ? 1 : 0;
-                const bHasInput = b.querySelector?.("input") ? 1 : 0;
-                if (aHasInput !== bHasInput) return bHasInput - aHasInput;
-                const aRect = a.getBoundingClientRect();
-                const bRect = b.getBoundingClientRect();
-                return aRect.width * aRect.height - bRect.width * bRect.height;
-              });
-            const root = roots[0] ?? runtimeWindow.document.body!;
-
-            const allInputs = Array.from(
-              root.querySelectorAll?.("input") ?? [],
+            .sort((a, b) => {
+              const aHasInput = a.querySelector?.("input") ? 1 : 0;
+              const bHasInput = b.querySelector?.("input") ? 1 : 0;
+              if (aHasInput !== bHasInput) return bHasInput - aHasInput;
+              const aRect = a.getBoundingClientRect();
+              const bRect = b.getBoundingClientRect();
+              return aRect.width * aRect.height - bRect.width * bRect.height;
+            });
+          const root = roots[0] ?? runtimeWindow.document.body!;
+          const inModal = (el: BrowserRuntimeElement) => {
+            const popup = el.closest?.(
+              ".van-popup, .van-dialog, .ui-popup, .ui-dialog, .modal, .popup",
             );
-            const allInputInfo = allInputs.map((inp) => ({
-              placeholder: (inp.placeholder || "").slice(0, 40),
-              disabled: !!(inp as BrowserRuntimeInputElement).disabled,
-              visible: isVisible(inp),
-              value:
-                (inp as BrowserRuntimeInputElement).value?.slice(0, 20) || "",
-            }));
-
-            const rootInfo = {
-              class: String(root.className || "").slice(0, 50),
-              height: root.getBoundingClientRect().height,
-              rootCount: roots.length,
-              inputCount: allInputInfo.length,
-            };
-
-            const inModal = (el: BrowserRuntimeElement) => {
-              const popup = el.closest?.(
-                ".van-popup, .van-dialog, .ui-popup, .ui-dialog, .modal, .popup",
-              );
-              return Boolean(popup && isVisible(popup));
-            };
-
-            const inputs = allInputs.filter(
-              (input): input is BrowserRuntimeInputElement =>
-                isInputElement(input) && isVisible(input) && inModal(input),
-            );
-            const writableInputs = inputs.filter(
-              (input) =>
-                !input.disabled && !input.readOnly && input.type !== "hidden",
-            );
-            const selector = root.querySelector?.(".ui-popover__wrapper");
-            const precedes = (
-              left: BrowserRuntimeElement,
-              right: BrowserRuntimeElement,
-            ) =>
-              Boolean(
-                left.compareDocumentPosition?.(right) &&
+            return Boolean(popup && isVisible(popup));
+          };
+          // Lista canonica: inputs visiveis dentro do modal, em ordem de DOM. Gather e set
+          // usam ESTA MESMA lista, entao os indices resolvidos em Node continuam validos.
+          const inputs = Array.from(root.querySelectorAll?.("input") ?? []).filter(
+            (candidate): candidate is BrowserRuntimeInputElement =>
+              isInputElement(candidate) && isVisible(candidate) && inModal(candidate),
+          );
+          const selector = root.querySelector?.(".ui-popover__wrapper") ?? null;
+          const precedes = (
+            left: BrowserRuntimeElement,
+            right: BrowserRuntimeElement,
+          ) =>
+            Boolean(
+              left.compareDocumentPosition?.(right) &&
                 left.compareDocumentPosition(right) & 4,
-              );
-            const beforeSelector = selector
-              ? inputs.filter((input) => precedes(input, selector))
-              : [];
-            const afterSelector = selector
-              ? inputs.filter((input) => precedes(selector, input))
-              : [];
-
-            // Estrutura comum das skins Pinia: nome antes do seletor; chave PIX e
-            // CPF, nessa ordem, depois dele. Placeholders variam por traducao e skin,
-            // portanto entram apenas como fallback.
-            const nameInput =
-              (beforeSelector.at(-1) as
-                | BrowserRuntimeInputElement
-                | undefined) ??
-              writableInputs.find((input) =>
-                /nome|name|titular|beneficiario/.test(
-                  normalize(`${input.placeholder} ${input.name} ${input.id}`),
-                ),
-              );
-            const structuralWritable = afterSelector.filter(
-              (input) =>
-                !input.disabled && !input.readOnly && input.type !== "hidden",
             );
-            const pixInput =
-              structuralWritable[0] ??
-              writableInputs.find((input) =>
-                /chave do pix|pix/.test(
-                  normalize(
-                    `${input.placeholder} ${input.name} ${input.id} ${input.className}`,
-                  ),
-                ),
-              );
-            const cpfInput =
-              structuralWritable[1] ??
-              writableInputs.find(
-                (input) =>
-                  input !== pixInput &&
-                  /cpf|11 digitos/.test(
-                    normalize(
-                      `${input.placeholder} ${input.name} ${input.id} ${input.className}`,
-                    ),
-                  ),
-              );
+          const allInputInfo = inputs.map((inp) => ({
+            placeholder: (inp.placeholder || "").slice(0, 40),
+            disabled: !!inp.disabled,
+            value: inp.value?.slice(0, 20) || "",
+          }));
+          const rootInfo = {
+            class: String(root.className || "").slice(0, 50),
+            rootCount: roots.length,
+            inputCount: inputs.length,
+            hasSelector: Boolean(selector),
+          };
 
-            if (!pixInput || !cpfInput) {
-              return {
-                cpf: Boolean(cpfInput),
-                pix: Boolean(pixInput),
-                name: Boolean(nameInput),
-                debug: {
-                  rootFound: true,
-                  rootInfo,
-                  inputs: allInputInfo,
-                  writableCount: writableInputs.length,
-                  pixPlaceholder: pixInput?.placeholder || "none",
-                  cpfPlaceholder: cpfInput?.placeholder || "none",
-                  namePlaceholder: nameInput?.placeholder || "none",
-                },
-              };
-            }
-
-            if (
-              nameInput &&
-              !nameInput.disabled &&
-              !nameInput.readOnly &&
-              !nameInput.value
-            ) {
-              setValue(nameInput, realNameValue);
-            }
-            setValue(pixInput, pixPhone);
-            setValue(cpfInput, cpfValue);
+          if (input.mode === "gather") {
+            const descriptors = inputs.map((inp, index) => ({
+              index,
+              placeholder: (inp.placeholder || "").slice(0, 40),
+              name: String(inp.name || "").slice(0, 40),
+              id: String(inp.id || "").slice(0, 40),
+              className: String(inp.className || "").slice(0, 60),
+              precedesSelector: selector ? precedes(inp, selector) : false,
+              followsSelector: selector ? precedes(selector, inp) : false,
+              writable: !inp.disabled && !inp.readOnly && inp.type !== "hidden",
+              hasSelector: Boolean(selector),
+            }));
             return {
-              cpf: true,
-              pix: true,
-              debug: {
-                rootFound: true,
-                inputs: allInputInfo,
-                nameFilled: !!nameInput,
-              },
+              phase: "gather",
+              descriptors,
+              pix: false,
+              cpf: false,
+              nameFilled: false,
+              debug: { rootInfo, allInputInfo },
             };
-          },
-          { cpfValue: cpf, pixPhone: phoneNumber, realNameValue: realName },
-        )
-        .catch(() => ({
-          cpf: false,
-          pix: false,
-          debug: { error: "evaluate failed" },
-        }));
+          }
 
-    let filled = await tryFill();
-    const fillDeadline = Date.now() + 4000;
-    while ((!filled.pix || !filled.cpf) && Date.now() < fillDeadline) {
+          const { nameIndex, pixIndex, cpfIndex } = input.roles;
+          const nameInput = nameIndex != null ? inputs[nameIndex] : undefined;
+          const pixInput = pixIndex != null ? inputs[pixIndex] : undefined;
+          const cpfInput = cpfIndex != null ? inputs[cpfIndex] : undefined;
+          if (!pixInput || !cpfInput) {
+            return {
+              phase: "set",
+              descriptors: [],
+              pix: Boolean(pixInput),
+              cpf: Boolean(cpfInput),
+              nameFilled: false,
+              debug: { rootInfo, allInputInfo },
+            };
+          }
+          if (
+            nameInput &&
+            !nameInput.disabled &&
+            !nameInput.readOnly &&
+            !nameInput.value
+          ) {
+            setValue(nameInput, input.realNameValue);
+          }
+          setValue(pixInput, input.pixPhone);
+          setValue(cpfInput, input.cpfValue);
+          return {
+            phase: "set",
+            descriptors: [],
+            pix: true,
+            cpf: true,
+            nameFilled: !!nameInput,
+            debug: { rootInfo, allInputInfo },
+          };
+        }, payload)
+        .catch(
+          (): PixFormStepResult => ({
+            phase: "error",
+            descriptors: [],
+            pix: false,
+            cpf: false,
+            nameFilled: false,
+            debug: { error: "evaluate failed" },
+          }),
+        );
+
+    let filled: PixFormStepResult = {
+      phase: "gather",
+      descriptors: [],
+      pix: false,
+      cpf: false,
+      nameFilled: false,
+      debug: undefined,
+    };
+    const fillDeadline = Date.now() + PIX_MS(4000);
+    do {
       this.ensureRunActive(runId);
+      const gathered = await pixFormStep({ mode: "gather" });
+      const roles = resolvePixFormFieldRoles(gathered.descriptors);
+      filled = await pixFormStep({
+        mode: "set",
+        roles,
+        pixPhone: phoneNumber,
+        cpfValue: cpf,
+        realNameValue: realName,
+      });
+      if (filled.pix && filled.cpf) {
+        break;
+      }
       await page.waitForTimeout(100).catch(() => undefined);
-      filled = await tryFill();
-    }
+    } while (Date.now() < fillDeadline);
 
     diag(
-      `fillForm-result: pix=${filled.pix} cpf=${filled.cpf} debug=${JSON.stringify((filled as Record<string, unknown>).debug)}`,
+      `fillForm-result: pix=${filled.pix} cpf=${filled.cpf} debug=${JSON.stringify(filled.debug)}`,
     );
     diag(`fillForm-modal after fill: ${await pixModalOpen()}`);
 
     if (!filled.pix || !filled.cpf) {
-      throw new Error(
+      throw new PixRegistrationError(
+        "fillForm",
         "campos de telefone PIX e CPF nao foram encontrados no formulario",
+        JSON.stringify(filled.debug).slice(0, 160),
       );
     }
   }
@@ -5960,40 +5794,52 @@ export class AutomationRuntimeService {
   private async waitForRegistrationOrCaptcha(
     runId: string,
     page: Page,
-    accountInput: Locator,
     profileName: string,
     timeoutMs: number,
-  ): Promise<{ handledCaptcha: boolean; registered: boolean }> {
-    const deadlineAt = this.nowMs() + timeoutMs;
+  ): Promise<{
+    handledCaptcha: boolean;
+    outcome: RegistrationCompletionOutcome;
+  }> {
+    let deadlineAt = this.nowMs() + timeoutMs;
     let handledCaptcha = false;
+    let lastOutcome: RegistrationCompletionOutcome | undefined;
 
     while (true) {
       this.ensureRunActive(runId);
-      if (!(await accountInput.isVisible().catch(() => false))) {
-        return { handledCaptcha, registered: true };
-      }
-
-      if (
-        await this.waitForManualCaptchaIfPresent(
-          runId,
-          page,
-          profileName,
-          "cadastro",
-          { appearanceTimeoutMs: 0 },
-        )
-      ) {
+      const handledNow = await this.waitForManualCaptchaIfPresent(
+        runId,
+        page,
+        profileName,
+        "cadastro",
+        { appearanceTimeoutMs: 0 },
+      );
+      if (handledNow) {
         handledCaptcha = true;
-      }
-
-      if (!(await accountInput.isVisible().catch(() => false))) {
-        return { handledCaptcha, registered: true };
+        deadlineAt = Math.max(deadlineAt, this.nowMs() + 15_000);
       }
 
       const remaining = deadlineAt - this.nowMs();
       if (remaining <= 0) {
-        return { handledCaptcha, registered: false };
+        return {
+          handledCaptcha,
+          outcome: lastOutcome ?? {
+            registered: false,
+            via: "timeout-formulario-presente",
+            reason: "cadastro nao confirmou dentro do tempo limite",
+          },
+        };
       }
-      await this.waitForRunDelay(runId, page, Math.min(180, remaining));
+
+      const outcome = await this.confirmRegistrationCompleted(runId, page, {
+        timeoutMs: Math.min(700, remaining),
+      });
+      lastOutcome = outcome;
+      if (outcome.registered || outcome.via === "erro-plataforma") {
+        return { handledCaptcha, outcome };
+      }
+      if (this.nowMs() >= deadlineAt) {
+        return { handledCaptcha, outcome };
+      }
     }
   }
 

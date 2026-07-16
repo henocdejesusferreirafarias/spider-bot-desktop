@@ -34,11 +34,21 @@ import { resolveRuntimeWindowTargetsStrict } from "./runtime-window-selection.js
 import { selectMobileDevice, type DeviceProfile } from "./device-catalog.js";
 import {
   bundleMatchesEngine,
+  cocosDirectorTickFramePatternSources,
   isKnownGameFrameUrl,
   knownGameFramePatternSources,
   patchGameSpeedScript,
-  resolveProviderByScriptUrl
+  resolveProviderByFrameUrl,
+  resolveProviderByScriptUrl,
+  uhtDeltaTimeFramePatternSources
 } from "./provider-timing.js";
+import { AsyncSemaphore, resolveMaxConcurrentLaunches } from "./async-semaphore.js";
+import {
+  decideGameLoadRecovery,
+  GAME_CANVAS_SELECTOR,
+  GAME_LOADER_PATTERN,
+  shouldMonitorGameLoadFrame
+} from "./game-load.js";
 import {
   detectPlatformDescriptor,
   getCurrentRoute,
@@ -1035,6 +1045,15 @@ export class BrowserRuntimeService {
   private latestAccountInfoFields = new Map<string, Array<{ label: string; value: string }>>();
   private defaultSpeedRate = 1;
 
+  // Escalonador do lancamento em massa: no maximo N navegadores subindo ao mesmo
+  // tempo. Abrir todas as janelas headed (GPU/WebGL) de uma vez satura CPU/GPU e
+  // faz jogos "travarem carregando"; com o semaforo elas sobem em ondas.
+  private readonly launchSemaphore = new AsyncSemaphore(resolveMaxConcurrentLaunches());
+
+  // Frames de jogo cuja carga ja esta sendo monitorada (evita monitores duplicados
+  // por navegacao/evento). Chaveado por Frame; entradas somem quando o frame e GC'd.
+  private readonly gameFrameLoadMonitors = new WeakSet<object>();
+
   constructor(private readonly notify: RuntimeNotifier) {
     appendInputDiagnostic({
       kind: "diagnostic-session-start",
@@ -1183,6 +1202,20 @@ export class BrowserRuntimeService {
       args
     } satisfies BrowserLaunchOptions;
 
+    // Escalona o lancamento pesado (launch + boot da SPA): so N janelas sobem ao
+    // mesmo tempo. As demais esperam aqui em fila, evitando o pico de CPU/GPU que
+    // faz os jogos travarem carregando. Liberado assim que a navegacao inicial
+    // termina (o resto e bookkeeping barato) e em qualquer caminho de erro.
+    const releaseLaunchSlot = await this.launchSemaphore.acquire();
+    let launchSlotReleased = false;
+    const releaseLaunchSlotOnce = () => {
+      if (launchSlotReleased) {
+        return;
+      }
+      launchSlotReleased = true;
+      releaseLaunchSlot();
+    };
+
     let context: BrowserContext | undefined;
     let lastLaunchError: unknown;
 
@@ -1221,6 +1254,7 @@ export class BrowserRuntimeService {
     }
 
     if (!context) {
+      releaseLaunchSlotOnce();
       this.launchingSlotIndexes.delete(placement.slotIndex);
       await launchProxy.proxyChain?.stop().catch(() => undefined);
       const detail = lastLaunchError instanceof Error ? lastLaunchError.message : String(lastLaunchError);
@@ -1308,6 +1342,9 @@ export class BrowserRuntimeService {
         waitUntil: "domcontentloaded"
       }).catch(() => null);
     }
+    // Boot pesado concluido: libera o slot para a proxima janela subir. O que
+    // resta (badges, handlers, registro do handle) e barato e nao contende GPU.
+    releaseLaunchSlotOnce();
     const visibleIp = await this.resolveVisibleIp(primaryPage, launchProxy.ipLabel);
     await this.updateContextBadges(profile.id, context, placement, visibleIp);
     await this.applySpeedToPage(primaryPage, this.defaultSpeedRate);
@@ -1376,6 +1413,7 @@ export class BrowserRuntimeService {
     });
     this.launchingSlotIndexes.delete(placement.slotIndex);
     } catch (error) {
+      releaseLaunchSlotOnce();
       this.launchingSlotIndexes.delete(placement.slotIndex);
       await launchProxy.proxyChain?.stop().catch(() => undefined);
       await context.close().catch(() => null);
@@ -2242,6 +2280,140 @@ export class BrowserRuntimeService {
         this.mirrorCaptureEnabledState.delete(page);
       }
     });
+
+    // Recuperacao de carga de jogo: quando um frame de jogo conhecido navega,
+    // monitora se o canvas renderiza. Sob muitas janelas a saturacao trava o
+    // loader do engine; aqui recarregamos o frame preso (bounded) e logamos o
+    // motivo em vez de falhar calado. So age em frames de jogo reconhecidos --
+    // nunca em telas de login/cadastro/deposito.
+    page.on("framenavigated", (frame) => {
+      const provider = resolveProviderByFrameUrl(frame.url());
+      if (!shouldMonitorGameLoadFrame({
+        isMainFrame: frame === page.mainFrame(),
+        isKnownGameFrame: provider !== undefined,
+        supportsAutomaticReload: provider?.supportsAutomaticFrameReload
+      })) {
+        return;
+      }
+      void this.monitorGameFrameLoad(profileId, page, frame);
+    });
+  }
+
+  // Loop de recuperacao de carga de um frame de jogo. Faz polling do sinal
+  // estrutural (canvas presente + loader do engine) e decide via
+  // decideGameLoadRecovery: espera enquanto e carga normal, recarrega o frame
+  // preso (ate maxReloadAttempts) e desiste com motivo logado. So recarrega
+  // estados presos (canvas ausente / loader travado) -- nunca um jogo em
+  // andamento (canvas presente e sem loader = ready).
+  private async monitorGameFrameLoad(
+    profileId: string,
+    page: Page,
+    frame: Frame
+  ): Promise<void> {
+    if (this.gameFrameLoadMonitors.has(frame)) {
+      return;
+    }
+    this.gameFrameLoadMonitors.add(frame);
+    const pollMs = 1500;
+    const options = { stuckAfterMs: 12000, maxReloadAttempts: 2 };
+    let attempts = 0;
+    let startedAt = Date.now();
+    try {
+      while (!page.isClosed() && !frame.isDetached()) {
+        // Usuario saiu do jogo (voltou ao lobby): encerra o monitor.
+        const provider = resolveProviderByFrameUrl(frame.url());
+        if (!shouldMonitorGameLoadFrame({
+          isMainFrame: frame === page.mainFrame(),
+          isKnownGameFrame: provider !== undefined,
+          supportsAutomaticReload: provider?.supportsAutomaticFrameReload
+        })) {
+          return;
+        }
+        const probe = await frame
+          .evaluate(
+            ({ selector, loaderSource }) => {
+              const runtimeDoc = (
+                globalThis as unknown as {
+                  document?: {
+                    querySelector: (value: string) => unknown;
+                    body?: { innerText?: string };
+                  };
+                }
+              ).document;
+              const canvasPresent = Boolean(runtimeDoc?.querySelector(selector));
+              const text = String(runtimeDoc?.body?.innerText || "");
+              let loaderVisible = false;
+              try {
+                loaderVisible = new RegExp(loaderSource, "i").test(text);
+              } catch {
+                loaderVisible = false;
+              }
+              return { canvasPresent, loaderVisible };
+            },
+            { selector: GAME_CANVAS_SELECTOR, loaderSource: GAME_LOADER_PATTERN.source }
+          )
+          .catch(() => null);
+
+        // Frame em navegacao/destacado neste tick: trata como ainda-nao-pronto.
+        const signal = probe ?? { canvasPresent: false, loaderVisible: false };
+        const decision = decideGameLoadRecovery(
+          { ...signal, elapsedMs: Date.now() - startedAt, attempts },
+          options
+        );
+
+        if (decision.action === "ready") {
+          appendInputDiagnostic({
+            kind: "game-load-ready",
+            profileId,
+            frameUrl: sanitizeDiagnosticUrl(frame.url()),
+            attempts
+          });
+          return;
+        }
+        if (decision.action === "giveup") {
+          appendInputDiagnostic({
+            kind: "game-load-giveup",
+            profileId,
+            frameUrl: sanitizeDiagnosticUrl(frame.url()),
+            reason: decision.reason,
+            attempts
+          });
+          this.notify(profileId, "active", `⚠️ Jogo nao carregou: ${decision.reason}.`);
+          return;
+        }
+        if (decision.action === "reload") {
+          attempts += 1;
+          appendInputDiagnostic({
+            kind: "game-load-reload",
+            profileId,
+            frameUrl: sanitizeDiagnosticUrl(frame.url()),
+            reason: decision.reason,
+            attempt: attempts
+          });
+          this.notify(profileId, "active", `🔄 Recarregando jogo (tentativa ${attempts}): ${decision.reason}.`);
+          if (frame === page.mainFrame()) {
+            await page
+              .reload({ waitUntil: "domcontentloaded", timeout: 30000 })
+              .catch(() => null);
+          } else {
+            await frame
+              .evaluate(() => {
+                try {
+                  (globalThis as unknown as { location: { reload: () => void } }).location.reload();
+                } catch {
+                  // frame pode ter sido destacado no meio da recarga
+                }
+              })
+              .catch(() => null);
+          }
+          startedAt = Date.now();
+        }
+
+        await page.waitForTimeout(pollMs).catch(() => null);
+      }
+    } finally {
+      this.gameFrameLoadMonitors.delete(frame);
+    }
   }
 
   private markRuntimePageActive(
@@ -5755,8 +5927,37 @@ export class BrowserRuntimeService {
   const gameFramePatterns = ${JSON.stringify(knownGameFramePatternSources())}.map((s) => {
     try { return new RegExp(s, "i"); } catch (e) { return null; }
   }).filter(Boolean);
+  const cocosDirectorTickPatterns = ${JSON.stringify(cocosDirectorTickFramePatternSources())}.map((s) => {
+    try { return new RegExp(s, "i"); } catch (e) { return null; }
+  }).filter(Boolean);
+  const uhtDeltaTimePatterns = ${JSON.stringify(uhtDeltaTimeFramePatternSources())}.map((s) => {
+    try { return new RegExp(s, "i"); } catch (e) { return null; }
+  }).filter(Boolean);
+  // A assinatura de query identifica o documento do jogo JDB mesmo quando uma
+  // variante o abre diretamente como pagina principal da nova aba.
+  const isJdbGameDocument = () => {
+    try {
+      const params = new URLSearchParams(window.location.search || "");
+      return params.has("gVer") && params.has("gameType") && params.has("mType");
+    } catch (e) {
+      return false;
+    }
+  };
+  const jdbGameDocument = isJdbGameDocument();
+  const isUhtDeltaTimeDocument = () => {
+    try {
+      const path = window.location.pathname || "";
+      const href = window.location.href || "";
+      return uhtDeltaTimePatterns.some((pattern) => pattern.test(path) || pattern.test(href));
+    } catch (e) {
+      return false;
+    }
+  };
+  const uhtDeltaTimeDocument = isUhtDeltaTimeDocument();
   const isKnownGameFrame = () => {
     try {
+      if (jdbGameDocument) return true;
+      if (uhtDeltaTimeDocument) return true;
       if (window.top === window) return false;
       const path = window.location.pathname || "";
       const href = window.location.href || "";
@@ -5771,6 +5972,16 @@ export class BrowserRuntimeService {
     try {
       if (window.top === window) return false;
       return /\\/\\d+\\/index\\.html$/i.test(window.location.pathname || "");
+    } catch (e) {
+      return false;
+    }
+  };
+  const isCocosDirectorTickFrame = () => {
+    try {
+      if (window.top === window) return false;
+      const path = window.location.pathname || "";
+      const href = window.location.href || "";
+      return cocosDirectorTickPatterns.some((re) => re.test(path) || re.test(href));
     } catch (e) {
       return false;
     }
@@ -5805,29 +6016,84 @@ export class BrowserRuntimeService {
     if (!currentRoot) return false;
     try { currentRoot.setAttribute(name, value); return true; } catch (e) { return false; }
   };
-  const isPgLoadingOrInterstitial = () => {
-    if (!isPgCocosFrame()) return false;
+  // Cache de loading PG: a tela pode reaparecer depois que o jogo ja iniciou.
+  // Manter esse estado separado evita consultar DOM a cada frame/timer e permite
+  // restaurar os relogios nativos durante reconexao, carregamento ou erro.
+  let pgLoadingState = isPgCocosFrame();
+  // Um canvas pode aparecer antes de o loader grafico ser montado. No primeiro
+  // boot, so liberamos o Speed Time depois de observar um bloqueio sobre um
+  // canvas e sua remocao. O clique no canvas e o fallback para jogos sem loader DOM.
+  let pgSawBlockingLayerAfterCanvas = false;
+  let pgUserConfirmedReady = false;
+  // O shell JDB monta o painel antes de remover o loader. Mantemos 1x enquanto
+  // esse loader estiver visivel e liberamos o speed quando os controles reais
+  // aparecem, sem depender de host, texto traduzido ou clique de aposta.
+  let jdbLoadingState = jdbGameDocument;
+  const isElementVisible = (element) => {
     try {
-      if (window.__predatorPgSpeedUnlocked) return false;
-      const text = String(document.body && document.body.innerText || "");
-      const loadingPattern = /A\\s*carregar|A\\s*iniciar\\s*sess[aã]o|INICIAR|Retorno\\s+para\\s+o\\s+Jogador|Internet\\s+est[aá]\\s+lenta|lig[aá]?[cç][aã]o\\s+[àa]\\s+Internet\\s+est[aá]\\s+lenta|Atualizar|Aguardar|Jogos\\s+PG\\s+Oficiais|Ignorar|Aceitar|verifica/i;
-      if (!document.body || !document.querySelector('#GameCanvas,canvas.gameCanvas,canvas')) {
-        return true;
-      }
-      if (loadingPattern.test(text)) {
-        window.__predatorPgSpeedGateReason = text.slice(0, 160);
-        return true;
-      }
-      window.__predatorPgSpeedUnlocked = true;
-      window.__predatorPgSpeedGateReason = "";
-      return false;
+      if (!element || typeof window.getComputedStyle !== "function") return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' &&
+        Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
     } catch (e) {
-      try { window.__predatorPgSpeedGateReason = "error:" + String(e); } catch (_) {}
-      return true;
+      return false;
     }
   };
+  const isCanvasInteractiveAtCenter = (canvas) => {
+    try {
+      if (!canvas || typeof document.elementFromPoint !== "function") return false;
+      const canvasRect = canvas.getBoundingClientRect();
+      if (canvasRect.width < 1 || canvasRect.height < 1) return false;
+      const x = canvasRect.left + canvasRect.width / 2;
+      const y = canvasRect.top + canvasRect.height / 2;
+      return document.elementFromPoint(x, y) === canvas;
+    } catch (e) {
+      return false;
+    }
+  };
+  const refreshPgLoadingState = () => {
+    if (!isPgCocosFrame()) return false;
+    let nextState = true;
+    try {
+      const text = String(document.body && document.body.innerText || "");
+      const loadingPattern = /A\\s*carregar|A\\s*iniciar\\s*sess[aã]o|INICIAR|Retorno\\s+para\\s+o\\s+Jogador|Internet\\s+est[aá]\\s+lenta|lig[aá]?[cç][aã]o\\s+[àa]\\s+Internet\\s+est[aá]\\s+lenta|Atualizar|Aguardar|Jogos\\s+PG\\s+Oficiais|Ignorar|Aceitar|verifica/i;
+      const canvas = document.querySelector('#GameCanvas,canvas.gameCanvas,canvas');
+      const canvasInteractive = Boolean(canvas && isCanvasInteractiveAtCenter(canvas));
+      const loaderVisible = loadingPattern.test(text);
+      const blockedAfterCanvas = Boolean(canvas) && (!canvasInteractive || loaderVisible);
+      if (blockedAfterCanvas) {
+        pgSawBlockingLayerAfterCanvas = true;
+      }
+      if (document.body && canvas && canvasInteractive && !loaderVisible && (pgSawBlockingLayerAfterCanvas || pgUserConfirmedReady)) {
+        nextState = false;
+      }
+    } catch (e) {}
+    const changed = pgLoadingState !== nextState;
+    pgLoadingState = nextState;
+    writeAttr('data-rtc-game-ready', nextState ? '0' : '1');
+    return changed;
+  };
+  const refreshJdbLoadingState = () => {
+    if (!jdbGameDocument) return false;
+    let nextState = true;
+    try {
+      const controls = document.querySelector('#gameControlPanel,.spin-button');
+      const loader = document.querySelector('.loading-wrapper');
+      nextState = isElementVisible(loader) || !isElementVisible(controls);
+    } catch (e) {}
+    const changed = jdbLoadingState !== nextState;
+    jdbLoadingState = nextState;
+    return changed;
+  };
+  const isPgLoadingOrInterstitial = () => pgLoadingState;
+  const isUhtLoading = () => uhtDeltaTimeDocument && globalThis.loaderIsVisible !== false;
   const readDesiredRate = () => clamp(readAttr('data-rtc-speed') || initialSpeedRate);
-  const readRate = () => (isPgLoadingOrInterstitial() ? 1 : readDesiredRate());
+  const readRate = () => (
+    isPgLoadingOrInterstitial() || jdbLoadingState || isUhtLoading()
+      ? 1
+      : readDesiredRate()
+  );
   const syncGameSpeedRate = () => {
     try {
       window.__predatorGameSpeedRate = readRate();
@@ -5839,12 +6105,27 @@ export class BrowserRuntimeService {
   // ---- SPEED ----
   const nST = window.setTimeout;
   const nSI = window.setInterval;
+  const nCI = window.clearInterval;
   const nRAF = window.requestAnimationFrame;
-  const nNow = Date.now;
+  const NativeDate = window.Date;
+  const nNow = NativeDate.now;
   const nPN = performance.now;
   const start = nNow();
   const scaled = (t) => Math.max(0, (Number(t) || 0) / readRate());
   const performanceStart = nPN.call(performance);
+  const virtualDateNow = () => Math.round(start + (nNow() - start) * readRate());
+  const ScaledDate = function(...args) {
+    if (!new.target) return new NativeDate(virtualDateNow()).toString();
+    return args.length === 0
+      ? Reflect.construct(NativeDate, [virtualDateNow()], new.target)
+      : Reflect.construct(NativeDate, args, new.target);
+  };
+  try {
+    Object.setPrototypeOf(ScaledDate, NativeDate);
+    ScaledDate.prototype = NativeDate.prototype;
+    Object.defineProperty(ScaledDate, 'name', { configurable: true, value: 'Date' });
+    Object.defineProperty(ScaledDate, 'now', { configurable: true, value: virtualDateNow });
+  } catch (e) {}
   let speedInstalled = false;
   const installSpeed = () => {
     if (speedInstalled) return;
@@ -5853,9 +6134,12 @@ export class BrowserRuntimeService {
     window.setInterval = (h, t, ...a) => nSI.call(window, h, scaled(t), ...a);
     if (nRAF) {
       window.requestAnimationFrame = (cb) =>
-        nRAF.call(window, (ts) => cb(start + (ts - start) * readRate()));
+        nRAF.call(window, (ts) => cb(performanceStart + (ts - performanceStart) * readRate()));
     }
-    try { Date.now = () => Math.round(start + (nNow() - start) * readRate()); } catch (e) {}
+    try {
+      if (jdbGameDocument) window.Date = ScaledDate;
+      else NativeDate.now = virtualDateNow;
+    } catch (e) {}
     try {
       Object.defineProperty(performance, 'now', {
         configurable: true,
@@ -5871,17 +6155,139 @@ export class BrowserRuntimeService {
     if (nRAF) {
       try { window.requestAnimationFrame = nRAF; } catch (e) {}
     }
-    try { Date.now = nNow; } catch (e) {}
+    try {
+      window.Date = NativeDate;
+      NativeDate.now = nNow;
+    } catch (e) {}
     try {
       Object.defineProperty(performance, 'now', { configurable: true, value: nPN });
     } catch (e) {}
   };
   const syncSpeed = () => {
     syncGameSpeedRate();
-    if (readRate() > 1) installSpeed();
+    // Para o candidato WG/Cocos o delta e escalado por Director.tick(). Nao
+    // sobrescrevemos os timers/RAF aqui, pois isso faria o mesmo delta ser
+    // acelerado uma segunda vez.
+    if (isCocosDirectorTickFrame()) {
+      restoreSpeed();
+      return;
+    }
+    if (uhtDeltaTimeDocument) {
+      restoreSpeed();
+      return;
+    }
+    if (jdbGameDocument) installSpeed();
+    else if (readRate() > 1) installSpeed();
     else restoreSpeed();
   };
   syncSpeed();
+
+  if (jdbGameDocument) {
+    const refreshAndSyncJdbSpeed = () => {
+      if (refreshJdbLoadingState()) syncSpeed();
+    };
+    refreshAndSyncJdbSpeed();
+    nSI.call(window, refreshAndSyncJdbSpeed, 300);
+  }
+
+  const installUhtDeltaTimeSpeed = () => {
+    try {
+      const time = globalThis.Time;
+      if (!time || typeof time.deltaTime !== "number") return false;
+      if (time.__predatorUhtDeltaTime) return true;
+      const descriptor = Object.getOwnPropertyDescriptor(time, "deltaTime");
+      if (!descriptor || !descriptor.configurable) return false;
+      let rawDelta = time.deltaTime;
+      Object.defineProperty(time, "deltaTime", {
+        configurable: true,
+        enumerable: descriptor.enumerable,
+        get() { return rawDelta * readRate(); },
+        set(value) { rawDelta = Number(value) || 0; }
+      });
+      Object.defineProperty(time, "__predatorUhtDeltaTime", { value: true });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+  if (uhtDeltaTimeDocument) {
+    let attempts = 0;
+    const retryId = nSI.call(window, () => {
+      attempts += 1;
+      if (installUhtDeltaTimeSpeed() || attempts >= 300) {
+        nCI.call(window, retryId);
+      }
+    }, 50);
+    if (installUhtDeltaTimeSpeed()) {
+      nCI.call(window, retryId);
+    }
+  }
+
+  if (isPgCocosFrame()) {
+    let refreshPending = false;
+    const refreshAndSyncSpeed = () => {
+      if (refreshPgLoadingState()) syncSpeed();
+    };
+    const confirmPgReadyFromCanvasInteraction = (event) => {
+      try {
+        const canvas = document.querySelector('#GameCanvas,canvas.gameCanvas,canvas');
+        if (canvas && event.target === canvas && isCanvasInteractiveAtCenter(canvas)) {
+          pgUserConfirmedReady = true;
+          refreshAndSyncSpeed();
+        }
+      } catch (e) {}
+    };
+    const schedulePgLoadingRefresh = () => {
+      if (refreshPending) return;
+      refreshPending = true;
+      nST.call(window, () => {
+        refreshPending = false;
+        refreshAndSyncSpeed();
+      }, 80);
+    };
+    refreshAndSyncSpeed();
+    try {
+      new MutationObserver(schedulePgLoadingRefresh).observe(document.documentElement, {
+        childList: true,
+        characterData: true,
+        subtree: true
+      });
+    } catch (e) {}
+    try { document.addEventListener('pointerdown', confirmPgReadyFromCanvasInteraction, true); } catch (e) {}
+    nSI.call(window, refreshAndSyncSpeed, 300);
+  }
+
+  // A rota /clientv3/index.html seleciona um candidato WG; a presenca de
+  // cc.Director.prototype.tick confirma Cocos 3 antes de qualquer patch.
+  // O WG alimenta sistemas, componentes e renderizacao pelo delta de tick().
+  const installCocosDirectorTickSpeed = () => {
+    try {
+      const prototype = globalThis.cc && globalThis.cc.Director && globalThis.cc.Director.prototype;
+      if (!prototype || typeof prototype.tick !== "function") return false;
+      if (prototype.tick.__predatorCocosDirectorTick) return true;
+      const originalTick = prototype.tick;
+      const patchedTick = function(delta, ...rest) {
+        const rate = readRate();
+        const scaledDelta = typeof delta === "number" && Number.isFinite(delta) ? delta * rate : delta;
+        return originalTick.call(this, scaledDelta, ...rest);
+      };
+      Object.defineProperty(patchedTick, "__predatorCocosDirectorTick", { value: true });
+      prototype.tick = patchedTick;
+      return prototype.tick === patchedTick;
+    } catch (e) {
+      return false;
+    }
+  };
+  if (isCocosDirectorTickFrame()) {
+    let attempts = 0;
+    const retryId = nSI.call(window, () => {
+      attempts += 1;
+      if (installCocosDirectorTickSpeed() || attempts >= 200) {
+        nCI.call(window, retryId);
+      }
+    }, 50);
+    installCocosDirectorTickSpeed();
+  }
 
   let observerInstalled = false;
   const bindRootControls = () => {
@@ -5910,7 +6316,6 @@ export class BrowserRuntimeService {
 
   nSI.call(window, () => {
     const r = readRate();
-    if (r === 1) return;
     try {
       for (const m of document.querySelectorAll('video,audio')) m.playbackRate = r;
       for (const an of (document.getAnimations ? document.getAnimations() : [])) an.playbackRate = r;
@@ -6074,8 +6479,8 @@ export class BrowserRuntimeService {
       return;
     }
     const speedRate = this.clampNumber(rate, 1, 25);
-    // O new-document script via CDP ja usa pgGameOnly: true — so aplica em
-    // iframes de jogos PG/Cocos em navegacoes futuras.
+    // O new-document script via CDP so aplica controles em iframes de jogos
+    // reconhecidos em navegacoes futuras.
     await this.installRuntimeControlsNewDocumentScript(page, speedRate);
     const targets: Array<Page | Frame> = [page, ...page.frames().filter((frame) => frame !== page.mainFrame())];
     await Promise.allSettled(
@@ -6083,8 +6488,8 @@ export class BrowserRuntimeService {
         await this.setRuntimeControlAttr(target, "data-rtc-speed", String(speedRate));
         // Speed hack so em frames de jogos: evita interferir com timers de
         // login/cadastro/deposito/saque (anti-bot, animacoes, polling de QR).
-        const isPgGameTarget = isKnownGameFrameUrl(target.url());
-        if (isPgGameTarget && speedRate > 1) {
+        const isGameTarget = isKnownGameFrameUrl(target.url());
+        if (isGameTarget && speedRate > 1) {
           await this.installRuntimeControlsMainWorld(target, speedRate);
         }
       })
@@ -7618,9 +8023,10 @@ export class BrowserRuntimeService {
     if (account.password) fields.push({ label: "SENHA LOGIN", value: account.password });
     if (account.withdrawalPassword) fields.push({ label: "SENHA SAQUE", value: account.withdrawalPassword });
     if (account.cpf) fields.push({ label: "CPF", value: account.cpf });
-    if (account.phoneNumber && account.pixKeyRegisteredAt) {
-      fields.push({ label: "CHAVE PIX", value: account.phoneNumber });
-    } else if (account.phoneNumber) {
+    if (account.pixPhoneKey) {
+      fields.push({ label: "CHAVE PIX", value: account.pixPhoneKey });
+    }
+    if (account.phoneNumber) {
       fields.push({ label: "CELULAR", value: account.phoneNumber });
     }
     return fields;

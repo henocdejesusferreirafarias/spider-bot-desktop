@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import type {
   PixPhoneKeyImportResult,
-  PixPhoneKeyRecord
+  PixPhoneKeyRecord,
+  ProfileSummary
 } from "../../shared/contracts.js";
 import { formatRelativeTime } from "../lib/format.js";
+import { canDeletePixKey, canEditPixKey, pixKeyStatusLabel } from "../lib/pix-key-status.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { Icon } from "./Icon.js";
 import { Modal } from "./Modal.js";
@@ -149,12 +151,14 @@ function PixKeyModal({
 
 export function PixKeysPanel({
   pixKeys,
+  profiles,
   busyAction,
   onAdd,
   onUpdate,
   onDelete
 }: {
   pixKeys: PixPhoneKeyRecord[];
+  profiles: ProfileSummary[];
   busyAction?: string;
   onAdd: (input: string) => Promise<PixPhoneKeyImportResult>;
   onUpdate: (pixKeyId: string, phoneNumber: string) => Promise<unknown>;
@@ -165,6 +169,7 @@ export function PixKeysPanel({
   const [deleteTarget, setDeleteTarget] = useState<PixPhoneKeyRecord>();
   const busy = busyAction === "pix-keys:add" || busyAction === "pix-keys:update";
   const deleting = busyAction === "pix-keys:delete";
+  const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
 
   const openCreateModal = () => {
     setEditingKey(undefined);
@@ -172,6 +177,7 @@ export function PixKeysPanel({
   };
 
   const openEditModal = (pixKey: PixPhoneKeyRecord) => {
+    if (!canEditPixKey(pixKey.status)) return;
     setEditingKey(pixKey);
     setModalOpen(true);
   };
@@ -179,7 +185,9 @@ export function PixKeysPanel({
   return (
     <div className="manager-stack pix-keys-panel">
       <div className="manager-toolbar">
-        <span>{pixKeys.length} chave(s) disponiveis</span>
+        <span>
+          {pixKeys.filter((key) => key.status === "available").length} disponível(is) de {pixKeys.length} chave(s)
+        </span>
         <div className="manager-toolbar-actions">
           <button className="primary-button" onClick={openCreateModal} type="button">
             <Icon name="plus" size={14} />
@@ -195,7 +203,8 @@ export function PixKeysPanel({
               <th style={{ width: 44 }}>#</th>
               <th>Chave PIX</th>
               <th style={{ width: 100 }}>Status</th>
-              <th style={{ width: 120 }}>Entrada</th>
+              <th style={{ width: 140 }}>Vínculo</th>
+              <th style={{ width: 120 }}>Atualização</th>
               <th style={{ width: 110 }}>Acoes</th>
             </tr>
           </thead>
@@ -205,31 +214,40 @@ export function PixKeysPanel({
                 <td className="token">{index + 1}</td>
                 <td className="token" style={{ userSelect: "text" }}>{formatPhoneNumber(pixKey.phoneNumber)}</td>
                 <td>
-                  <span className={`status-pill ${pixKey.status === "available" ? "success" : pixKey.status === "used" ? "warning" : "neutral"}`}>
-                    {pixKey.status === "available" ? "disponivel" : pixKey.status === "reserved" ? "reservada" : "usada"}
+                  <span className={`status-pill ${pixKey.status === "available" ? "success" : pixKey.status === "rejected" ? "danger" : pixKey.status === "used" ? "warning" : "neutral"}`}>
+                    {pixKeyStatusLabel(pixKey.status)}
                   </span>
                 </td>
-                <td>{formatRelativeTime(pixKey.createdAt)}</td>
                 <td>
-                  <div className="act-cell">
-                    <button className="table-action-button" onClick={() => openEditModal(pixKey)} type="button">
-                      Editar
-                    </button>
-                    <button
-                      className="table-action-button danger"
-                      disabled={deleting}
-                      onClick={() => setDeleteTarget(pixKey)}
-                      type="button"
-                    >
-                      Excluir
-                    </button>
-                  </div>
+                  {profileNames.get(pixKey.pendingProfileId ?? pixKey.assignedProfileId ?? pixKey.usedProfileId ?? "") ?? "—"}
+                </td>
+                <td>{formatRelativeTime(pixKey.usedAt ?? pixKey.pendingAt ?? pixKey.assignedAt ?? pixKey.createdAt)}</td>
+                <td>
+                  {canEditPixKey(pixKey.status) || canDeletePixKey(pixKey.status) ? (
+                    <div className="act-cell">
+                      {canEditPixKey(pixKey.status) ? (
+                        <button className="table-action-button" onClick={() => openEditModal(pixKey)} type="button">
+                          Editar
+                        </button>
+                      ) : null}
+                      {canDeletePixKey(pixKey.status) ? (
+                        <button
+                          className="table-action-button danger"
+                          disabled={deleting}
+                          onClick={() => setDeleteTarget(pixKey)}
+                          type="button"
+                        >
+                          Excluir
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : "—"}
                 </td>
               </tr>
             ))}
             {!pixKeys.length ? (
               <tr>
-                <td colSpan={5}>
+                <td colSpan={6}>
                   <div className="empty-state inline" style={{ minHeight: 88 }}>
                     <Icon name="pixKeys" size={18} />
                     <p>Nenhuma chave PIX cadastrada ainda.</p>

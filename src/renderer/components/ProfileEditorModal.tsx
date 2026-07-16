@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { PersonaConfig, ProfileDraft, ProfileSummary, ProxyConfig } from "../../shared/contracts.js";
+import { profileEditorPixKeyValue } from "../lib/profile-editor-fields.js";
 import { Modal } from "./Modal.js";
 
 const defaultViewport = {
@@ -90,6 +91,7 @@ export function ProfileEditorModal({
   const [draft, setDraft] = useState<ProfileDraft>(defaultDraft);
   const [tagsText, setTagsText] = useState("");
   const [launchArgsText, setLaunchArgsText] = useState("");
+  const [showWithdrawalPassword, setShowWithdrawalPassword] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -100,6 +102,7 @@ export function ProfileEditorModal({
     setDraft(nextDraft);
     setTagsText(nextDraft.tags.join(", "));
     setLaunchArgsText(nextDraft.persona?.launchArgs?.join("\n") ?? "");
+    setShowWithdrawalPassword(false);
   }, [open, profile]);
 
   const persona: Partial<PersonaConfig> = {
@@ -201,7 +204,7 @@ export function ProfileEditorModal({
           </select>
         </label>
         <label>
-          <span>CPF PIX</span>
+          <span>CPF</span>
           <input
             inputMode="numeric"
             maxLength={14}
@@ -212,14 +215,28 @@ export function ProfileEditorModal({
         </label>
         <label>
           <span>Senha de saque</span>
-          <input
-            inputMode="numeric"
-            maxLength={6}
-            onChange={(event) => setDraft((current) => ({ ...current, withdrawalPassword: event.target.value }))}
-            placeholder="6 digitos"
-            type="password"
-            value={draft.withdrawalPassword ?? ""}
-          />
+          <div className="profile-editor-password-field">
+            <input
+              inputMode="numeric"
+              maxLength={6}
+              onChange={(event) => setDraft((current) => ({ ...current, withdrawalPassword: event.target.value }))}
+              placeholder="6 digitos"
+              type={showWithdrawalPassword ? "text" : "password"}
+              value={draft.withdrawalPassword ?? ""}
+            />
+            <button
+              aria-label={showWithdrawalPassword ? "Ocultar senha de saque" : "Mostrar senha de saque"}
+              className="detail-secret-toggle"
+              onClick={() => setShowWithdrawalPassword((visible) => !visible)}
+              type="button"
+            >
+              {showWithdrawalPassword ? "Ocultar" : "Mostrar"}
+            </button>
+          </div>
+        </label>
+        <label>
+          <span>Chave PIX</span>
+          <input readOnly value={profileEditorPixKeyValue(profile?.account)} />
         </label>
         <label className="span-2">
           <span>Tags</span>

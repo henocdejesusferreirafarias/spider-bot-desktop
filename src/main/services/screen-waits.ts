@@ -1,11 +1,17 @@
 import type { Page } from "patchright";
 import { resolveContentFrame, type BrowserRuntimeWindow } from "./automation-dom.js";
+import type { RouteInfo } from "./spa-navigation.js";
 import {
   hasActiveSession,
   isLoginFormVisible,
   hasWithdrawalPasswordSetupSurface,
+  hasExistingWithdrawalPasswordModal,
   hasWithdrawalAccountSurface,
   hasWithdrawalRequestSurface,
+  classifyWithdrawalManagementDestination,
+  type WithdrawalManagementDestination,
+  readPixReceivingAccountSignals,
+  type PixReceivingAccountSignals,
   hasVisibleNumberKeyboard,
   hasDepositSurface,
   hasProfileSurface
@@ -103,6 +109,71 @@ export async function waitForWithdrawalRequestSurface(page: Page, timeoutMs: num
   }
 
   return hasWithdrawalRequestSurface(page);
+}
+
+// Espera por um destino confirmado apos a Gestao de saques. O timeout e apenas
+// teto de seguranca; sucesso exige uma superficie real, nunca somente a rota.
+export async function waitForWithdrawalManagementDestination(
+  page: Page,
+  timeoutMs: number
+): Promise<WithdrawalManagementDestination> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const destination = await classifyWithdrawalManagementDestination(page);
+    if (destination !== "unknown") {
+      return destination;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return classifyWithdrawalManagementDestination(page);
+}
+
+// Depois do submit da senha, `needs_withdrawal_password` representa a tela
+// anterior enquanto a SPA carrega. Diferente da entrada pela Gestao de saques,
+// somente a superficie de saque confirma que o submit foi aceito.
+export async function waitForWithdrawalPasswordConfirmationDestination(
+  page: Page,
+  timeoutMs: number,
+): Promise<WithdrawalManagementDestination> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const destination = await classifyWithdrawalManagementDestination(page);
+    if (destination === "withdrawal_ready") {
+      return destination;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return classifyWithdrawalManagementDestination(page);
+}
+
+export async function waitForPixReceivingAccountSurface(
+  page: Page,
+  readRoute: () => Promise<RouteInfo | null>,
+  timeoutMs: number,
+): Promise<PixReceivingAccountSignals> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const signals = await readPixReceivingAccountSignals(page, await readRoute());
+    if (signals.ready) {
+      return signals;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return readPixReceivingAccountSignals(page, await readRoute());
+}
+
+export async function waitForExistingWithdrawalPasswordModal(
+  page: Page,
+  timeoutMs: number,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await hasExistingWithdrawalPasswordModal(page)) {
+      return true;
+    }
+    await page.waitForTimeout(180).catch(() => null);
+  }
+  return hasExistingWithdrawalPasswordModal(page);
 }
 
 export async function waitForAddPixModal(page: Page, timeoutMs: number): Promise<boolean> {

@@ -320,6 +320,17 @@ export async function getCurrentRoute(spa: SpaHandle): Promise<RouteInfo | null>
     .catch(() => null);
 }
 
+export function buildPixReceivingAccountTarget(route: RouteInfo): RouteTarget | null {
+  if (!route.name && !route.path) {
+    return null;
+  }
+  return {
+    ...(route.name ? { name: route.name } : {}),
+    ...(route.path ? { path: route.path } : {}),
+    query: { ...route.query, active: "10" },
+  };
+}
+
 // Empurra a SPA para uma rota via `router.push`. Retorna false se nao houver router.
 export async function routerPush(spa: SpaHandle, target: RouteTarget): Promise<boolean> {
   return spa
@@ -825,13 +836,182 @@ export type ProgrammaticPixUiAction =
   | "openReceivingAccount"
   | "openAddPix"
   | "selectPhone"
-  | "submit";
+  | "submit"
+  | "verifyPixAccountListed";
 
 export interface ProgrammaticPixUiResult {
   ok: boolean;
   action: ProgrammaticPixUiAction;
   reason?: string;
   diag?: string;
+}
+
+export interface ProgrammaticWithdrawalManagementResult {
+  ok: boolean;
+  reason?:
+    | "management-action-absent"
+    | "management-action-ambiguous"
+    | "management-listener-failed";
+  diag?: string;
+}
+
+// Aciona a mesma acao viva que o usuario seleciona no Perfil para abrir a
+// gestao de saques. A referencia do listener e efemera, por isso ela e
+// descoberta novamente no documento atual em cada chamada.
+export async function programmaticWithdrawalManagementAction(
+  spa: SpaHandle
+): Promise<ProgrammaticWithdrawalManagementResult> {
+  return spa
+    .evaluate(() => {
+      type Rec = Record<PropertyKey, unknown>;
+      type RuntimeElement = Rec & {
+        getBoundingClientRect?: () => { height: number; width: number };
+        parentElement?: RuntimeElement | null;
+        textContent?: string | null;
+      };
+      const isObj = (value: unknown): value is Rec =>
+        Boolean(value) && (typeof value === "object" || typeof value === "function");
+      const read = (target: unknown, key: PropertyKey): unknown => {
+        if (!isObj(target)) return undefined;
+        try {
+          return target[key];
+        } catch {
+          return undefined;
+        }
+      };
+      const normalize = (value: unknown) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element: RuntimeElement): boolean => {
+        const rect = element.getBoundingClientRect?.();
+        return !rect || (rect.width > 8 && rect.height > 8);
+      };
+      const alias = /gestao\s*(?:de\s*)?saques?|saques?|withdraw(?:al)?|cash\s*out/;
+      const exactAlias = /^(?:gestao\s*(?:de\s*)?saques?|saques?|withdraw(?:al)?|cash\s*out)$/;
+      const managementAlias = /(?:gestao|management)\s*(?:de\s*)?(?:saques?|withdraw(?:al)?|cash\s*out)/;
+      const runtime = globalThis as unknown as {
+        MouseEvent?: new (type: string, init: { bubbles: boolean; cancelable: boolean; view: unknown }) => unknown;
+        document: { querySelectorAll: (selector: string) => ArrayLike<RuntimeElement> };
+      };
+      const candidates: Array<{
+        element: RuntimeElement;
+        label: string;
+        listener: (...args: unknown[]) => unknown;
+        listenerKey: string;
+        score: number;
+      }> = [];
+      const seen = new Set<RuntimeElement>();
+
+      for (const labelElement of Array.from(runtime.document.querySelectorAll("body, body *"))) {
+        if (!visible(labelElement)) continue;
+        const label = normalize(labelElement.textContent);
+        const attrs = normalize(
+          [
+            read(labelElement, "id"),
+            read(labelElement, "className"),
+            read(labelElement, "role"),
+            read(labelElement, "ariaLabel"),
+            read(labelElement, "title")
+          ].join(" ")
+        );
+        if (!alias.test(`${label} ${attrs}`)) continue;
+
+        let element: RuntimeElement | null | undefined = labelElement;
+        for (let depth = 0; element && depth < 7; depth += 1) {
+          if (seen.has(element)) {
+            element = element.parentElement;
+            continue;
+          }
+          let listener: unknown;
+          let listenerKey: string | undefined;
+          for (const key of Reflect.ownKeys(element)) {
+            const holder = read(element, key);
+            const onClick = read(holder, "onClick") ?? read(holder, "onclick");
+            if (typeof onClick === "function") {
+              listener = read(onClick, "value") ?? onClick;
+              listenerKey = String(key);
+              break;
+            }
+          }
+          if (listener === undefined && typeof read(element, "onclick") === "function") {
+            listener = read(element, "onclick");
+            listenerKey = "onclick";
+          }
+          if (typeof listener === "function") {
+            seen.add(element);
+            candidates.push({
+              element,
+              label,
+              listener: listener as (...args: unknown[]) => unknown,
+              listenerKey: listenerKey ?? "onClick",
+              score:
+                (managementAlias.test(label)
+                  ? 300
+                  : exactAlias.test(label)
+                    ? 200
+                    : 100) + (managementAlias.test(attrs) ? 30 : alias.test(attrs) ? 20 : 0)
+            });
+            break;
+          }
+          element = element.parentElement;
+        }
+      }
+
+        const highestScore = candidates.reduce((score, candidate) => Math.max(score, candidate.score), 0);
+        const best = Array.from(
+          new Map(
+            candidates
+              .filter((candidate) => candidate.score === highestScore)
+              .map((candidate) => [candidate.listener, candidate])
+          ).values()
+        );
+      if (best.length === 0) {
+        return { ok: false, reason: "management-action-absent", diag: "candidates=0" };
+      }
+      if (best.length !== 1) {
+        return {
+          ok: false,
+          reason: "management-action-ambiguous",
+          diag: `candidates=${best.length} labels=${best.map((candidate) => candidate.label).join("|")}`
+        };
+      }
+
+      const candidate = best[0];
+      if (!candidate) {
+        return { ok: false, reason: "management-action-absent", diag: "candidate=missing" };
+      }
+      const event = runtime.MouseEvent
+        ? new runtime.MouseEvent("click", { bubbles: true, cancelable: true, view: globalThis })
+        : { type: "click" };
+      try {
+        Reflect.apply(candidate.listener, candidate.element, [event]);
+        return {
+          ok: true,
+          diag: `vue-listener=${candidate.listenerKey} label=${candidate.label}`
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: "management-listener-failed",
+          diag: String(error)
+        };
+      }
+    }, undefined, MAIN_WORLD)
+    .catch((error) => ({
+      ok: false,
+      reason: "management-listener-failed" as const,
+      diag: String(error)
+    })) as Promise<ProgrammaticWithdrawalManagementResult>;
+}
+
+// Payload opcional para acoes que precisam de dados (ex.: os digitos do telefone que
+// deve aparecer na lista de contas para a acao verifyPixAccountListed).
+export interface ProgrammaticPixUiPayload {
+  phoneDigits?: string;
 }
 
 // Aciona o cadastro PIX pelo estado, handlers e eventos direcionados da SPA, sem
@@ -844,11 +1024,23 @@ export interface ProgrammaticPixUiResult {
 // Os expandos Vue/Pinia so existem no MAIN world do Patchright.
 export async function programmaticPixUiAction(
   spa: SpaHandle,
-  action: ProgrammaticPixUiAction
+  action: ProgrammaticPixUiAction,
+  payload?: ProgrammaticPixUiPayload
 ): Promise<ProgrammaticPixUiResult> {
+  // Compatibilidade: quando nao ha payload passamos a STRING nua (como sempre) para nao
+  // quebrar os testes que fingem `page.evaluate` chamando `callback(action)` com string.
+  // So com payload passamos um objeto { action, ...payload }.
   return spa
     .evaluate(
-      async (requestedAction: ProgrammaticPixUiAction): Promise<ProgrammaticPixUiResult> => {
+      async (
+        input:
+          | ProgrammaticPixUiAction
+          | { action: ProgrammaticPixUiAction; phoneDigits?: string }
+      ): Promise<ProgrammaticPixUiResult> => {
+        const requestedAction =
+          typeof input === "string" ? input : input.action;
+        const phoneDigits =
+          typeof input === "string" ? undefined : input.phoneDigits;
         type Rec = Record<PropertyKey, unknown>;
         type RuntimeElement = Rec & {
           __vue_app__?: unknown;
@@ -1352,6 +1544,87 @@ export async function programmaticPixUiAction(
           };
         }
 
+        if (requestedAction === "verifyPixAccountListed") {
+          // Confirmacao FORTE de persistencia: nao basta o modal sumir. Procuramos a
+          // conta PIX recem-cadastrada no proprio estado da plataforma (stores Pinia) e,
+          // como corroboracao, no DOM da lista. Match por ULTIMOS 8 digitos para tolerar
+          // mascara/formatacao. Sem evidencia positiva, so retornamos sucesso se houver
+          // sinal real -- "modal fechou" sozinho NAO conta (era a fonte do falso-positivo).
+          const target = String(phoneDigits ?? "").replace(/\D+/g, "");
+          const digitsOf = (value: unknown) => String(value ?? "").replace(/\D+/g, "");
+          const phoneMatch = (stored: unknown): boolean => {
+            const normalized = digitsOf(stored);
+            if (!normalized || !target) return false;
+            if (normalized.length < 8 || target.length < 8) return normalized === target;
+            return (
+              normalized.endsWith(target.slice(-8)) || target.endsWith(normalized.slice(-8))
+            );
+          };
+          const stores = collectPiniaStores();
+          let listedWhere: string | undefined;
+          const walk = (node: unknown, depth: number): boolean => {
+            if (depth > 3 || !isObj(node)) return false;
+            const length = read(node, "length");
+            if (typeof length === "number") {
+              for (const item of Array.from(node as unknown as ArrayLike<unknown>).slice(0, 200)) {
+                if (isObj(item)) {
+                  for (const key of Reflect.ownKeys(item).slice(0, 40)) {
+                    if (phoneMatch(unwrap(read(item, key)))) return true;
+                  }
+                } else if (phoneMatch(item)) {
+                  return true;
+                }
+              }
+            }
+            for (const key of Reflect.ownKeys(node).slice(0, 60)) {
+              const child = unwrap(read(node, key));
+              if (isObj(child) && walk(child, depth + 1)) return true;
+            }
+            return false;
+          };
+          if (stores) {
+            for (const [key, store] of stores) {
+              if (walk(store, 0)) {
+                listedWhere = `store=${key}`;
+                break;
+              }
+            }
+          }
+          if (!listedWhere) {
+            const domHit = elements.find((element) => phoneMatch(element.textContent));
+            if (domHit) listedWhere = "dom-list";
+          }
+          const modalStillOpen = Boolean(findPixModalRoot());
+          const bodyText = normalize(read(runtime.document.body, "textContent"));
+          const hasError =
+            /(erro|falha|invalid|inval|ja (existe|cadastrad)|nao foi|failed|denied|recus)/.test(
+              bodyText
+            ) && !/sucesso|success/.test(bodyText);
+
+          if (listedWhere) {
+            return { ok: true, action: requestedAction, diag: `listed:${listedWhere}` };
+          }
+          if (hasError) {
+            return {
+              ok: false,
+              action: requestedAction,
+              reason: "error-surface",
+              diag: bodyText.slice(0, 160)
+            };
+          }
+          if (modalStillOpen) {
+            return { ok: false, action: requestedAction, reason: "modal-open-unconfirmed" };
+          }
+          return {
+            ok: false,
+            action: requestedAction,
+            reason: "modal-closed-unconfirmed",
+            diag: stores
+              ? `stores=${Array.from(stores.keys()).slice(-20).join(",")}`
+              : "sem-pinia"
+          };
+        }
+
         const modalRoot = findPixModalRoot();
         if (!modalRoot) return { ok: false, action: requestedAction, reason: "modal-pix-ausente" };
         const confirmButton =
@@ -1402,7 +1675,7 @@ export async function programmaticPixUiAction(
         }
         return { ok: false, action: requestedAction, reason: "form-submit-ausente" };
       },
-      action,
+      payload ? { action, phoneDigits: payload.phoneDigits } : action,
       MAIN_WORLD
     )
     .catch(

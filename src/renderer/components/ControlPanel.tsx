@@ -12,6 +12,7 @@ import type {
   WithdrawalPreparationControlResult
 } from "../../shared/contracts.js";
 import { friendlyActivityLog } from "../lib/friendlyLogs.js";
+import { summarizePixRegistrationResults } from "../lib/pix-registration-summary.js";
 import { Icon } from "./Icon.js";
 
 interface ControlPanelProps {
@@ -83,16 +84,6 @@ function summarizeDepositResults(results: ManualDepositControlResult[]): string 
   }
 
   return `${succeeded} deposito(s) enviado(s).`;
-}
-
-function summarizePixRegistrationResults(results: PixKeyRegistrationControlResult[]): string {
-  const succeeded = results.filter((result) => result.status === "succeeded").length;
-  const failed = results.length - succeeded;
-  if (failed > 0) {
-    return `${succeeded} PIX cadastrado(s), ${failed} falha(s).`;
-  }
-
-  return `${succeeded} PIX cadastrado(s).`;
 }
 
 function summarizeWithdrawalPreparationResults(results: WithdrawalPreparationControlResult[]): string {
@@ -627,7 +618,7 @@ export function ControlPanel({
           onClick={() => void runPixRegistrationAction()}
           type="button"
         >
-          {pixBusy ? "Cadastrando..." : "Cadastrar Chave PIX"}
+          {pixBusy ? "Cadastrando..." : "Cadastrar chave PIX"}
         </button>
         <button
           className="ghost-button stretch"

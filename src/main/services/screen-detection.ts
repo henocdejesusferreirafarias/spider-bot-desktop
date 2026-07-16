@@ -1,4 +1,5 @@
 import type { Frame, Page } from "patchright";
+import type { RouteInfo } from "./spa-navigation.js";
 import {
   PATCHRIGHT_MAIN_WORLD,
   resolveContentFrame,
@@ -581,6 +582,115 @@ export async function hasExistingWithdrawalPasswordModal(page: Page): Promise<bo
     .catch(() => false);
 }
 
+export type WithdrawalManagementDestination =
+  | "needs_withdrawal_password"
+  | "withdrawal_ready"
+  | "unknown";
+
+export interface PixReceivingAccountSignals {
+  routeActive10: boolean;
+  hasReceivingAccountArea: boolean;
+  hasPixAddAction: boolean;
+  ready: boolean;
+}
+
+export function decidePixReceivingAccountSignals(
+  input: Omit<PixReceivingAccountSignals, "ready">,
+): PixReceivingAccountSignals {
+  return {
+    ...input,
+    ready:
+      input.routeActive10 &&
+      input.hasReceivingAccountArea &&
+      input.hasPixAddAction,
+  };
+}
+
+export async function readPixReceivingAccountSignals(
+  page: Page,
+  route: RouteInfo | null,
+): Promise<PixReceivingAccountSignals> {
+  const domSignals = await resolveContentFrame(page)
+    .evaluate(() => {
+      const runtimeWindow = globalThis as unknown as BrowserRuntimeWindow;
+      const normalize = (value: string | null | undefined) =>
+        (value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const isVisible = (element: BrowserRuntimeElement) => {
+        const rect = element.getBoundingClientRect();
+        const style = runtimeWindow.getComputedStyle(element);
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || "1") > 0.01 &&
+          rect.width > 8 &&
+          rect.height > 8 &&
+          rect.right > 0 &&
+          rect.bottom > 0 &&
+          rect.left < runtimeWindow.innerWidth &&
+          rect.top < runtimeWindow.innerHeight
+        );
+      };
+      const bodyText = normalize(runtimeWindow.document.body?.innerText);
+      const hasReceivingAccountArea = /conta para recebimento|receiving account/.test(bodyText);
+      const hasPixAddAction = Array.from(
+        runtimeWindow.document.querySelectorAll(
+          "button,[role='button'],a,.ui-button,.ui-cell,div,span,li",
+        ),
+      ).some((element) => {
+        if (!isVisible(element)) return false;
+        const text = normalize(element.textContent);
+        return text.length > 0 && text.length <= 100 && /pix/.test(text) && /adicionar|add/.test(text);
+      });
+      return { hasReceivingAccountArea, hasPixAddAction };
+    })
+    .catch(() => ({ hasReceivingAccountArea: false, hasPixAddAction: false }));
+
+  return decidePixReceivingAccountSignals({
+    routeActive10: route?.query.active === "10",
+    ...domSignals,
+  });
+}
+
+export function decideWithdrawalManagementDestination(input: {
+  hasPasswordSetupSurface: boolean;
+  hasWithdrawalAccountSurface: boolean;
+  hasWithdrawalRequestSurface: boolean;
+}): WithdrawalManagementDestination {
+  if (input.hasPasswordSetupSurface) {
+    return "needs_withdrawal_password";
+  }
+  if (input.hasWithdrawalAccountSurface || input.hasWithdrawalRequestSurface) {
+    return "withdrawal_ready";
+  }
+  return "unknown";
+}
+
+// Classifica o estado apos o listener de Gestao de saques. A URL nunca e
+// suficiente por si: exige superficie de setup ou de saque renderizada.
+export async function classifyWithdrawalManagementDestination(
+  page: Page
+): Promise<WithdrawalManagementDestination> {
+  const [
+    passwordSetupSurface,
+    withdrawalAccountSurface,
+    withdrawalRequestSurface
+  ] = await Promise.all([
+    hasWithdrawalPasswordSetupSurface(page),
+    hasWithdrawalAccountSurface(page),
+    hasWithdrawalRequestSurface(page)
+  ]);
+  return decideWithdrawalManagementDestination({
+    hasPasswordSetupSurface: passwordSetupSurface,
+    hasWithdrawalAccountSurface: withdrawalAccountSurface,
+    hasWithdrawalRequestSurface: withdrawalRequestSurface
+  });
+}
+
 export async function hasVisibleNumberKeyboard(page: Page): Promise<boolean> {
   const frame = resolveContentFrame(page);
   return frame
@@ -846,6 +956,61 @@ export async function detectRegistrationUiFamily(page: Page): Promise<string | u
   }
 
   return "generico";
+}
+
+// Sinais estruturais lidos da tela apos o envio do formulario de cadastro. Sao
+// coletados por checagens de tela (contagem de campos de conta/senha, sessao
+// ativa, mensagem de erro) e alimentam a decisao pura abaixo.
+export type RegistrationCompletionSignal = {
+  // Mensagem de erro da plataforma (ex.: "conta ja existe", "senha fraca"), se houver.
+  platformError?: string;
+  // O formulario de cadastro AINDA esta na tela? Sinal ESTRUTURAL: presenca dos
+  // campos de conta/senha (>= 2 campos tipo-senha visiveis). Enquanto true, NAO
+  // deixamos de estar na tela de cadastro -- logo nao ha o que confirmar ainda.
+  registrationFormPresent: boolean;
+  // Uma sessao logada ja aparece na tela (saldo/deposito/saque/sair)? Confirmacao
+  // FORTE de que o cadastro concluiu (nas plataformas W1 o cadastro auto-loga).
+  activeSession: boolean;
+  // Quantas checagens consecutivas o formulario ficou AUSENTE. Descarta o
+  // re-render transitorio (some e volta) exigindo estabilidade antes de aceitar
+  // o encerramento do formulario como conclusao (quando nao ha sessao explicita).
+  consecutiveFormAbsences: number;
+};
+
+export type RegistrationCompletionDecision =
+  | { status: "registered"; via: "sessao-ativa" | "formulario-encerrado" }
+  | { status: "failed"; via: "erro-plataforma"; reason: string }
+  | { status: "pending" };
+
+// Decisao PURA de conclusao do cadastro a partir de sinais estruturais (nao de
+// espera fixa). Endurece o antigo "assumir cadastrada quando o campo de conta
+// some": aqui so confirmamos quando o estado REAL aparece.
+//
+// Ordem de prioridade:
+//  1. erro explicito da plataforma -> falhou (definitivo; nao ha o que reesperar);
+//  2. formulario ainda presente (campos de conta/senha) -> pendente (tela nao saiu);
+//  3. sessao ativa -> cadastrada (sinal forte);
+//  4. formulario ausente de forma ESTAVEL (>= minFormAbsences checagens) e sem
+//     erro -> cadastrada (fallback p/ plataformas que nao auto-logam).
+// Qualquer outro caso e "pending": seguimos no polling ate o teto do waiter.
+export function decideRegistrationCompletion(
+  signal: RegistrationCompletionSignal,
+  options?: { minFormAbsences?: number }
+): RegistrationCompletionDecision {
+  if (signal.platformError) {
+    return { status: "failed", via: "erro-plataforma", reason: signal.platformError };
+  }
+  if (signal.registrationFormPresent) {
+    return { status: "pending" };
+  }
+  if (signal.activeSession) {
+    return { status: "registered", via: "sessao-ativa" };
+  }
+  const minFormAbsences = options?.minFormAbsences ?? 3;
+  if (signal.consecutiveFormAbsences >= minFormAbsences) {
+    return { status: "registered", via: "formulario-encerrado" };
+  }
+  return { status: "pending" };
 }
 
 export function isDetachedDepositRouteState(state: { body: string; url: string }): boolean {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ProfileSummary } from "../../shared/contracts.js";
 import { formatRelativeTime, profileStatusTone } from "../lib/format.js";
+import { maskPixPhoneKey } from "../lib/mask-sensitive-value.js";
 import { Modal } from "./Modal.js";
 
 function DetailItem({ label, value }: { label: string; value?: string | number }) {
@@ -111,8 +112,9 @@ export function ProfileDetailModal({
           }
         />
         <DetailItem label="Nome real" value={profile.account?.realName} />
-        <DetailItem label="CPF PIX" value={maskCpf(profile.account?.cpf)} />
+        <DetailItem label="CPF" value={maskCpf(profile.account?.cpf)} />
         <SecretDetailItem label="Senha de saque" value={profile.account?.withdrawalPassword} />
+        <DetailItem label="Chave PIX" value={maskPixPhoneKey(profile.account?.pixPhoneKey)} />
         <DetailItem label="PIX cadastrado" value={formatRelativeTime(profile.account?.pixKeyRegisteredAt)} />
         <DetailItem label="Status da conta" value={profile.account?.status} />
         <DetailItem label="Gerada em" value={formatRelativeTime(profile.account?.generatedAt)} />

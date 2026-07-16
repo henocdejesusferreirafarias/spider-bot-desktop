@@ -25,6 +25,7 @@ import { SystemLogPanel } from "./components/SystemLogPanel.js";
 import { SystemLogsView } from "./components/SystemLogsView.js";
 import { OperationFooter } from "./components/OperationFooter.js";
 import { PixKeysPanel } from "./components/PixKeysPanel.js";
+import { countAvailablePixKeys } from "./lib/pix-key-status.js";
 import { ProfileDetailModal } from "./components/ProfileDetailModal.js";
 import { ProfileEditorModal } from "./components/ProfileEditorModal.js";
 import { ProfileFactoryPanel } from "./components/ProfileFactoryPanel.js";
@@ -583,7 +584,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       onOpenWithdrawals={app.openWithdrawals}
       onRegisterPixKey={app.registerPixKey}
       onUpdateSettings={app.updateSettings}
-      pixPhoneKeyCount={app.snapshot.pixPhoneKeys.length}
+      pixPhoneKeyCount={countAvailablePixKeys(app.snapshot.pixPhoneKeys.map((key) => key.status))}
       runtimeWindows={app.snapshot.runtimeWindows}
       settings={app.snapshot.settings}
       variant={variant}
@@ -610,7 +611,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       onOpenWithdrawals={app.openWithdrawals}
       onRegisterPixKey={app.registerPixKey}
       onUpdateSettings={app.updateSettings}
-      pixPhoneKeyCount={app.snapshot.pixPhoneKeys.length}
+      pixPhoneKeyCount={countAvailablePixKeys(app.snapshot.pixPhoneKeys.map((key) => key.status))}
       runtimeWindows={app.snapshot.runtimeWindows}
       settings={app.snapshot.settings}
       startStopAction={
@@ -810,6 +811,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
                   onDelete={app.deletePixPhoneKey}
                   onUpdate={app.updatePixPhoneKey}
                   pixKeys={app.snapshot.pixPhoneKeys}
+                  profiles={app.snapshot.profiles}
                 />
               </SectionCard>
             )}

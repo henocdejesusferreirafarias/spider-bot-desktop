@@ -71,13 +71,20 @@ type GeetestRuntimeHarness = {
   waitForCaptchaChallenge(runId: string, page: Page, timeoutMs: number): Promise<{ active: boolean; label: string }>;
   waitForGeetestDismissal(runId: string, page: Page, maxMs?: number): Promise<boolean>;
   waitForManualCaptchaIfPresent(runId: string, page: Page, profileName: string, stage: string): Promise<boolean>;
+  confirmRegistrationCompleted(
+    runId: string,
+    page: Page,
+    options: { timeoutMs: number },
+  ): Promise<{ registered: boolean; via: string; reason?: string }>;
   waitForRegistrationOrCaptcha(
     runId: string,
     page: Page,
-    accountInput: Locator,
     profileName: string,
     timeoutMs: number,
-  ): Promise<{ handledCaptcha: boolean; registered: boolean }>;
+  ): Promise<{
+    handledCaptcha: boolean;
+    outcome: { registered: boolean; via: string; reason?: string };
+  }>;
   waitForRunDelay(runId: string, page: Page, delayMs: number): Promise<void>;
   ensureRunActive(runId: string): void;
   nowMs(): number;
@@ -518,31 +525,33 @@ test("registration observes a captcha that appears just after the initial detect
   let now = 0;
   let registered = false;
   let captchaChecks = 0;
-  const accountInput = {
-    isVisible: async () => !registered,
-  } as unknown as Locator;
 
   geetest.nowMs = () => now;
   geetest.ensureRunActive = () => undefined;
-  geetest.waitForRunDelay = async (_runId, _page, delayMs) => {
-    now += delayMs;
-  };
   geetest.waitForManualCaptchaIfPresent = async () => {
     captchaChecks += 1;
     if (now < 2700) return false;
     registered = true;
     return true;
   };
+  geetest.confirmRegistrationCompleted = async () => {
+    now += 350;
+    return registered
+      ? { registered: true, via: "sessao-ativa" }
+      : { registered: false, via: "timeout-formulario-presente" };
+  };
 
   const result = await geetest.waitForRegistrationOrCaptcha(
     "run-1",
     {} as Page,
-    accountInput,
     "Teste",
     25_000,
   );
 
-  assert.deepEqual(result, { handledCaptcha: true, registered: true });
+  assert.deepEqual(result, {
+    handledCaptcha: true,
+    outcome: { registered: true, via: "sessao-ativa" },
+  });
   assert.ok(captchaChecks > 1);
   assert.ok(now < 5000, `captcha was only observed after ${now} ms`);
 });
