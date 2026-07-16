@@ -20,6 +20,14 @@ The `nine_match.onnx` session is also lazy. Although the model is small, its
 first captcha pays session creation cost. The runtime should start that work as
 soon as an automation run has Captcha Killer enabled.
 
+The previous Python runtime is still present even though automatic solving no
+longer calls it. `GeetestSolverService` can spawn one-shot and persistent Python
+bridges, `postinstall` still runs its dependency setup, and electron-builder
+still packages the complete `GeekedTest-main` tree. Keeping that dead path adds
+installation work, package size, maintenance surface, and uncertainty about
+which solver is active. This change removes it completely while retaining the
+Python scripts used only for offline model training.
+
 ## Goals
 
 1. Try up to 10 `/load` requests to obtain a `captcha_type=nine` challenge,
@@ -31,14 +39,19 @@ soon as an automation run has Captcha Killer enabled.
    60-second total deadline is reached.
 5. Warm the singleton ONNX session in the background when an enabled automation
    run starts.
+6. Remove the unused Python GeeTest runtime, worker lifecycle, dependency setup,
+   and packaged resources without removing independent offline training tools.
 
 ## Non-goals
 
 - Solving `icon`, `slide`, or any other GeeTest type.
-- Restoring the legacy Python solver as a fallback.
 - Changing the trained model, its preprocessing, or its inference queue.
 - Refreshing or clicking the visible GeeTest widget in order to reroll it.
 - Changing the manual captcha experience after automatic solving gives up.
+- Removing Python as an offline development and training prerequisite. The
+  current `captcha-train-nine-match.py`, `captcha-train-photo.py`, and
+  `captcha-oracle-ques.py` tools remain available.
+- Rewriting historical plans and specs that describe the former Python solver.
 
 ## Terminology
 
@@ -165,6 +178,48 @@ The runtime starts warm-up when it initializes an automation run whose
 handled rejection. All windows and runs still share the existing main-process
 classifier singleton and inference queue.
 
+### Legacy Python solver removal
+
+`src/main/services/geetest-solver.ts` keeps only the TypeScript data contracts,
+challenge-selection helpers, and solve/verify functions. The complete
+`GeetestSolverService` class and its process-management support are deleted,
+including Python discovery, one-shot bridge fallback, persistent worker,
+warm-session depth, pending requests, idle shutdown, and all `node:child_process`
+imports.
+
+The following runtime files are deleted:
+
+- `scripts/geetest_solver_bridge.py`;
+- `scripts/geetest_solver_worker.py`;
+- `scripts/setup-python.mjs`;
+- the complete `GeekedTest-main/` vendored project.
+
+Two obsolete development scripts are also deleted rather than left broken:
+
+- `scripts/captcha-autolabel-clip.py`, which imports
+  `GeekedTest-main/geeked/clip_shared.py` and relies on the invalid closed-class
+  target labels from the superseded photo-classifier experiment;
+- `scripts/clip-burn.py`, which exists only to reproduce the old CLIP worker's
+  CPU load.
+
+The MIT license from `GeekedTest-main/LICENSE` is retained as
+`assets/captcha/GeekedTest-LICENSE.txt` because existing captcha assets and
+TypeScript work originated from that vendored project. The license file remains
+inside the packaged `assets/**` tree.
+
+`package.json` is updated in three places:
+
+1. `postinstall` keeps `patch-package` and the napi build but stops invoking
+   `setup-python.mjs`.
+2. The `setup:python` command is removed.
+3. electron-builder stops copying the Python bridges and `GeekedTest-main` as
+   `extraResources`; unrelated renderer and icon resources remain unchanged.
+
+The `dev:electron` wait for `dist-electron/main/services/geetest-solver.js`
+remains because that module still contains the active TypeScript solver.
+`README.md` is updated to describe the TypeScript/ONNX runtime and Python only
+as an optional offline training prerequisite.
+
 ## Observability
 
 Automatic solving logs concise progress at meaningful boundaries:
@@ -195,6 +250,11 @@ needed. Required cases:
 9. The 60-second deadline stops either loop.
 10. Concurrent warm-up and first inference create one ONNX session.
 11. A failed warm-up does not permanently prevent a later initialization retry.
+12. The package manifest contains no Python setup script or Python solver
+    `extraResources`.
+13. The active TypeScript solver has no child-process or Python-worker path.
+14. Runtime cleanup does not remove or break the current nine-match training
+    command and its self-test.
 
 Existing queue and batch-inference tests remain unchanged. Final verification
 is `npm run check` followed by `npm test`.
@@ -209,21 +269,43 @@ is `npm run check` followed by `npm test`.
 5. Automatic work lasts no more than 60 seconds before manual fallback, subject
    only to cancellation semantics and the request layer's ability to abort an
    in-flight request.
-6. The old Python solver is not invoked.
-7. Enabling Captcha Killer starts exactly one shared ONNX session warm-up.
-8. Existing manual fallback and inference serialization continue to work.
-9. `npm run check` and `npm test` pass.
+6. No runtime code can spawn the old Python bridge or worker.
+7. `npm install` no longer runs solver-specific Python setup.
+8. Packaged applications contain neither `GeekedTest-main` nor either Python
+   bridge.
+9. The obsolete CLIP autolabel and load-simulation scripts are absent, while
+   `npm run train:nine-match` remains available.
+10. The original MIT notice is retained in the packaged captcha assets.
+11. Enabling Captcha Killer starts exactly one shared ONNX session warm-up.
+12. Existing manual fallback and inference serialization continue to work.
+13. Repository-wide runtime reference checks find no live references to
+    `GeetestSolverService`, `geetest_solver_bridge.py`,
+    `geetest_solver_worker.py`, `setup-python.mjs`, or `GeekedTest-main` outside
+    historical documentation.
+14. `npm run check` and `npm test` pass.
 
 ## Expected files
 
 | File | Expected action |
 |---|---|
 | `src/main/services/captcha/onnx-session.ts` | Add idempotent, retryable warm-up support. |
-| `src/main/services/geetest-solver.ts` | Separate challenge selection from solve/verify and expose bounded helpers. |
+| `src/main/services/geetest-solver.ts` | Separate challenge selection from solve/verify, expose bounded helpers, and delete the Python process service. |
 | `src/main/services/automation-runtime.ts` | Run warm-up, nested retry budgets, deadline, logging, and manual fallback. |
+| `package.json` | Remove solver Python setup and packaged Python resources while keeping offline training commands. |
+| `README.md` | Document the TypeScript/ONNX runtime and optional offline training environment. |
+| `GeekedTest-main/LICENSE` -> `assets/captcha/GeekedTest-LICENSE.txt` | Preserve the MIT notice in packaged assets. |
+| `GeekedTest-main/**` except the moved license | Delete the vendored legacy solver. |
+| `scripts/geetest_solver_bridge.py` | Delete the one-shot runtime bridge. |
+| `scripts/geetest_solver_worker.py` | Delete the persistent runtime bridge. |
+| `scripts/setup-python.mjs` | Delete legacy dependency installation. |
+| `scripts/captcha-autolabel-clip.py` | Delete the obsolete GeekedTest-dependent autolabeler. |
+| `scripts/clip-burn.py` | Delete the obsolete legacy worker load simulator. |
 | `test/captcha-photo-classifier.test.ts` | Cover singleton session initialization behavior. |
 | `test/geetest-solver.test.ts` | Cover selection and retry semantics. |
 | `test/automation-runtime.test.ts` or the nearest existing runtime test | Cover integration with captured non-`nine` and manual fallback where practical. |
+| `test/geetest-legacy-cleanup.test.ts` | Guard package configuration and absence of the Python runtime path. |
 
-No model assets, training scripts, datasets, Python worker files, ADRs, or
-unrelated runtime services are changed by this feature.
+No model binaries, current training scripts, datasets, ADRs, historical design
+documents, or unrelated runtime services are changed by this feature. Python
+remains usable for offline training but is no longer an application runtime or
+installation dependency.
