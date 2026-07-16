@@ -121,3 +121,30 @@ test("runtime signer exposes only the nine visual challenge path", () => {
   );
   assert.equal(packageJson.scripts["captcha:gate1"], undefined);
 });
+
+test("repository excludes obsolete captcha spikes and generated diagnostics", () => {
+  const obsoletePaths = [
+    "scripts/captcha-gate1.mjs",
+    "scripts/captcha-gate2-nine.mjs",
+    "scripts/captcha-collect-dataset.mjs",
+    "scripts/captcha-collect-ques.mjs",
+    "scripts/captcha-analyze-catalog.mjs",
+    "scripts/captcha-debug-ncc.mjs",
+    "scripts/captcha-perceptual-dryrun.mjs",
+    "scripts/captcha-perceptual-match.mjs",
+    "scripts/captcha-spike-perceptual.mjs",
+    "scripts/captcha-review-gallery.mjs",
+    "scripts/inspect-pin.mjs",
+    "scripts/measure-load.mjs",
+    "scripts/validate-killer.ts",
+    "test/fixtures/captcha/dataset/nine",
+    "test/fixtures/captcha/nine/ques.expected.json",
+  ];
+  for (const relativePath of obsoletePaths) {
+    assert.equal(existsSync(join(root, relativePath)), false, relativePath);
+  }
+
+  const generatedPinArtifacts = readdirSync(join(root, "scripts"))
+    .filter((name) => name.startsWith("_pin-"));
+  assert.deepEqual(generatedPinArtifacts, []);
+});
