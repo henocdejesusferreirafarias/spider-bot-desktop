@@ -9,7 +9,7 @@ The current path also inserts 180 ms between every unsuccessful search request, 
 ## Goals
 
 - Preserve two independent limits: ten non-nine/error rerolls and five answered `nine` challenges.
-- Bound one automatic solve to at most fifteen `/load` requests instead of fifty.
+- Bound one automatic solve to at most fourteen reachable `/load` requests instead of fifty.
 - Avoid artificial delay after a valid non-nine response.
 - Keep a short delay after transport errors and rejected `nine` answers.
 - Return promptly once the captcha actually disappears.
@@ -32,7 +32,7 @@ The runtime will maintain two counters for one automatic solve:
 - `rerollAttempts`: incremented for each non-nine response, malformed response, or `/load` error; maximum 10.
 - `answerAttempts`: incremented when a usable `nine` challenge is selected for the solve pipeline; maximum 5. Download, inference, signing, and verification failures consume that attempt.
 
-Finding a usable `nine` challenge does not consume the reroll budget. A rejected answer starts another search while retaining both counters. Therefore the maximum is ten discarded/error loads plus five usable-nine loads, for fifteen `/load` calls total.
+Finding a usable `nine` challenge does not consume the reroll budget. A rejected answer starts another search while retaining both counters. The conservative sum of both budgets is fifteen loads, but immediate fallback on the tenth reroll makes fourteen the reachable worst case: nine discarded/error loads plus five usable-nine loads.
 
 The 60-second deadline remains authoritative. Reaching either the reroll limit, answer limit, or deadline moves immediately to the existing manual fallback.
 
@@ -59,7 +59,7 @@ Errors thrown while downloading images, running inference, signing, or verifying
 
 ## Testing
 
-- A runtime test will simulate ten non-nine responses and five rejected `nine` answers, asserting no more than fifteen loads and correct independent counters.
+- Runtime tests will separately assert fallback on ten non-nine responses and the combined worst case of nine non-nine responses plus five rejected `nine` answers, for fourteen loads.
 - A timing-policy test will assert that valid non-nine responses do not invoke the delay callback, while load errors do.
 - A success-settle test will assert that the runtime returns as soon as the captcha detector becomes inactive rather than always consuming 1.2 seconds.
 - A signer test will assert that grid and prompt fetches begin before either is allowed to finish.
@@ -68,4 +68,4 @@ Errors thrown while downloading images, running inference, signing, or verifying
 
 ## Expected Outcome
 
-A first-try `nine` still performs one `/load`, two parallel image downloads, one batched ONNX inference, and one `/verify`, without unnecessary retry delays. Mixed `icon`/`nine` sequences retain bounded rerolling, while the worst-case request count drops from fifty to fifteen.
+A first-try `nine` still performs one `/load`, two parallel image downloads, one batched ONNX inference, and one `/verify`, without unnecessary retry delays. Mixed `icon`/`nine` sequences retain bounded rerolling, while the reachable worst-case request count drops from fifty to fourteen.
