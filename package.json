@@ -1,6 +1,6 @@
 {
   "name": "@spider-bot/desktop",
-  "version": "1.1.17",
+  "version": "1.1.18",
   "description": "Spider BOT desktop multi-login browser profile manager",
   "private": true,
   "type": "module",
