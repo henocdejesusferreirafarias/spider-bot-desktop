@@ -200,8 +200,38 @@ export interface NineMatchImage {
   height: number;
 }
 
+export class NineMatchInferenceQueue {
+  private active = 0;
+  private readonly pending: Array<() => void> = [];
+
+  constructor(private readonly maxConcurrent: number = 1) {
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
+      throw new Error('NineMatchInferenceQueue maxConcurrent must be a positive integer');
+    }
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.maxConcurrent) {
+      await new Promise<void>((resolve) => this.pending.push(resolve));
+    }
+    this.active += 1;
+    try {
+      return await fn();
+    } finally {
+      this.active -= 1;
+      this.pending.shift()?.();
+    }
+  }
+}
+
+function resolveNineMatchInferenceConcurrency(): number {
+  const parsed = Number(process.env.NINE_MATCH_INFERENCE_CONCURRENCY ?? 1);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
 export class NineMatchClassifier {
   private session: ort.InferenceSession | undefined;
+  private readonly queue = new NineMatchInferenceQueue(resolveNineMatchInferenceConcurrency());
 
   private async ensure(): Promise<ort.InferenceSession> {
     if (!this.session) this.session = await ort.InferenceSession.create(NINE_MATCH_MODEL);
@@ -218,24 +248,26 @@ export class NineMatchClassifier {
 
   async scoreCells(ques: NineMatchImage, cells: NineMatchImage[]): Promise<number[]> {
     if (cells.length === 0) return [];
-    const session = await this.ensure();
-    const sampleSize = 3 * 64 * 128;
-    const batch = new Float32Array(cells.length * sampleSize);
-    cells.forEach((cell, index) => {
-      batch.set(
-        normalizeNineMatchPairForImageNet(ques.data, ques.width, ques.height, cell.data, cell.width, cell.height),
-        index * sampleSize,
-      );
-    });
-    const tensor = new ort.Tensor('float32', batch, [cells.length, 3, 64, 128]);
-    const out = await session.run({ input: tensor });
-    const data = out.logit?.data;
-    if (!data || data.length < cells.length) {
-      throw new Error('nine_match.onnx did not return logit output');
-    }
-    return Array.from({ length: cells.length }, (_, index) => {
-      const logit = Number(data[index]);
-      return 1 / (1 + Math.exp(-logit));
+    return this.queue.run(async () => {
+      const session = await this.ensure();
+      const sampleSize = 3 * 64 * 128;
+      const batch = new Float32Array(cells.length * sampleSize);
+      cells.forEach((cell, index) => {
+        batch.set(
+          normalizeNineMatchPairForImageNet(ques.data, ques.width, ques.height, cell.data, cell.width, cell.height),
+          index * sampleSize,
+        );
+      });
+      const tensor = new ort.Tensor('float32', batch, [cells.length, 3, 64, 128]);
+      const out = await session.run({ input: tensor });
+      const data = out.logit?.data;
+      if (!data || data.length < cells.length) {
+        throw new Error('nine_match.onnx did not return logit output');
+      }
+      return Array.from({ length: cells.length }, (_, index) => {
+        const logit = Number(data[index]);
+        return 1 / (1 + Math.exp(-logit));
+      });
     });
   }
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PNG } from 'pngjs';
-import { normalizeNineMatchPairForImageNet, normalizePhotoRgbForImageNet } from '../src/main/services/captcha/onnx-session.js';
+import { NineMatchInferenceQueue, normalizeNineMatchPairForImageNet, normalizePhotoRgbForImageNet } from '../src/main/services/captcha/onnx-session.js';
 import { findIconCellsPhoto, rankPhotoCellsForTarget } from '../src/main/services/captcha/solvers/nine-photo.js';
 
 function solidPng(width: number, height: number, rgba: [number, number, number, number]): Buffer {
@@ -59,6 +59,42 @@ test('normalizeNineMatchPairForImageNet composites transparent prompt pixels ove
   assert.ok(Math.abs(out[0]! - ((1 - 0.485) / 0.229)) < 0.0001);
   assert.ok(Math.abs(out[32 * 128 + 32]! - ((0 - 0.485) / 0.229)) < 0.0001);
   assert.ok(Math.abs(out[64]! - ((1 - 0.485) / 0.229)) < 0.0001);
+});
+
+test('NineMatchInferenceQueue limits concurrent inference work', async () => {
+  const queue = new NineMatchInferenceQueue(1);
+  let active = 0;
+  let maxActive = 0;
+  const releaseResolvers: Array<() => void> = [];
+  const waitForStarted = async (count: number): Promise<void> => {
+    for (let i = 0; i < 20 && releaseResolvers.length < count; i++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+  };
+
+  const jobs = [1, 2, 3].map((value) => queue.run(async () => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise<void>((resolve) => releaseResolvers.push(resolve));
+    active -= 1;
+    return value * 10;
+  }));
+
+  await waitForStarted(1);
+  assert.equal(active, 1);
+  assert.equal(releaseResolvers.length, 1);
+  releaseResolvers.shift()?.();
+
+  await waitForStarted(1);
+  assert.equal(active, 1);
+  releaseResolvers.shift()?.();
+
+  await waitForStarted(1);
+  assert.equal(active, 1);
+  releaseResolvers.shift()?.();
+
+  assert.deepEqual(await Promise.all(jobs), [10, 20, 30]);
+  assert.equal(maxActive, 1);
 });
 
 test('findIconCellsPhoto ranks cells with the nine-match pair scorer', async () => {
