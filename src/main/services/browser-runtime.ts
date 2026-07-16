@@ -8023,9 +8023,10 @@ export class BrowserRuntimeService {
     if (account.password) fields.push({ label: "SENHA LOGIN", value: account.password });
     if (account.withdrawalPassword) fields.push({ label: "SENHA SAQUE", value: account.withdrawalPassword });
     if (account.cpf) fields.push({ label: "CPF", value: account.cpf });
-    if (account.phoneNumber && account.pixKeyRegisteredAt) {
-      fields.push({ label: "CHAVE PIX", value: account.phoneNumber });
-    } else if (account.phoneNumber) {
+    if (account.pixPhoneKey) {
+      fields.push({ label: "CHAVE PIX", value: account.pixPhoneKey });
+    }
+    if (account.phoneNumber) {
       fields.push({ label: "CELULAR", value: account.phoneNumber });
     }
     return fields;

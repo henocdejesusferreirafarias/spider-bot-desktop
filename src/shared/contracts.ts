@@ -78,7 +78,7 @@ export type AutomationStatus =
   | "cancelled";
 export type AutomationKind = "account-registration";
 export type ProfileAccountStatus = "generated" | "registered" | "failed";
-export type PixPhoneKeyStatus = "available" | "reserved" | "used";
+export type PixPhoneKeyStatus = "available" | "reserved" | "pending_confirmation" | "rejected" | "used";
 export type PixRegistrationType = "PHONE";
 export type ActivityLevel = "info" | "success" | "warning" | "error";
 export type AppSection =
@@ -181,6 +181,7 @@ export interface ProfileAccountRecord {
   realName: string;
   cpf?: string;
   withdrawalPassword?: string;
+  pixPhoneKey?: string;
   pixKeyRegisteredOrigins: string[];
   pixKeyRegisteredAt?: string;
   status: ProfileAccountStatus;
@@ -206,6 +207,12 @@ export interface PixPhoneKeyRecord {
   status: PixPhoneKeyStatus;
   assignedProfileId?: string;
   assignedAt?: string;
+  reservationRunId?: string;
+  pendingProfileId?: string;
+  pendingRunId?: string;
+  pendingAt?: string;
+  rejectedAt?: string;
+  rejectionReason?: "withdrawal-account-already-linked";
   usedProfileId?: string;
   usedAccountId?: string;
   usedAt?: string;
@@ -458,7 +465,8 @@ export interface PixKeyRegistrationControlResult {
   pixType: PixRegistrationType;
   profileId: string;
   profileName: string;
-  status: "succeeded" | "failed";
+  status: "needs_withdrawal_password" | "withdrawal_password_filled" | "withdrawal_ready" | "pix_receiving_ready" | "withdrawal_password_required" | "withdrawal_password_entered" | "pix_add_form_ready" | "pix_add_form_filled" | "pix_already_registered" | "pix_key_registered" | "pix_key_pending_confirmation" | "pix_key_conflict" | "failed";
+  step?: "profile" | "withdrawal-management" | "withdrawal-password" | "withdrawal-password-confirmation" | "pix-receiving-account" | "pix-preflight" | "pix-add-password" | "pix-enter-password" | "pix-password-confirmation" | "pix-add-form-fill" | "pix-submit" | "pix-submission-confirmation";
 }
 
 export interface WithdrawalPreparationControlRequest {

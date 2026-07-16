@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Frame, Page } from "patchright";
 import {
+  decideWithdrawalManagementDestination,
+  decidePixReceivingAccountSignals,
   hasDepositSurface,
   isDetachedDepositRouteState,
   decideRegistrationCompletion
@@ -183,4 +185,75 @@ test("hasDepositSurface: retorna false quando o evaluate rejeita (guard do catch
     }
   } as unknown as Page;
   assert.equal(await hasDepositSurface(page), false);
+});
+
+test("Withdrawal Management destination requires the password setup surface", () => {
+  assert.equal(
+    decideWithdrawalManagementDestination({
+      hasPasswordSetupSurface: true,
+      hasWithdrawalAccountSurface: true,
+      hasWithdrawalRequestSurface: true
+    }),
+    "needs_withdrawal_password"
+  );
+});
+
+test("Withdrawal Management destination accepts a real withdrawal surface", () => {
+  assert.equal(
+    decideWithdrawalManagementDestination({
+      hasPasswordSetupSurface: false,
+      hasWithdrawalAccountSurface: true,
+      hasWithdrawalRequestSurface: false
+    }),
+    "withdrawal_ready"
+  );
+});
+
+test("Withdrawal Management destination stays unknown without a confirmed surface", () => {
+  assert.equal(
+    decideWithdrawalManagementDestination({
+      hasPasswordSetupSurface: false,
+      hasWithdrawalAccountSurface: false,
+      hasWithdrawalRequestSurface: false
+    }),
+    "unknown"
+  );
+});
+
+test("PIX receiving signals: active=10 sem superficie nao fica pronto", () => {
+  assert.deepEqual(
+    decidePixReceivingAccountSignals({
+      routeActive10: true,
+      hasReceivingAccountArea: false,
+      hasPixAddAction: false,
+    }),
+    {
+      routeActive10: true,
+      hasReceivingAccountArea: false,
+      hasPixAddAction: false,
+      ready: false,
+    },
+  );
+});
+
+test("PIX receiving signals: superficie sem active=10 nao fica pronta", () => {
+  assert.equal(
+    decidePixReceivingAccountSignals({
+      routeActive10: false,
+      hasReceivingAccountArea: true,
+      hasPixAddAction: true,
+    }).ready,
+    false,
+  );
+});
+
+test("PIX receiving signals: tres sinais confirmam a aba", () => {
+  assert.equal(
+    decidePixReceivingAccountSignals({
+      routeActive10: true,
+      hasReceivingAccountArea: true,
+      hasPixAddAction: true,
+    }).ready,
+    true,
+  );
 });

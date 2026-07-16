@@ -1741,19 +1741,13 @@ async function bootstrap(): Promise<void> {
     requireLicense();
     const session = getInstanceSessionForEvent(event);
     const targetProfileIds = session.browserRuntime.getActiveProfileIdsForSelection(request.targetSelection);
-    const availablePixKeyCount = session.database.listPixPhoneKeys().length;
-    if (request.pixType === "PHONE" && targetProfileIds.length > availablePixKeyCount) {
-      throw new Error(
-        `Voce selecionou ${targetProfileIds.length} perfil(is), mas ha apenas ${availablePixKeyCount} chave(s) PIX telefone disponiveis.`
-      );
-    }
     const results = await session.automationRuntime.runManualPixKeyRegistration(
       targetProfileIds,
       request.pixType,
       session.database.getSettings()
     );
-    const succeeded = results.filter((result) => result.status === "succeeded").length;
-    const failed = results.length - succeeded;
+    const prepared = results.filter((result) => result.status !== "failed").length;
+    const failed = results.length - prepared;
 
     session.database.logActivity({
       id: crypto.randomUUID(),
@@ -1761,8 +1755,8 @@ async function bootstrap(): Promise<void> {
       level: failed > 0 ? "warning" : "success",
       message:
         failed > 0
-          ? `Cadastro PIX concluido com ${succeeded} sucesso(s) e ${failed} falha(s).`
-          : `Cadastro PIX enviado para ${succeeded} janela(s).`,
+          ? `Preparacao PIX concluida com ${prepared} sucesso(s) e ${failed} falha(s).`
+          : `Preparacao PIX enviada para ${prepared} janela(s).`,
       details: {
         pixType: request.pixType,
         windows: describeTargetSelection(request.targetSelection)

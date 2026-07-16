@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "patchright";
 import {
+  buildPixReceivingAccountTarget,
   programmaticDeposit,
   programmaticPixUiAction,
+  programmaticWithdrawalManagementAction,
   waitForSpaRouter
 } from "../src/main/services/spa-navigation.js";
 
@@ -518,6 +520,120 @@ test("PIX registration submits its form without pressing the confirm button", as
   assert.equal(submitCalls, 1);
 });
 
+test("Withdrawal Management invokes the unique live Vue listener", async () => {
+  let calls = 0;
+  const vueEventMap = Symbol("_vei");
+  const invoker = Object.assign(() => undefined, {
+    value: (event: { type?: string }) => {
+      assert.equal(event.type, "click");
+      calls += 1;
+    }
+  });
+  const element = {
+    [vueEventMap]: { onClick: invoker },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Gestão de saques"
+  };
+  const page = {
+    evaluate: async (callback: () => unknown) =>
+      withRuntimeDocument([element], callback)
+  } as unknown as Page;
+
+  const result = await programmaticWithdrawalManagementAction(page);
+
+  assert.equal(result.ok, true);
+  assert.match(result.diag ?? "", /vue-listener/);
+  assert.equal(calls, 1);
+});
+
+test("Withdrawal Management prefers the specific management action over generic withdrawals", async () => {
+  let managementCalls = 0;
+  let genericWithdrawalCalls = 0;
+  const vueEventMap = Symbol("_vei");
+  const management = {
+    [vueEventMap]: {
+      onClick: Object.assign(() => undefined, {
+        value: () => {
+          managementCalls += 1;
+        }
+      })
+    },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Gestão de saques"
+  };
+  const genericWithdrawal = {
+    [vueEventMap]: {
+      onClick: Object.assign(() => undefined, {
+        value: () => {
+          genericWithdrawalCalls += 1;
+        }
+      })
+    },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Saques"
+  };
+  const page = {
+    evaluate: async (callback: () => unknown) =>
+      withRuntimeDocument([genericWithdrawal, management], callback)
+  } as unknown as Page;
+
+  const result = await programmaticWithdrawalManagementAction(page);
+
+  assert.equal(result.ok, true);
+  assert.equal(managementCalls, 1);
+  assert.equal(genericWithdrawalCalls, 0);
+});
+
+test("Withdrawal Management deduplicates nested elements with the same Vue listener", async () => {
+  let calls = 0;
+  const vueEventMap = Symbol("_vei");
+  const invoker = Object.assign(() => undefined, {
+    value: () => {
+      calls += 1;
+    }
+  });
+  const makeElement = () => ({
+    [vueEventMap]: { onClick: invoker },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Gestão de saques"
+  });
+  const page = {
+    evaluate: async (callback: () => unknown) =>
+      withRuntimeDocument([makeElement(), makeElement()], callback)
+  } as unknown as Page;
+
+  const result = await programmaticWithdrawalManagementAction(page);
+
+  assert.equal(result.ok, true);
+  assert.equal(calls, 1);
+});
+
+test("Withdrawal Management refuses ambiguous live Vue listeners", async () => {
+  let calls = 0;
+  const vueEventMap = Symbol("_vei");
+  const makeElement = () => ({
+    [vueEventMap]: {
+      onClick: Object.assign(() => undefined, {
+        value: () => {
+          calls += 1;
+        }
+      })
+    },
+    getBoundingClientRect: () => ({ height: 44, width: 320 }),
+    textContent: "Gestão de saques"
+  });
+  const page = {
+    evaluate: async (callback: () => unknown) =>
+      withRuntimeDocument([makeElement(), makeElement()], callback)
+  } as unknown as Page;
+
+  const result = await programmaticWithdrawalManagementAction(page);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "management-action-ambiguous");
+  assert.equal(calls, 0);
+});
+
 // waitForSpaRouter substitui os loops de probe inline (waitForTimeout fixo) por uma
 // espera condicional no router acessivel. hasSpaRouter roda `spa.evaluate(fn, undefined,
 // MAIN_WORLD)` e retorna Boolean(findRouter()); aqui fingimos apenas o retorno do evaluate.
@@ -555,4 +671,32 @@ test("waitForSpaRouter: evaluate que rejeita e tratado como router ausente (guar
 
   const ready = await waitForSpaRouter(spa, 30, 1);
   assert.equal(ready, false);
+});
+
+test("buildPixReceivingAccountTarget preserva a rota de saque e troca somente active", () => {
+  assert.deepEqual(
+    buildPixReceivingAccountTarget({
+      name: "withdraw",
+      path: "/home/withdraw",
+      fullPath: "/home/withdraw?active=20&campaign=x",
+      query: { active: "20", campaign: "x" },
+    }),
+    {
+      name: "withdraw",
+      path: "/home/withdraw",
+      query: { active: "10", campaign: "x" },
+    },
+  );
+});
+
+test("buildPixReceivingAccountTarget recusa rota sem nome e sem path", () => {
+  assert.equal(
+    buildPixReceivingAccountTarget({
+      name: null,
+      path: null,
+      fullPath: null,
+      query: {},
+    }),
+    null,
+  );
 });
