@@ -1,10 +1,9 @@
-import { generateW, type GeetestChallengeData } from "./captcha/signer.js";
+import { generateNineW, type GeetestChallengeData } from "./captcha/signer.js";
 import type { GeetestVerifyResult } from "./captcha/geetest-client.js";
 
 export interface GeetestCaptchaData {
   captchaId: string;
   baseUrl: string;
-  riskType?: string;
 }
 
 export interface GeetestSolution {
@@ -13,12 +12,10 @@ export interface GeetestSolution {
   pass_token?: string;
   gen_time?: string;
   captcha_output?: string;
-  userresponse?: string | number | Array<[number, number]>;
-  setLeft?: number;
 }
 
-export function shouldAttemptAutomaticGeetestSolve(riskType?: string | null): boolean {
-  return riskType?.trim().toLowerCase() === "nine";
+function isNineCaptchaType(value?: string | null): boolean {
+  return value?.trim().toLowerCase() === "nine";
 }
 
 export interface GeetestNineClient {
@@ -58,7 +55,7 @@ function isUsableNineChallenge(
   data: GeetestChallengeData & { captcha_type?: string },
 ): boolean {
   const questions = Array.isArray(data.ques) ? data.ques : [];
-  return shouldAttemptAutomaticGeetestSolve(data.captcha_type)
+  return isNineCaptchaType(data.captcha_type)
     && hasText(data.lot_number)
     && hasText(data.payload)
     && hasText(data.process_token)
@@ -104,10 +101,9 @@ export async function findNineChallengeWithClient(
   return { status: "exhausted", searchAttempts };
 }
 
-export type GenerateGeetestW = (
+export type GenerateGeetestNineW = (
   data: GeetestChallengeData,
   captchaId: string,
-  riskType: string,
   fetchImage: (path: string) => Promise<Buffer>,
 ) => Promise<string>;
 
@@ -115,10 +111,13 @@ export async function solveLoadedNineGeetestWithClient(
   client: GeetestNineClient,
   captchaId: string,
   data: GeetestChallengeData,
-  generateGeetestW: GenerateGeetestW = (challengeData, id, type, fetchImage) =>
-    generateW(challengeData, id, type, fetchImage, () => 0),
+  generateGeetestNineW: GenerateGeetestNineW = generateNineW,
 ): Promise<GeetestSolution | null> {
-  const w = await generateGeetestW(data, captchaId, "nine", (path) => client.fetchImage(path));
+  const w = await generateGeetestNineW(
+    data,
+    captchaId,
+    (path) => client.fetchImage(path),
+  );
   const result = await client.verify({
     captchaId,
     lotNumber: data.lot_number,

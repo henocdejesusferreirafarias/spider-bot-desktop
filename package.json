@@ -16,7 +16,6 @@
     "build": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build.ps1",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
-    "captcha:gate1": "tsx scripts/captcha-gate1.mjs",
     "collect:nine-batch": "tsx scripts/captcha-collect-nine-dataset.mjs --append --count 200 --out dataset/raw",
     "collect:nine-comumpg": "tsx scripts/captcha-collect-comumpg.mjs --append --count 200 --out dataset/raw --delay-ms 600",
     "extract:nine-authorized": "tsx scripts/captcha-import-authorized-nine-dataset.mjs",

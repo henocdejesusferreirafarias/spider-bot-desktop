@@ -142,19 +142,30 @@ export interface GeetestChallengeData {
   lot_number: string;
   pow_detail: { hashfunc: string; version: string; bits: number; datetime: string };
   pt: string;
-  slice?: string; bg?: string;
   ques?: unknown; imgs?: string; nine_nums?: number;
   [k: string]: unknown;
 }
-export type SlideSolverFn = (pieceBuf: Buffer, bgBuf: Buffer) => number;
 
-export async function generateW(
-  data: GeetestChallengeData, captchaId: string, riskType: string,
-  fetchImage: (path: string) => Promise<Buffer>, solveSlide: SlideSolverFn,
+export async function generateNineW(
+  data: GeetestChallengeData,
+  captchaId: string,
+  fetchImage: (path: string) => Promise<Buffer>,
 ): Promise<string> {
   const lotNumber = data.lot_number;
   const pow = data.pow_detail;
-  const base: Record<string, unknown> = {
+  const gridBuf = await fetchImage(data.imgs!);
+  const quesPaths = (data.ques as string[] | undefined) ?? [];
+  const quesBuf = quesPaths[0]
+    ? await fetchImage(quesPaths[0])
+    : Buffer.alloc(0);
+  const { findNineMatchCells } = await import('./solvers/nine-match.js');
+  const cells = await findNineMatchCells(
+    gridBuf,
+    quesBuf,
+    Number(data.nine_nums ?? 3),
+  );
+
+  const body: Record<string, unknown> = {
     ...CURRENT_CONSTANTS.abo,
     ...generatePow(lotNumber, captchaId, pow.hashfunc, pow.version, pow.bits, pow.datetime, ''),
     ...lotParser.getDict(lotNumber),
@@ -163,29 +174,8 @@ export async function generateW(
     em: { cp: 0, ek: '11', nt: 0, ph: 0, sc: 0, si: 0, wd: 1 },
     gee_guard: { roe: { auh: '3', aup: '3', cdc: '3', egp: '3', res: '3', rew: '3', sep: '3', snh: '3' } },
     ep: '123', geetest: 'captcha', lang: 'zh', lot_number: lotNumber,
+    passtime: humanPasstime(1000, 0, 400),
+    userresponse: cells,
   };
-
-  if (riskType === 'ai' || riskType === 'invisible') {
-    // sem userresponse
-  } else if (riskType === 'slide') {
-    const pieceBuf = await fetchImage(data.slice!);
-    const bgBuf = await fetchImage(data.bg!);
-    const left = solveSlide(pieceBuf, bgBuf) + Math.random() * 0.5;
-    base.passtime = humanPasstime(320, left * 1.6, 140);
-    base.setLeft = left;
-    base.userresponse = left / 1.0059466666666665 + 2;
-  } else if (riskType === 'nine') {
-    const { findNineMatchCells } = await import('./solvers/nine-match.js');
-    const gridBuf = await fetchImage(data.imgs!);
-    const quesBufs = (data.ques as string[] | undefined) ?? [];
-    const qBuf = quesBufs[0] ? await fetchImage(quesBufs[0]) : Buffer.alloc(0);
-    const cells = await findNineMatchCells(gridBuf, qBuf, Number(data.nine_nums ?? 3));
-    base.passtime = humanPasstime(1000, 0, 400);
-    base.userresponse = cells;
-  } else if (riskType === 'icon' || riskType === 'gobang' || riskType === 'winlinze') {
-    throw new Error(`generateW: risk_type "${riskType}" é Plan 2b/3`);
-  } else {
-    throw new Error(`generateW: risk_type "${riskType}" não implementado neste plano (Plan 2/3)`);
-  }
-  return encryptW(JSON.stringify(base), data.pt);
+  return encryptW(JSON.stringify(body), data.pt);
 }

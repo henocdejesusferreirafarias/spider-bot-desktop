@@ -310,8 +310,7 @@ test("Geetest runtime gives each rejected nine answer a fresh search budget", as
   };
   geetest.geetestCapturedData.set("run-1", {
     captchaId: "0123456789abcdef0123456789abcdef",
-    baseUrl: "https://gcaptcha4.geevisit.com",
-    riskType: "icon"
+    baseUrl: "https://gcaptcha4.geevisit.com"
   });
   geetest.createGeetestClient = () => fakeClient;
   geetest.solveLoadedNineChallenge = async () => {
@@ -330,15 +329,14 @@ test("Geetest runtime gives each rejected nine answer a fresh search budget", as
   assert.equal(answers, 5);
 });
 
-test("Geetest runtime searches for nine when the captured risk type is icon", async () => {
+test("Geetest runtime searches for nine from a captured GeeTest request", async () => {
   const { runtime } = createRuntime();
   const geetest = runtime as unknown as GeetestRuntimeHarness;
   let loads = 0;
   let answers = 0;
   geetest.geetestCapturedData.set("run-1", {
     captchaId: "0123456789abcdef0123456789abcdef",
-    baseUrl: "https://gcaptcha4.geevisit.com",
-    riskType: "icon"
+    baseUrl: "https://gcaptcha4.geevisit.com"
   });
   geetest.createGeetestClient = () => ({
     async load() {

@@ -86,3 +86,38 @@ test("active captcha visual solver uses nine-match naming only", () => {
     /nine-photo|findIconCellsPhoto|rankPhotoCellsForTarget|RankedPhotoCell/,
   );
 });
+
+test("runtime signer exposes only the nine visual challenge path", () => {
+  for (const relativePath of [
+    "src/main/services/captcha/solvers/slide.ts",
+    "test/captcha-slide.test.ts",
+    "test/captcha-image-utils.test.ts",
+    "test/fixtures/captcha/slide",
+  ]) {
+    assert.equal(existsSync(join(root, relativePath)), false, relativePath);
+  }
+
+  const signer = readFileSync(join(root, "src/main/services/captcha/signer.ts"), "utf8");
+  const imageUtils = readFileSync(
+    join(root, "src/main/services/captcha/image-utils.ts"),
+    "utf8",
+  );
+  const automationRuntime = readFileSync(
+    join(root, "src/main/services/automation-runtime.ts"),
+    "utf8",
+  );
+  assert.match(signer, /generateNineW/);
+  assert.doesNotMatch(
+    signer,
+    /generateW\b|SlideSolverFn|riskType ===|findPuzzlePiecePosition|solvers\/slide/,
+  );
+  assert.doesNotMatch(
+    imageUtils,
+    /decodePng|cvtColor|toGray|canny|matchTemplate|minMaxLoc/,
+  );
+  assert.doesNotMatch(
+    automationRuntime,
+    /interactWithGeetestWidget|solution\.setLeft|solution\.userresponse/,
+  );
+  assert.equal(packageJson.scripts["captcha:gate1"], undefined);
+});

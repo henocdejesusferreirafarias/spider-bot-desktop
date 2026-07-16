@@ -6879,7 +6879,6 @@ export class AutomationRuntimeService {
       return {
         captchaId,
         baseUrl: `${parsed.protocol}//${parsed.host}`,
-        riskType: parsed.searchParams.get("risk_type") || undefined,
       };
     } catch {
       return null;
@@ -6969,16 +6968,6 @@ export class AutomationRuntimeService {
         solution,
       );
       if (bridgeResult.resolved) {
-        this.log(
-          runId,
-          "success",
-          `[${profileName}] Captcha nine resolvido na tentativa ${answerAttempt}/${GEETEST_NINE_ANSWER_LIMIT} apos ${totalSearchAttempts} busca(s).`,
-        );
-        return true;
-      }
-
-      const interacted = await this.interactWithGeetestWidget(page, solution);
-      if (interacted) {
         this.log(
           runId,
           "success",
@@ -7127,70 +7116,6 @@ export class AutomationRuntimeService {
     }
 
     return latest;
-  }
-
-  private async interactWithGeetestWidget(
-    page: Page,
-    solution: GeetestSolution,
-  ): Promise<boolean> {
-    try {
-      const frame = page
-        .frameLocator('iframe[src*="geetest" i], iframe[src*="gcaptcha" i]')
-        .first();
-
-      const slider = frame
-        .locator(
-          ".geetest_slider_button, [class*='geetest_slider_button'], [class*='slider_button']",
-        )
-        .first();
-      const sliderVisible = await slider.isVisible().catch(() => false);
-      if (sliderVisible) {
-        const box = await slider.boundingBox().catch(() => null);
-        if (!box) return false;
-
-        const track = frame
-          .locator(
-            ".geetest_slider_track, [class*='geetest_slide_track'], [class*='slider_track']",
-          )
-          .first();
-        const trackBox = await track.boundingBox().catch(() => null);
-        const maxSlide = trackBox ? trackBox.width - box.width : 300;
-
-        const userresponse = Number(
-          solution.setLeft ?? solution.userresponse ?? 0,
-        );
-        const distance = Math.min(maxSlide, Math.max(0, userresponse));
-        const startX = box.x + box.width / 2;
-        const startY = box.y + box.height / 2;
-        const endX = startX + distance;
-
-        await page.mouse.move(startX, startY, { steps: 3 });
-        await page.waitForTimeout(40 + Math.floor(Math.random() * 60));
-        await page.mouse.down();
-        await page.waitForTimeout(20 + Math.floor(Math.random() * 40));
-        for (let step = 1; step <= 6; step++) {
-          const progress = step / 6;
-          const ease =
-            progress < 0.5
-              ? 2 * progress * progress
-              : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-          const currentX = startX + (endX - startX) * ease;
-          const currentY = startY + (Math.random() - 0.5) * 2;
-          await page.mouse.move(currentX, currentY, { steps: 1 });
-          await page.waitForTimeout(6 + Math.floor(Math.random() * 12));
-        }
-        await page.mouse.move(endX, startY, { steps: 2 });
-        await page.waitForTimeout(30 + Math.floor(Math.random() * 80));
-        await page.mouse.up();
-
-        await page.waitForTimeout(1200);
-        return !(await this.detectCaptchaChallenge(page)).active;
-      }
-
-      return false;
-    } catch (_err) {
-      return false;
-    }
   }
 
   private async extractGeetestCaptchaIdFromPage(

@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   findNineChallengeWithClient,
-  shouldAttemptAutomaticGeetestSolve,
   solveLoadedNineGeetestWithClient,
 } from "../src/main/services/geetest-solver.js";
 
@@ -19,15 +18,6 @@ function challenge(captchaType: string, suffix: string) {
     nine_nums: 3,
   };
 }
-
-test("temporary Geetest policy identifies nine captcha types", () => {
-  assert.equal(shouldAttemptAutomaticGeetestSolve("nine"), true);
-  assert.equal(shouldAttemptAutomaticGeetestSolve(" NINE "), true);
-  assert.equal(shouldAttemptAutomaticGeetestSolve("icon"), false);
-  assert.equal(shouldAttemptAutomaticGeetestSolve("slide"), false);
-  assert.equal(shouldAttemptAutomaticGeetestSolve(null), false);
-  assert.equal(shouldAttemptAutomaticGeetestSolve(undefined), false);
-});
 
 test("findNineChallengeWithClient requests nine and accepts the tenth nine response", async () => {
   const requestedTypes: Array<string | null | undefined> = [];
