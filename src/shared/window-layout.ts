@@ -1,5 +1,6 @@
 import type {
-  ScreenLayoutMode,
+  ScreenDisplayInfo,
+  ScreenMonitorLayout,
   ScreenLayoutSettings,
   ScreenLayoutSlot
 } from "./contracts.js";
@@ -29,27 +30,167 @@ export interface LogicalLayoutResult {
 const sanitizeAxis = (value: number): number =>
   Math.max(1, Math.trunc(Number.isFinite(value) ? value : 1));
 
-export function normalizeScreenLayout(layout: ScreenLayoutSettings): ScreenLayoutSettings {
-  const mode: ScreenLayoutMode = layout.mode === "cascade" ? "cascade" : "grid";
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const toFiniteNumber = (value: unknown, fallback: number): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
+const defaultPrimaryMonitors = (): ScreenMonitorLayout[] => [
+  {
+    displayId: "primary",
+    enabled: true,
+    mode: "grid",
+    columns: 4,
+    rows: 1
+  }
+];
+
+export function normalizeMonitorLayout(layout: ScreenMonitorLayout): ScreenMonitorLayout {
   return {
-    ...layout,
-    mode,
+    displayId: layout.displayId.trim(),
+    enabled: layout.enabled === true,
+    mode: layout.mode === "cascade" ? "cascade" : "grid",
     columns: sanitizeAxis(layout.columns),
-    rows: sanitizeAxis(layout.rows),
-    gap: FIXED_GRID_GAP,
-    margin: FIXED_GRID_MARGIN,
-    customSlots: []
+    rows: sanitizeAxis(layout.rows)
   };
 }
 
-export function getScreenLayoutSlotCount(layout: ScreenLayoutSettings): number {
-  const normalized = normalizeScreenLayout(layout);
+export type AvailableScreenDisplay = Pick<
+  ScreenDisplayInfo,
+  "id" | "primary" | "scaleFactor" | "bounds" | "workArea"
+>;
+
+export interface MultiDisplayLogicalSlot extends LogicalLayoutSlot {
+  displayId: string;
+  localSlotIndex: number;
+  globalSlotIndex: number;
+}
+
+export interface ResolvedDisplayLayout {
+  display: AvailableScreenDisplay;
+  monitor: ScreenMonitorLayout;
+  slots: MultiDisplayLogicalSlot[];
+}
+
+export interface MultiDisplayLogicalLayout {
+  displays: ResolvedDisplayLayout[];
+  slots: MultiDisplayLogicalSlot[];
+  capacity: number;
+}
+
+export interface ResolvedMultiDisplaySlot extends MultiDisplayLogicalSlot {
+  requestedSlotIndex: number;
+}
+
+export const normalizeScreenLayout = normalizeMonitorLayout;
+
+export function migrateScreenLayoutSettings(value: unknown): ScreenLayoutSettings {
+  const candidate = isRecord(value) ? value : {};
+  if (candidate.version === 2 && Array.isArray(candidate.monitors)) {
+    const seen = new Set<string>();
+    const monitors: ScreenMonitorLayout[] = [];
+
+    for (const item of candidate.monitors) {
+      if (!isRecord(item) || typeof item.displayId !== "string") {
+        continue;
+      }
+      const normalized = normalizeMonitorLayout({
+        displayId: item.displayId,
+        enabled: item.enabled !== false,
+        mode: item.mode === "cascade" ? "cascade" : "grid",
+        columns: toFiniteNumber(item.columns, 4),
+        rows: toFiniteNumber(item.rows, 1)
+      });
+      if (!normalized.displayId || seen.has(normalized.displayId)) {
+        continue;
+      }
+      seen.add(normalized.displayId);
+      monitors.push(normalized);
+    }
+
+    return {
+      version: 2,
+      monitors: monitors.length > 0 ? monitors : defaultPrimaryMonitors()
+    };
+  }
+
+  const displayId =
+    typeof candidate.monitorId === "string" && candidate.monitorId.trim()
+      ? candidate.monitorId.trim()
+      : "primary";
+  return {
+    version: 2,
+    monitors: [
+      {
+        displayId,
+        enabled: true,
+        mode: candidate.mode === "cascade" ? "cascade" : "grid",
+        columns: sanitizeAxis(toFiniteNumber(candidate.columns, 4)),
+        rows: sanitizeAxis(toFiniteNumber(candidate.rows, 1))
+      }
+    ]
+  };
+}
+
+export function reconcileScreenLayout(
+  settings: ScreenLayoutSettings,
+  availableDisplays: readonly AvailableScreenDisplay[]
+): ScreenLayoutSettings {
+  const normalized = migrateScreenLayoutSettings(settings);
+  const primary =
+    availableDisplays.find((display) => display.primary) ?? availableDisplays[0];
+  let monitors = normalized.monitors.map((monitor) => ({ ...monitor }));
+
+  if (primary) {
+    const sentinelIndex = monitors.findIndex((monitor) => monitor.displayId === "primary");
+    const concreteIndex = monitors.findIndex((monitor) => monitor.displayId === primary.id);
+    if (sentinelIndex >= 0 && concreteIndex >= 0) {
+      monitors.splice(sentinelIndex, 1);
+    } else if (sentinelIndex >= 0) {
+      const sentinel = monitors[sentinelIndex];
+      if (sentinel) {
+        monitors[sentinelIndex] = { ...sentinel, displayId: primary.id };
+      }
+    }
+  }
+
+  const configuredIds = new Set(monitors.map((monitor) => monitor.displayId));
+  for (const display of availableDisplays) {
+    if (configuredIds.has(display.id)) {
+      continue;
+    }
+    monitors.push({
+      displayId: display.id,
+      enabled: false,
+      mode: "grid",
+      columns: 4,
+      rows: 1
+    });
+    configuredIds.add(display.id);
+  }
+
+  const availableIds = new Set(availableDisplays.map((display) => display.id));
+  if (!monitors.some((monitor) => monitor.enabled && availableIds.has(monitor.displayId))) {
+    const fallbackId = primary?.id ?? availableDisplays[0]?.id;
+    if (fallbackId) {
+      monitors = monitors.map((monitor) =>
+        monitor.displayId === fallbackId ? { ...monitor, enabled: true } : monitor
+      );
+    }
+  }
+
+  return { version: 2, monitors };
+}
+
+export function getScreenLayoutSlotCount(layout: ScreenMonitorLayout): number {
+  const normalized = normalizeMonitorLayout(layout);
   return normalized.mode === "cascade" ? 8 : normalized.columns * normalized.rows;
 }
 
 function buildGridSlots(
   workArea: LayoutRect,
-  layout: ScreenLayoutSettings
+  layout: ScreenMonitorLayout
 ): LogicalLayoutSlot[] {
   const columns = layout.columns;
   const rows = layout.rows;
@@ -105,9 +246,9 @@ function buildCascadeSlots(workArea: LayoutRect): LogicalLayoutSlot[] {
 
 export function buildLogicalLayout(
   workArea: LayoutRect,
-  layout: ScreenLayoutSettings
+  layout: ScreenMonitorLayout
 ): LogicalLayoutResult {
-  const normalized = normalizeScreenLayout(layout);
+  const normalized = normalizeMonitorLayout(layout);
   return {
     mode: normalized.mode === "cascade" ? "cascade" : "grid",
     workArea: { ...workArea },
@@ -115,6 +256,61 @@ export function buildLogicalLayout(
       normalized.mode === "cascade"
         ? buildCascadeSlots(workArea)
         : buildGridSlots(workArea, normalized)
+  };
+}
+
+export function buildMultiDisplayLogicalLayout(
+  settings: ScreenLayoutSettings,
+  availableDisplays: readonly AvailableScreenDisplay[]
+): MultiDisplayLogicalLayout {
+  const reconciled = reconcileScreenLayout(settings, availableDisplays);
+  const displayById = new Map(availableDisplays.map((display) => [display.id, display]));
+  let nextGlobalSlotIndex = 0;
+  const displays: ResolvedDisplayLayout[] = [];
+
+  for (const monitor of reconciled.monitors) {
+    const display = displayById.get(monitor.displayId);
+    if (!display || !monitor.enabled) {
+      continue;
+    }
+    const logical = buildLogicalLayout(display.workArea, monitor);
+    const slots = logical.slots.map((slot) => {
+      const globalSlotIndex = nextGlobalSlotIndex;
+      nextGlobalSlotIndex += 1;
+      return {
+        ...slot,
+        slotIndex: globalSlotIndex,
+        displayId: display.id,
+        localSlotIndex: slot.slotIndex,
+        globalSlotIndex
+      };
+    });
+    displays.push({ display, monitor, slots });
+  }
+
+  const slots = displays.flatMap((display) => display.slots);
+  return { displays, slots, capacity: slots.length };
+}
+
+export function resolveMultiDisplaySlot(
+  layout: MultiDisplayLogicalLayout,
+  requestedSlotIndex: number
+): ResolvedMultiDisplaySlot {
+  if (layout.capacity < 1) {
+    throw new Error("Layout sem slots disponíveis.");
+  }
+  const normalizedIndex = Math.max(
+    0,
+    Math.trunc(Number.isFinite(requestedSlotIndex) ? requestedSlotIndex : 0)
+  );
+  const template = layout.slots[normalizedIndex % layout.capacity];
+  if (!template) {
+    throw new Error("Layout sem slots disponíveis.");
+  }
+  return {
+    ...template,
+    slotIndex: normalizedIndex,
+    requestedSlotIndex: normalizedIndex
   };
 }
 

@@ -10,13 +10,11 @@ import {
 } from "../src/main/services/window-geometry.js";
 
 const layout = {
-  monitorId: "primary",
+  displayId: "primary",
+  enabled: true,
   mode: "grid" as const,
   columns: 5,
-  rows: 2,
-  gap: 8,
-  margin: 8,
-  customSlots: []
+  rows: 2
 };
 
 const primaryConverter = (factor: number) =>

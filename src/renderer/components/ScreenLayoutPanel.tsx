@@ -3,23 +3,36 @@ import type {
   AppSettings,
   ScreenDisplayInfo,
   ScreenLayoutMode,
-  ScreenLayoutSettings
+  ScreenMonitorLayout
 } from "../../shared/contracts.js";
 import {
   buildLogicalLayout,
-  normalizeScreenLayout,
+  reconcileScreenLayout,
   toPercentSlot
 } from "../../shared/window-layout.js";
+import {
+  getOrderedConnectedDisplays,
+  moveConnectedMonitor,
+  patchMonitorLayout,
+  toggleConnectedMonitor
+} from "../lib/screen-layout-state.js";
 
 const modeLabels: Record<ScreenLayoutMode, string> = {
   grid: "GRADE",
-  cascade: "CASCATA",
-  custom: "GRADE"
+  cascade: "CASCATA"
 };
 
 function sanitizeAxisInput(value: number): number {
   return Math.max(1, Math.trunc(Number.isFinite(value) ? value : 1));
 }
+
+const fallbackMonitor: ScreenMonitorLayout = {
+  displayId: "primary",
+  enabled: true,
+  mode: "grid",
+  columns: 4,
+  rows: 1
+};
 
 const getDisplayWorkArea = (display?: ScreenDisplayInfo) =>
   display?.workArea ?? { x: 0, y: 0, width: 1920, height: 1080 };
@@ -36,86 +49,148 @@ export function ScreenLayoutPanel({
   onPreviewLayout: () => Promise<unknown>;
 }) {
   const [displays, setDisplays] = useState<ScreenDisplayInfo[]>([]);
+  const [selectedDisplayId, setSelectedDisplayId] = useState<string>();
+  const [guardMessage, setGuardMessage] = useState("");
   const layout = settings.screenLayout;
+  const reconciledLayout = useMemo(
+    () => reconcileScreenLayout(layout, displays),
+    [displays, layout]
+  );
+  const orderedDisplays = useMemo(
+    () => getOrderedConnectedDisplays(reconciledLayout, displays),
+    [displays, reconciledLayout]
+  );
 
   const refreshDisplays = async () => {
-    setDisplays(await window.predator.screens.listDisplays());
+    const nextDisplays = await window.predator.screens.listDisplays();
+    const nextLayout = reconcileScreenLayout(layout, nextDisplays);
+    setDisplays(nextDisplays);
+    setSelectedDisplayId((current) =>
+      nextDisplays.some((display) => display.id === current)
+        ? current
+        : (nextDisplays.find((display) => display.primary)?.id ?? nextDisplays[0]?.id)
+    );
+    if (JSON.stringify(nextLayout) !== JSON.stringify(layout)) {
+      await onUpdate({ screenLayout: nextLayout });
+    }
   };
 
   useEffect(() => {
     void refreshDisplays();
   }, []);
 
-  const selectedDisplay = useMemo(() => {
-    if (layout.monitorId !== "primary") {
-      const matched = displays.find((display) => display.id === layout.monitorId);
-      if (matched) {
-        return matched;
-      }
-    }
-
-    return displays.find((display) => display.primary) ?? displays[0];
-  }, [displays, layout.monitorId]);
-
-  const effectiveLayout = useMemo(() => normalizeScreenLayout(layout), [layout]);
+  const effectiveSelectedDisplayId =
+    orderedDisplays.some((display) => display.id === selectedDisplayId)
+      ? selectedDisplayId
+      : (orderedDisplays.find((display) => display.primary)?.id ?? orderedDisplays[0]?.id);
+  const selectedDisplay = displays.find(
+    (display) => display.id === effectiveSelectedDisplayId
+  );
+  const selectedMonitor =
+    reconciledLayout.monitors.find(
+      (monitor) => monitor.displayId === effectiveSelectedDisplayId
+    ) ?? fallbackMonitor;
   const previewSlots = useMemo(() => {
     const workArea = getDisplayWorkArea(selectedDisplay);
-    return buildLogicalLayout(workArea, effectiveLayout).slots.map((slot) =>
+    return buildLogicalLayout(workArea, selectedMonitor).slots.map((slot) =>
       toPercentSlot(slot, workArea)
     );
-  }, [effectiveLayout, selectedDisplay]);
+  }, [selectedDisplay, selectedMonitor]);
+
+  const [colStr, setColStr] = useState(String(selectedMonitor.columns));
+  const [rowStr, setRowStr] = useState(String(selectedMonitor.rows));
 
   useEffect(() => {
-    const nextLayout = normalizeScreenLayout(layout);
-    if (
-      nextLayout.mode !== layout.mode ||
-      nextLayout.columns !== layout.columns ||
-      nextLayout.rows !== layout.rows ||
-      nextLayout.gap !== layout.gap ||
-      nextLayout.margin !== layout.margin ||
-      layout.customSlots.length > 0
-    ) {
-      void onUpdate({
-        screenLayout: nextLayout
-      });
-    }
-  }, [layout, onUpdate]);
+    setColStr(String(selectedMonitor.columns));
+  }, [selectedMonitor.columns, selectedMonitor.displayId]);
 
-  const updateLayout = (patch: Partial<ScreenLayoutSettings>) => {
+  useEffect(() => {
+    setRowStr(String(selectedMonitor.rows));
+  }, [selectedMonitor.displayId, selectedMonitor.rows]);
+
+  const updateSelectedMonitor = (
+    patch: Partial<Pick<ScreenMonitorLayout, "mode" | "columns" | "rows">>
+  ) => {
+    if (!effectiveSelectedDisplayId) {
+      return Promise.resolve();
+    }
     return onUpdate({
-      screenLayout: normalizeScreenLayout({
-        ...layout,
-        ...patch
-      })
+      screenLayout: patchMonitorLayout(
+        reconciledLayout,
+        effectiveSelectedDisplayId,
+        patch
+      )
     });
   };
 
-  const [colStr, setColStr] = useState(String(effectiveLayout.columns));
-  const [rowStr, setRowStr] = useState(String(effectiveLayout.rows));
-
-  useEffect(() => { setColStr(String(effectiveLayout.columns)); }, [effectiveLayout.columns]);
-  useEffect(() => { setRowStr(String(effectiveLayout.rows)); }, [effectiveLayout.rows]);
-
-  const handleAxisChange = (key: "columns" | "rows", raw: string, setter: (s: string) => void) => {
+  const handleAxisChange = (
+    key: "columns" | "rows",
+    raw: string,
+    setter: (value: string) => void
+  ) => {
     setter(raw);
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n >= 1) {
-      void updateLayout({ mode: "grid", [key]: sanitizeAxisInput(n) });
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      void updateSelectedMonitor({ [key]: sanitizeAxisInput(parsed) });
     }
   };
 
-  const handleAxisBlur = (key: "columns" | "rows", raw: string, setter: (s: string) => void) => {
-    const sanitized = sanitizeAxisInput(parseInt(raw, 10) || 1);
+  const handleAxisBlur = (
+    key: "columns" | "rows",
+    raw: string,
+    setter: (value: string) => void
+  ) => {
+    const sanitized = sanitizeAxisInput(Number.parseInt(raw, 10) || 1);
     setter(String(sanitized));
-    void updateLayout({ mode: "grid", [key]: sanitized });
+    void updateSelectedMonitor({ [key]: sanitized });
   };
 
   const stepAxis = (key: "columns" | "rows", delta: number) => {
-    const current = key === "columns" ? effectiveLayout.columns : effectiveLayout.rows;
+    const current = key === "columns" ? selectedMonitor.columns : selectedMonitor.rows;
     const next = sanitizeAxisInput(current + delta);
-    if (key === "columns") setColStr(String(next));
-    else setRowStr(String(next));
-    void updateLayout({ mode: "grid", [key]: next });
+    if (key === "columns") {
+      setColStr(String(next));
+    } else {
+      setRowStr(String(next));
+    }
+    void updateSelectedMonitor({ [key]: next });
+  };
+
+  const handleMonitorToggle = (displayId: string, enabled: boolean) => {
+    const result = toggleConnectedMonitor(
+      reconciledLayout,
+      displays.map((display) => display.id),
+      displayId,
+      enabled
+    );
+    if (result.blocked) {
+      setGuardMessage("Mantenha ao menos um monitor conectado habilitado.");
+      return;
+    }
+    setGuardMessage("");
+    void onUpdate({ screenLayout: result.settings });
+  };
+
+  const handleMoveMonitor = (displayId: string, direction: -1 | 1) => {
+    setGuardMessage("");
+    void onUpdate({
+      screenLayout: moveConnectedMonitor(
+        reconciledLayout,
+        displays.map((display) => display.id),
+        displayId,
+        direction
+      )
+    });
+  };
+
+  const selectMonitorFromKeyboard = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+    displayId: string
+  ) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setSelectedDisplayId(displayId);
+    }
   };
 
   const displaySize = getDisplayWorkArea(selectedDisplay);
@@ -123,9 +198,82 @@ export function ScreenLayoutPanel({
   return (
     <div className="screen-layout-panel">
       <div className="screen-layout-stage">
+        <aside className="screen-monitor-sidebar" aria-label="Monitores disponíveis">
+          <div className="screen-monitor-list">
+            {orderedDisplays.map((display, index) => {
+              const monitor = reconciledLayout.monitors.find(
+                (item) => item.displayId === display.id
+              );
+              if (!monitor) {
+                return null;
+              }
+              const selected = display.id === effectiveSelectedDisplayId;
+              return (
+                <div
+                  className={`screen-monitor-item${selected ? " selected" : ""}`}
+                  key={display.id}
+                  onClick={() => setSelectedDisplayId(display.id)}
+                  onKeyDown={(event) => selectMonitorFromKeyboard(event, display.id)}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <input
+                    aria-label={`Usar ${display.label}`}
+                    checked={monitor.enabled}
+                    onChange={(event) =>
+                      handleMonitorToggle(display.id, event.target.checked)
+                    }
+                    onClick={(event) => event.stopPropagation()}
+                    type="checkbox"
+                  />
+                  <div className="screen-monitor-copy">
+                    <strong>
+                      {display.label}
+                      {display.primary ? " · Principal" : ""}
+                    </strong>
+                    <span>
+                      {display.bounds.width}×{display.bounds.height} ·{" "}
+                      {Math.round(display.scaleFactor * 100)}%
+                    </span>
+                  </div>
+                  <div className="screen-monitor-order">
+                    <button
+                      aria-label={`Subir ${display.label}`}
+                      disabled={index === 0}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleMoveMonitor(display.id, -1);
+                      }}
+                      type="button"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      aria-label={`Descer ${display.label}`}
+                      disabled={index === orderedDisplays.length - 1}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleMoveMonitor(display.id, 1);
+                      }}
+                      type="button"
+                    >
+                      ↓
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {guardMessage && (
+            <p className="screen-monitor-guard" role="status">
+              {guardMessage}
+            </p>
+          )}
+        </aside>
+
         <section className="screen-calibrator">
           <div className="screen-calibrator-title">
-            CALIBRADOR: {displaySize.width}x{displaySize.height} [{modeLabels[effectiveLayout.mode]}]
+            CALIBRADOR: {displaySize.width}x{displaySize.height} [{modeLabels[selectedMonitor.mode]}]
           </div>
 
           <div className="screen-preview">
@@ -152,23 +300,12 @@ export function ScreenLayoutPanel({
       </div>
 
       <div className="screen-bottom-bar">
-        <label className="screen-bottom-field screen-monitor-field">
-          <span>Monitor</span>
-          <select
-            onChange={(event) => void updateLayout({ monitorId: event.target.value })}
-            value={layout.monitorId}
-          >
-            <option value="primary">Principal</option>
-            {displays.map((display) => (
-              <option key={display.id} value={display.id}>
-                {display.label}
-                {display.primary ? " - principal" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <button className="screen-refresh-button" onClick={() => void refreshDisplays()} title="Atualizar monitores" type="button">
+        <button
+          className="screen-refresh-button"
+          onClick={() => void refreshDisplays()}
+          title="Atualizar monitores"
+          type="button"
+        >
           Atual.
         </button>
 
@@ -178,7 +315,7 @@ export function ScreenLayoutPanel({
           <input
             inputMode="numeric"
             onBlur={() => handleAxisBlur("columns", colStr, setColStr)}
-            onChange={(e) => handleAxisChange("columns", e.target.value, setColStr)}
+            onChange={(event) => handleAxisChange("columns", event.target.value, setColStr)}
             type="text"
             value={colStr}
           />
@@ -189,7 +326,7 @@ export function ScreenLayoutPanel({
           <input
             inputMode="numeric"
             onBlur={() => handleAxisBlur("rows", rowStr, setRowStr)}
-            onChange={(e) => handleAxisChange("rows", e.target.value, setRowStr)}
+            onChange={(event) => handleAxisChange("rows", event.target.value, setRowStr)}
             type="text"
             value={rowStr}
           />

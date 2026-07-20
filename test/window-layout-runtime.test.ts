@@ -4,6 +4,12 @@ import test from "node:test";
 import type { Page } from "patchright";
 import { BrowserRuntimeService } from "../src/main/services/browser-runtime.js";
 import type { DpiAwarePlacement } from "../src/main/services/window-geometry.js";
+import { defaultSettings } from "../src/shared/defaults.js";
+import type { AppSettings } from "../src/shared/contracts.js";
+import type {
+  AvailableScreenDisplay,
+  LayoutRect
+} from "../src/shared/window-layout.js";
 
 const placement: DpiAwarePlacement = {
   slotIndex: 0,
@@ -19,6 +25,46 @@ const placement: DpiAwarePlacement = {
   idealScale: 0.738,
   overlaps: false,
   cutOff: false
+};
+
+const availableDisplays: AvailableScreenDisplay[] = [
+  {
+    id: "1",
+    primary: true,
+    scaleFactor: 1,
+    bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    workArea: { x: 0, y: 0, width: 1920, height: 1040 }
+  },
+  {
+    id: "2",
+    primary: false,
+    scaleFactor: 1.5,
+    bounds: { x: -1707, y: 0, width: 1707, height: 960 },
+    workArea: { x: -1707, y: 0, width: 1707, height: 920 }
+  }
+];
+
+const multiMonitorSettings: AppSettings = {
+  ...defaultSettings,
+  screenLayout: {
+    version: 2,
+    monitors: [
+      {
+        displayId: "1",
+        enabled: true,
+        mode: "grid",
+        columns: 1,
+        rows: 1
+      },
+      {
+        displayId: "2",
+        enabled: true,
+        mode: "grid",
+        columns: 1,
+        rows: 1
+      }
+    ]
+  }
 };
 
 function fakePage(returnedBounds: Record<string, number>) {
@@ -69,12 +115,95 @@ test("preview e launch resolvem métricas atuais do monitor em cada ação", asy
   );
   assert.match(
     source,
-    /getLayoutPreviewRects\(settings: AppSettings\)[\s\S]*?this\.resolveLayoutDisplay\(settings\.screenLayout\)/
+    /getLayoutPreviewRects\(settings: AppSettings\)[\s\S]*?this\.buildCurrentLogicalLayout\(settings\)/
   );
   assert.match(
     source,
-    /private buildBrowserPlacement\([\s\S]*?settings: AppSettings[\s\S]*?this\.resolveLayoutDisplay\(settings\.screenLayout\)/
+    /private buildBrowserPlacement\([\s\S]*?settings: AppSettings[\s\S]*?this\.buildCurrentLogicalLayout\(settings\)/
   );
+});
+
+test("launch resolves the global sequence across displays and wraps on overflow", () => {
+  const runtime = new BrowserRuntimeService(() => undefined);
+  const harness = runtime as unknown as {
+    getAvailableLayoutDisplays: () => AvailableScreenDisplay[];
+    dipToPhysicalRect: (rect: LayoutRect) => LayoutRect;
+    buildBrowserPlacement: (
+      settings: AppSettings,
+      forcedSlotIndex: number
+    ) => DpiAwarePlacement & { displayId: string; displayScaleFactor: number };
+  };
+  harness.getAvailableLayoutDisplays = () => availableDisplays;
+  harness.dipToPhysicalRect = (rect) => ({ ...rect });
+
+  const first = harness.buildBrowserPlacement(multiMonitorSettings, 0);
+  const second = harness.buildBrowserPlacement(multiMonitorSettings, 1);
+  const overflow = harness.buildBrowserPlacement(multiMonitorSettings, 2);
+
+  assert.equal(first.displayId, "1");
+  assert.equal(first.displayScaleFactor, 1);
+  assert.equal(second.displayId, "2");
+  assert.equal(second.displayScaleFactor, 1.5);
+  assert.equal(second.monitorPhysicalBounds.x, -1707);
+  assert.equal(overflow.displayId, "1");
+  assert.equal(overflow.slotIndex, 2);
+});
+
+test("preview includes every enabled display in global order", () => {
+  const runtime = new BrowserRuntimeService(() => undefined);
+  const harness = runtime as unknown as {
+    getAvailableLayoutDisplays: () => AvailableScreenDisplay[];
+    dipToPhysicalRect: (rect: LayoutRect) => LayoutRect;
+    physicalToDipRect: (rect: LayoutRect) => LayoutRect;
+  };
+  harness.getAvailableLayoutDisplays = () => availableDisplays;
+  harness.dipToPhysicalRect = (rect) => ({ ...rect });
+  harness.physicalToDipRect = (rect) => ({ ...rect });
+
+  const preview = runtime.getLayoutPreviewRects(multiMonitorSettings);
+
+  assert.deepEqual(preview.slots.map((slot) => slot.displayId), ["1", "2"]);
+  assert.deepEqual(preview.slots.map((slot) => slot.globalSlotIndex), [0, 1]);
+  assert.deepEqual(preview.slots.map((slot) => slot.label), ["1", "2"]);
+});
+
+test("apply isolates a placement failure and continues with the next window", async () => {
+  const notifications: string[] = [];
+  const runtime = new BrowserRuntimeService((profileId, _status, detail) => {
+    notifications.push(`${profileId}:${detail ?? ""}`);
+  });
+  const page = {
+    isClosed: () => false,
+    context: () => ({})
+  } as unknown as Page;
+  const context = { pages: () => [page] };
+  const handles = new Map([
+    ["first", { profileId: "first", slotIndex: 0, primaryPage: page, context }],
+    ["second", { profileId: "second", slotIndex: 1, primaryPage: page, context }]
+  ]);
+  let placementAttempts = 0;
+  const harness = runtime as unknown as {
+    handles: Map<string, unknown>;
+    buildBrowserPlacement: () => DpiAwarePlacement;
+    applyPlacementToPage: () => Promise<boolean>;
+    updateContextBadges: () => Promise<void>;
+  };
+  harness.handles = handles;
+  harness.buildBrowserPlacement = () => {
+    placementAttempts += 1;
+    if (placementAttempts === 1) {
+      throw new Error("first display failed");
+    }
+    return placement;
+  };
+  harness.applyPlacementToPage = async () => true;
+  harness.updateContextBadges = async () => undefined;
+
+  await runtime.applyLayout(multiMonitorSettings);
+
+  assert.equal(placementAttempts, 2);
+  assert.ok(notifications.some((message) => message.startsWith("first:")));
+  assert.ok(notifications.some((message) => message.startsWith("second:")));
 });
 
 test("apply confirma bounds reais compatíveis usando a escala lançada", async () => {

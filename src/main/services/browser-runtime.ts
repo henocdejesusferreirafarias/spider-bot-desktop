@@ -78,9 +78,9 @@ import {
   type ScreenLayoutSettings
 } from "../../shared/contracts.js";
 import {
-  buildLogicalLayout,
-  getScreenLayoutSlotCount,
-  normalizeScreenLayout,
+  buildMultiDisplayLogicalLayout,
+  resolveMultiDisplaySlot,
+  type AvailableScreenDisplay,
   type LayoutRect
 } from "../../shared/window-layout.js";
 
@@ -335,6 +335,8 @@ export async function closeProfileBrowser(
 }
 
 export interface LayoutPreviewSlot {
+  displayId: string;
+  globalSlotIndex: number;
   label: string;
   x: number;
   y: number;
@@ -348,9 +350,12 @@ export interface LayoutPreviewSlot {
 }
 
 export interface LayoutPreviewResult {
-  mode: "grid" | "cascade";
-  workArea: LayoutRect;
   slots: LayoutPreviewSlot[];
+}
+
+interface BrowserPlacement extends DpiAwarePlacement {
+  displayId: string;
+  displayScaleFactor: number;
 }
 
 interface DeviceHardwareConfig {
@@ -1201,9 +1206,7 @@ export class BrowserRuntimeService {
       );
     }
     if (placement.idealScale < 1) {
-      const layoutDisplayScale = this.resolveLayoutDisplay(
-        this.resolvePlacementSettings(settings).screenLayout
-      ).scaleFactor;
+      const layoutDisplayScale = placement.displayScaleFactor;
       const reportedDpr =
         Number.isFinite(layoutDisplayScale) && layoutDisplayScale > 0 ? layoutDisplayScale : 1;
       fingerprintConfig.devicePixelRatio = reportedDpr;
@@ -1531,60 +1534,54 @@ export class BrowserRuntimeService {
   async applyLayout(settings: AppSettings): Promise<void> {
     this.setScreenLayout(settings.screenLayout);
     const handles = [...this.handles.entries()].sort(([, a], [, b]) => a.slotIndex - b.slotIndex);
-    const effectiveLayout = normalizeScreenLayout(settings.screenLayout);
-    const allocationSlotCount = Math.max(
-      getScreenLayoutSlotCount(effectiveLayout),
-      handles.length
-    );
-    const takenSlots = new Set<number>();
 
-    for (const [profileId, handle] of handles) {
-      let slot = -1;
-      for (let candidate = 0; candidate < allocationSlotCount; candidate += 1) {
-        if (!takenSlots.has(candidate)) {
-          slot = candidate;
-          break;
+    for (const [nextSlotIndex, [profileId, handle]] of handles.entries()) {
+      try {
+        const placement = this.buildBrowserPlacement(
+          this.resolvePlacementSettings(settings),
+          nextSlotIndex
+        );
+        const page =
+          !handle.primaryPage.isClosed()
+            ? handle.primaryPage
+            : handle.context.pages().find((entry) => !entry.isClosed());
+
+        if (!page) {
+          this.notify(profileId, "active", "Layout salvo, mas a janela aberta nao respondeu.");
+          continue;
         }
-      }
-      if (slot === -1) {
-        slot = takenSlots.size;
-      }
-      takenSlots.add(slot);
 
-      const placement = this.buildBrowserPlacement(this.resolvePlacementSettings(settings), slot);
-      const page =
-        !handle.primaryPage.isClosed()
-          ? handle.primaryPage
-          : handle.context.pages().find((entry) => !entry.isClosed());
-
-      if (!page) {
-        continue;
-      }
-
-      const boundsApplied = await this.applyPlacementToPage(
-        page,
-        placement,
-        handle.launchedScale
-      );
-      if (boundsApplied) {
-        this.mirrorViewportCache.delete(page);
-        await this.updateContextBadges(
-          handle.profileId,
-          handle.context,
+        const boundsApplied = await this.applyPlacementToPage(
+          page,
           placement,
-          handle.ipLabel
-        ).catch(() => null);
-        handle.primaryPage = page;
-        handle.slotIndex = placement.slotIndex;
-        handle.placement = placement;
+          handle.launchedScale
+        );
+        if (boundsApplied) {
+          this.mirrorViewportCache.delete(page);
+          await this.updateContextBadges(
+            handle.profileId,
+            handle.context,
+            placement,
+            handle.ipLabel
+          ).catch(() => null);
+          handle.primaryPage = page;
+          handle.slotIndex = placement.slotIndex;
+          handle.placement = placement;
+        }
+        this.notify(
+          profileId,
+          "active",
+          boundsApplied
+            ? "Layout de tela aplicado ao navegador."
+            : "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
+        );
+      } catch {
+        this.notify(
+          profileId,
+          "active",
+          "Layout salvo, mas esta janela nao pode ser reposicionada."
+        );
       }
-      this.notify(
-        profileId,
-        "active",
-        boundsApplied
-          ? "Layout de tela aplicado ao navegador."
-          : "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
-      );
     }
   }
 
@@ -7708,8 +7705,8 @@ export class BrowserRuntimeService {
 
   private cloneScreenLayout(layout: ScreenLayoutSettings): ScreenLayoutSettings {
     return {
-      ...layout,
-      customSlots: layout.customSlots.map((slot) => ({ ...slot }))
+      version: 2,
+      monitors: layout.monitors.map((monitor) => ({ ...monitor }))
     };
   }
 
@@ -7802,42 +7799,54 @@ export class BrowserRuntimeService {
   private buildBrowserPlacement(
     settings: AppSettings,
     forcedSlotIndex?: number
-  ): DpiAwarePlacement {
-    const display = this.resolveLayoutDisplay(settings.screenLayout);
-    const logical = buildLogicalLayout(display.workArea, settings.screenLayout);
-    const slotCount = logical.slots.length;
-    const slotIndex = forcedSlotIndex ?? this.allocateSlotIndex(slotCount);
-    const template = logical.slots[slotIndex % slotCount];
-    if (!template) {
-      throw new Error("Layout sem slots disponíveis.");
-    }
-    const slot = { ...template, slotIndex };
-    return buildDpiAwarePlacement(
-      slot,
-      logical.mode,
-      display.bounds,
-      display.workArea,
-      (rect) => screen.dipToScreenRect(null, rect)
+  ): BrowserPlacement {
+    const logical = this.buildCurrentLogicalLayout(settings);
+    const requestedSlotIndex = forcedSlotIndex ?? this.allocateSlotIndex(logical.capacity);
+    const slot = resolveMultiDisplaySlot(logical, requestedSlotIndex);
+    const resolvedDisplay = logical.displays.find(
+      ({ display }) => display.id === slot.displayId
     );
+    if (!resolvedDisplay) {
+      throw new Error(`Monitor ${slot.displayId} indisponível.`);
+    }
+    const placement = buildDpiAwarePlacement(
+      slot,
+      resolvedDisplay.monitor.mode,
+      resolvedDisplay.display.bounds,
+      resolvedDisplay.display.workArea,
+      (rect) => this.dipToPhysicalRect(rect)
+    );
+    return {
+      ...placement,
+      displayId: resolvedDisplay.display.id,
+      displayScaleFactor: resolvedDisplay.display.scaleFactor
+    };
   }
 
   getLayoutPreviewRects(settings: AppSettings): LayoutPreviewResult {
-    const display = this.resolveLayoutDisplay(settings.screenLayout);
-    const logical = buildLogicalLayout(display.workArea, settings.screenLayout);
+    const logical = this.buildCurrentLogicalLayout(settings);
     const slots = logical.slots.map((slot) => {
+      const resolvedDisplay = logical.displays.find(
+        ({ display }) => display.id === slot.displayId
+      );
+      if (!resolvedDisplay) {
+        throw new Error(`Monitor ${slot.displayId} indisponível.`);
+      }
       const placement = buildDpiAwarePlacement(
         slot,
-        logical.mode,
-        display.bounds,
-        display.workArea,
-        (rect) => screen.dipToScreenRect(null, rect)
+        resolvedDisplay.monitor.mode,
+        resolvedDisplay.display.bounds,
+        resolvedDisplay.display.workArea,
+        (rect) => this.dipToPhysicalRect(rect)
       );
       const preview = toPreviewDipRect(
         placement,
-        (rect) => screen.screenToDipRect(null, rect)
+        (rect) => this.physicalToDipRect(rect)
       );
       return {
-        label: String(slot.slotIndex + 1),
+        displayId: slot.displayId,
+        globalSlotIndex: slot.globalSlotIndex,
+        label: String(slot.globalSlotIndex + 1),
         ...preview,
         scale: placement.idealScale,
         overlaps: placement.overlaps,
@@ -7845,21 +7854,33 @@ export class BrowserRuntimeService {
       };
     });
 
-    return { mode: logical.mode, workArea: display.workArea, slots };
+    return { slots };
   }
 
-  private resolveLayoutDisplay(layout: ScreenLayoutSettings) {
-    const displays = screen.getAllDisplays();
-    const primary = screen.getPrimaryDisplay();
+  private buildCurrentLogicalLayout(settings: AppSettings) {
+    return buildMultiDisplayLogicalLayout(
+      settings.screenLayout,
+      this.getAvailableLayoutDisplays()
+    );
+  }
 
-    if (layout.monitorId !== "primary") {
-      const selected = displays.find((display) => String(display.id) === layout.monitorId);
-      if (selected) {
-        return selected;
-      }
-    }
+  private getAvailableLayoutDisplays(): AvailableScreenDisplay[] {
+    const primaryId = String(screen.getPrimaryDisplay().id);
+    return screen.getAllDisplays().map((display) => ({
+      id: String(display.id),
+      primary: String(display.id) === primaryId,
+      scaleFactor: display.scaleFactor,
+      bounds: display.bounds,
+      workArea: display.workArea
+    }));
+  }
 
-    return primary;
+  private dipToPhysicalRect(rect: LayoutRect): LayoutRect {
+    return screen.dipToScreenRect(null, rect);
+  }
+
+  private physicalToDipRect(rect: LayoutRect): LayoutRect {
+    return screen.screenToDipRect(null, rect);
   }
 
   private allocateSlotIndex(slotCount: number): number {

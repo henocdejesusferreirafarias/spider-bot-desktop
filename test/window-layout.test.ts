@@ -1,40 +1,58 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildMultiDisplayLogicalLayout,
   buildLogicalLayout,
-  normalizeScreenLayout,
+  normalizeMonitorLayout,
+  reconcileScreenLayout,
+  resolveMultiDisplaySlot,
   toPercentSlot
 } from "../src/shared/window-layout.js";
-import type { ScreenLayoutSettings } from "../src/shared/contracts.js";
+import type {
+  ScreenDisplayInfo,
+  ScreenLayoutSettings,
+  ScreenMonitorLayout
+} from "../src/shared/contracts.js";
 
-const grid = (columns: number, rows: number): ScreenLayoutSettings => ({
-  monitorId: "primary",
+const grid = (
+  columns: number,
+  rows: number,
+  displayId = "primary",
+  enabled = true
+): ScreenMonitorLayout => ({
+  displayId,
+  enabled,
   mode: "grid",
   columns,
-  rows,
-  gap: 99,
-  margin: 99,
-  customSlots: [
-    {
-      id: "legacy",
-      label: "x",
-      xPercent: 0,
-      yPercent: 0,
-      widthPercent: 10,
-      heightPercent: 10
-    }
-  ]
+  rows
 });
 
-test("normaliza grade para gap e margem fixos", () => {
-  assert.deepEqual(normalizeScreenLayout(grid(5.9, 2.4)), {
-    monitorId: "primary",
+const display = (
+  id: string,
+  primary: boolean,
+  workArea: ScreenDisplayInfo["workArea"],
+  scaleFactor = 1
+): ScreenDisplayInfo => ({
+  id,
+  label: `M${id}`,
+  primary,
+  scaleFactor,
+  bounds: { ...workArea },
+  workArea
+});
+
+const displays = [
+  display("1", true, { x: 0, y: 0, width: 1280, height: 672 }),
+  display("2", false, { x: 1280, y: 0, width: 1707, height: 920 }, 1.5)
+];
+
+test("normaliza eixos e preserva a configuração do monitor", () => {
+  assert.deepEqual(normalizeMonitorLayout(grid(5.9, 2.4, " 7 ")), {
+    displayId: "7",
+    enabled: true,
     mode: "grid",
     columns: 5,
-    rows: 2,
-    gap: 8,
-    margin: 8,
-    customSlots: []
+    rows: 2
   });
 });
 
@@ -102,4 +120,106 @@ test("cascata preserva oito slots e escala lógica de 66% por 72%", () => {
     width: 1267,
     height: 748
   });
+});
+
+test("concatena duas grades 5x2 na ordem configurada", () => {
+  const result = buildMultiDisplayLogicalLayout(
+    {
+      version: 2,
+      monitors: [grid(5, 2, "1"), grid(5, 2, "2")]
+    },
+    displays
+  );
+
+  assert.equal(result.capacity, 20);
+  assert.deepEqual(
+    result.slots.map((slot) => [
+      slot.displayId,
+      slot.localSlotIndex,
+      slot.globalSlotIndex
+    ]),
+    [
+      ...Array.from({ length: 10 }, (_, index) => ["1", index, index]),
+      ...Array.from({ length: 10 }, (_, index) => ["2", index, index + 10])
+    ]
+  );
+});
+
+test("reordenar monitores altera a sequência global", () => {
+  const result = buildMultiDisplayLogicalLayout(
+    {
+      version: 2,
+      monitors: [grid(1, 1, "2"), grid(1, 1, "1")]
+    },
+    displays
+  );
+
+  assert.deepEqual(result.slots.map((slot) => slot.displayId), ["2", "1"]);
+});
+
+test("ignora monitor desabilitado ou ausente sem remover sua configuração", () => {
+  const settings: ScreenLayoutSettings = {
+    version: 2,
+    monitors: [
+      grid(2, 1, "1", false),
+      grid(7, 3, "hidden"),
+      grid(3, 1, "2")
+    ]
+  };
+  const reconciled = reconcileScreenLayout(settings, displays);
+  const result = buildMultiDisplayLogicalLayout(reconciled, displays);
+
+  assert.deepEqual(reconciled.monitors.map((monitor) => monitor.displayId), [
+    "1",
+    "hidden",
+    "2"
+  ]);
+  assert.equal(reconciled.monitors[1]?.columns, 7);
+  assert.equal(result.capacity, 3);
+  assert.deepEqual(result.slots.map((slot) => slot.displayId), ["2", "2", "2"]);
+});
+
+test("substitui sentinel primary pelo id concreto e adiciona displays novos desabilitados", () => {
+  const reconciled = reconcileScreenLayout(
+    {
+      version: 2,
+      monitors: [grid(5, 2)]
+    },
+    displays
+  );
+
+  assert.deepEqual(reconciled, {
+    version: 2,
+    monitors: [grid(5, 2, "1"), grid(4, 1, "2", false)]
+  });
+});
+
+test("habilita o principal quando nenhum monitor conectado está ativo", () => {
+  const reconciled = reconcileScreenLayout(
+    {
+      version: 2,
+      monitors: [grid(2, 1, "1", false), grid(7, 3, "hidden")]
+    },
+    displays
+  );
+
+  assert.equal(reconciled.monitors.find((monitor) => monitor.displayId === "1")?.enabled, true);
+  assert.equal(reconciled.monitors.find((monitor) => monitor.displayId === "hidden")?.enabled, true);
+  assert.equal(buildMultiDisplayLogicalLayout(reconciled, displays).capacity, 2);
+});
+
+test("índices acima da capacidade reiniciam no primeiro slot sem perder o solicitado", () => {
+  const result = buildMultiDisplayLogicalLayout(
+    {
+      version: 2,
+      monitors: [grid(1, 1, "1"), grid(1, 1, "2")]
+    },
+    displays
+  );
+  const resolved = resolveMultiDisplaySlot(result, 2);
+
+  assert.equal(resolved.displayId, "1");
+  assert.equal(resolved.globalSlotIndex, 0);
+  assert.equal(resolved.requestedSlotIndex, 2);
+  assert.equal(resolved.slotIndex, 2);
 });
