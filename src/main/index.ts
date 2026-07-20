@@ -23,6 +23,10 @@ import type {
 import { AutomationRuntimeService } from "./services/automation-runtime.js";
 import { BrowserRuntimeService, type LayoutPreviewResult } from "./services/browser-runtime.js";
 import { PredatorDatabase } from "./services/database.js";
+import {
+  deleteProfilesWithConcurrency,
+  getSingleProfileDeletionError
+} from "./services/profile-deletion.js";
 import { InstanceRegistry } from "./services/instance-registry.js";
 import { LicenseService, normalizePemFromEnv } from "./services/license-service.js";
 import {
@@ -31,6 +35,7 @@ import {
   loadDotEnv
 } from "./services/paths.js";
 import { SecureStore } from "./services/secure-store.js";
+import { SnapshotPublicationDeferral } from "./services/snapshot-publication-deferral.js";
 import { shouldEnableAutoUpdates, UpdateService } from "./services/update-service.js";
 
 const loadedEnvFile = loadDotEnv();
@@ -555,6 +560,44 @@ async function bootstrap(): Promise<void> {
     });
   };
 
+  const snapshotPublicationDeferral = new SnapshotPublicationDeferral<InstanceSession>();
+
+  const deleteProfiles = async (
+    session: InstanceSession,
+    profileIds: string[],
+    reportProgress: boolean
+  ) => {
+    const releaseSnapshotPublication = snapshotPublicationDeferral.defer(session);
+    try {
+      return await deleteProfilesWithConcurrency(
+        profileIds,
+        {
+          getProfileName: (profileId) =>
+            session.database.profileExists(profileId)
+              ? session.database.getProfile(profileId).name
+              : undefined,
+          isProfileActive: (profileId) => session.browserRuntime.isActive(profileId),
+          stopProfile: (profileId) => session.browserRuntime.stopProfile(profileId),
+          deleteProfile: (profileId) => session.database.deleteProfile(profileId),
+          onProgress: reportProgress
+            ? (progress) => {
+                broadcastToSession(session, {
+                  type: "profile-deletion-progress",
+                  payload: progress as unknown as Record<string, unknown>
+                });
+              }
+            : undefined
+        },
+        2
+      );
+    } finally {
+      if (releaseSnapshotPublication()) {
+        pushSnapshot(session);
+        broadcastInstancesUpdated();
+      }
+    }
+  };
+
   const pushAllSnapshots = () => {
     for (const session of instanceSessions.values()) {
       pushSnapshot(session);
@@ -694,8 +737,10 @@ async function bootstrap(): Promise<void> {
         }
       });
     }
-    pushSnapshot(session);
-    broadcastInstancesUpdated();
+    if (!snapshotPublicationDeferral.isDeferred(session)) {
+      pushSnapshot(session);
+      broadcastInstancesUpdated();
+    }
     if (status === "active") {
       bringInstanceAboveLaunchedBrowsers(session);
     }
@@ -1265,14 +1310,14 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("profiles:delete", async (event, profileId: string) => {
     requireLicense();
     const session = getInstanceSessionForEvent(event);
-    if (session.browserRuntime.isActive(profileId)) {
-      await session.browserRuntime.stopProfile(profileId);
-    }
-    if (session.database.profileExists(profileId)) {
-      session.database.deleteProfile(profileId);
-    }
-    pushSnapshot(session);
-    broadcastInstancesUpdated();
+    const result = await deleteProfiles(session, [profileId], false);
+    const error = getSingleProfileDeletionError(result);
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle("profiles:delete-many", async (event, profileIds: string[]) => {
+    requireLicense();
+    const session = getInstanceSessionForEvent(event);
+    return deleteProfiles(session, profileIds, true);
   });
   ipcMain.handle("profiles:archive", (event, profileId: string) => {
     requireLicense();

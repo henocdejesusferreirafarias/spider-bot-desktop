@@ -363,6 +363,24 @@ export interface ExportRecord {
   metadata: Record<string, string | number | boolean>;
 }
 
+export interface ProfileDeletionItemResult {
+  profileId: string;
+  profileName: string;
+  status: "deleted" | "failed";
+  reason?: string;
+}
+
+export interface ProfileDeletionProgress {
+  total: number;
+  completed: number;
+  deleted: number;
+  failed: number;
+}
+
+export interface ProfileDeletionResult extends ProfileDeletionProgress {
+  items: ProfileDeletionItemResult[];
+}
+
 export interface AppSnapshot {
   profiles: ProfileSummary[];
   proxies: ProxyConfig[];
@@ -487,6 +505,7 @@ export interface RuntimeEvent {
     | "license-status-changed"
     | "update-status-changed"
     | "profile-status-changed"
+    | "profile-deletion-progress"
     | "automation-log"
     | "activity-log"
     | "run-status-changed";
@@ -529,6 +548,7 @@ export interface PredatorApi {
     create: (draft: ProfileDraft) => Promise<ProfileSummary>;
     update: (profileId: string, draft: Partial<ProfileDraft>) => Promise<ProfileSummary>;
     delete: (profileId: string) => Promise<void>;
+    deleteMany: (profileIds: string[]) => Promise<ProfileDeletionResult>;
     archive: (profileId: string) => Promise<void>;
     duplicate: (profileId: string) => Promise<ProfileSummary>;
     launch: (profileId: string, options?: ProfileLaunchOptions) => Promise<ProfileSummary>;

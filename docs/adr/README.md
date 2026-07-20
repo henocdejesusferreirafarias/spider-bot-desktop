@@ -20,3 +20,5 @@ Convenção:
 | [0005](0005-jdb-speed-time-early-wrappers.md) | Speed Time JDB com wrappers antecipados | Aceito |
 | [0006](0006-pp-uht-delta-time.md) | Speed Time PP pelo delta UHT | Aceito |
 | [0007](0007-jdb-frame-token-reload.md) | Frames JDB tokenizados não aceitam recuperação por reload | Aceito |
+| [0008](0008-serializar-bootstrap-cadastro-por-readiness.md) | Serializar o bootstrap de cadastro por readiness | Aceito |
+| [0009](0009-exclusao-em-lote-nao-bloqueante.md) | Exclusão em lote não bloqueante de perfis | Aceito |

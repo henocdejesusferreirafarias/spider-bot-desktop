@@ -37,6 +37,7 @@ const api: PredatorApi = {
     create: (draft) => ipcRenderer.invoke("profiles:create", draft),
     update: (profileId, draft) => ipcRenderer.invoke("profiles:update", profileId, draft),
     delete: (profileId) => ipcRenderer.invoke("profiles:delete", profileId),
+    deleteMany: (profileIds) => ipcRenderer.invoke("profiles:delete-many", profileIds),
     archive: (profileId) => ipcRenderer.invoke("profiles:archive", profileId),
     duplicate: (profileId) => ipcRenderer.invoke("profiles:duplicate", profileId),
     launch: (profileId, options) => ipcRenderer.invoke("profiles:launch", profileId, options),

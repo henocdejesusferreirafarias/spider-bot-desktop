@@ -10,6 +10,7 @@ import {
   type RuntimeControlTargetSelection
 } from "../shared/contracts.js";
 import { ConfirmDialog } from "./components/ConfirmDialog.js";
+import { AlertDialog } from "./components/AlertDialog.js";
 import { ControlPanel } from "./components/ControlPanel.js";
 import { CustomDepositModal } from "./components/CustomDepositModal.js";
 import { DomainBlockModal } from "./components/DomainBlockModal.js";
@@ -26,6 +27,10 @@ import { SystemLogsView } from "./components/SystemLogsView.js";
 import { OperationFooter } from "./components/OperationFooter.js";
 import { PixKeysPanel } from "./components/PixKeysPanel.js";
 import { countAvailablePixKeys } from "./lib/pix-key-status.js";
+import {
+  describeProfileDeletionFailures,
+  formatProfileDeletionProgress
+} from "./lib/profile-deletion.js";
 import { ProfileDetailModal } from "./components/ProfileDetailModal.js";
 import { ProfileEditorModal } from "./components/ProfileEditorModal.js";
 import { ProfileFactoryPanel } from "./components/ProfileFactoryPanel.js";
@@ -109,6 +114,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   const [proxyEditor, setProxyEditor] = useState<{ proxy?: ProxyConfig }>();
   const [clearLogsConfirmOpen, setClearLogsConfirmOpen] = useState(false);
   const [deleteSelectedConfirmOpen, setDeleteSelectedConfirmOpen] = useState(false);
+  const [deleteSelectedFeedback, setDeleteSelectedFeedback] = useState<string>();
   const [captchaSolverConfirmOpen, setCaptchaSolverConfirmOpen] = useState(false);
   const [operationUrl, setOperationUrl] = useState("https://example.com");
   const [multipleLinksEnabled, setMultipleLinksEnabled] = useState(false);
@@ -427,11 +433,16 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   };
 
   const deleteSelectedProfiles = async () => {
-    for (const profileId of [...app.selectedProfileIds]) {
-      await app.deleteProfile(profileId);
+    try {
+      const result = await app.deleteProfiles([...app.selectedProfileIds]);
+      setDeleteSelectedFeedback(describeProfileDeletionFailures(result));
+    } catch (error) {
+      setDeleteSelectedFeedback(
+        error instanceof Error ? error.message : "Nao foi possivel excluir os perfis."
+      );
+    } finally {
+      setDeleteSelectedConfirmOpen(false);
     }
-    app.clearProfileSelection();
-    setDeleteSelectedConfirmOpen(false);
   };
 
   const deleteProxy = (proxyId: string) => {
@@ -940,12 +951,26 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       />
 
       <ConfirmDialog
+        busy={app.busyAction === "profiles:delete-many"}
         confirmLabel={`Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""}`}
-        message={`Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""} selecionada${selectedProfileCount > 1 ? "s" : ""}? Esta ação não pode ser desfeita.`}
-        onCancel={() => setDeleteSelectedConfirmOpen(false)}
+        message={app.profileDeletionProgress
+          ? formatProfileDeletionProgress(app.profileDeletionProgress)
+          : `Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""} selecionada${selectedProfileCount > 1 ? "s" : ""}? Esta ação não pode ser desfeita.`}
+        onCancel={() => {
+          if (app.busyAction !== "profiles:delete-many") {
+            setDeleteSelectedConfirmOpen(false);
+          }
+        }}
         onConfirm={() => void deleteSelectedProfiles()}
         open={deleteSelectedConfirmOpen}
         title="Excluir contas selecionadas"
+      />
+
+      <AlertDialog
+        message={deleteSelectedFeedback ?? ""}
+        onClose={() => setDeleteSelectedFeedback(undefined)}
+        open={Boolean(deleteSelectedFeedback)}
+        title="Resultado da exclusao"
       />
 
       <ConfirmDialog
