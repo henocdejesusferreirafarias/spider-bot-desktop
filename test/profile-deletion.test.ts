@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  deleteProfilesWithConcurrency,
+  type ProfileDeletionProgress
+} from "../src/main/services/profile-deletion.js";
+
+const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+test("bulk profile deletion limits concurrent work to two and preserves input order", async () => {
+  let active = 0;
+  let peak = 0;
+  const progressEvents: ProfileDeletionProgress[] = [];
+
+  const result = await deleteProfilesWithConcurrency(
+    ["slow", "fast", "last"],
+    {
+      getProfileName: (profileId) => `Profile ${profileId}`,
+      isProfileActive: () => false,
+      stopProfile: async () => undefined,
+      deleteProfile: async (profileId) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await delay(profileId === "slow" ? 30 : 5);
+        active -= 1;
+      },
+      onProgress: (progress) => progressEvents.push(progress)
+    },
+    2
+  );
+
+  assert.equal(peak, 2);
+  assert.deepEqual(result.items.map((item) => item.profileId), ["slow", "fast", "last"]);
+  assert.equal(result.deleted, 3);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(progressEvents.at(-1), {
+    total: 3,
+    completed: 3,
+    deleted: 3,
+    failed: 0
+  });
+});
+
+test("one failed profile does not abort the remaining deletions", async () => {
+  const attempted: string[] = [];
+
+  const result = await deleteProfilesWithConcurrency(
+    ["a", "b", "c"],
+    {
+      getProfileName: (profileId) => `Profile ${profileId.toUpperCase()}`,
+      isProfileActive: (profileId) => profileId === "a",
+      stopProfile: async (profileId) => {
+        assert.equal(profileId, "a");
+      },
+      deleteProfile: async (profileId) => {
+        attempted.push(profileId);
+        if (profileId === "b") throw new Error("disk busy");
+      }
+    },
+    2
+  );
+
+  assert.deepEqual(attempted.sort(), ["a", "b", "c"]);
+  assert.equal(result.deleted, 2);
+  assert.equal(result.failed, 1);
+  assert.deepEqual(result.items[1], {
+    profileId: "b",
+    profileName: "Profile B",
+    status: "failed",
+    reason: "disk busy"
+  });
+});
+
+test("duplicate ids run once and missing profiles become explicit failures", async () => {
+  const attempted: string[] = [];
+
+  const result = await deleteProfilesWithConcurrency(
+    ["a", "a", "missing"],
+    {
+      getProfileName: (profileId) => profileId === "missing" ? undefined : "Profile A",
+      isProfileActive: () => false,
+      stopProfile: async () => undefined,
+      deleteProfile: async (profileId) => {
+        attempted.push(profileId);
+      }
+    }
+  );
+
+  assert.deepEqual(attempted, ["a"]);
+  assert.equal(result.total, 2);
+  assert.equal(result.deleted, 1);
+  assert.equal(result.failed, 1);
+  assert.deepEqual(result.items[1], {
+    profileId: "missing",
+    profileName: "missing",
+    status: "failed",
+    reason: "Perfil nao encontrado."
+  });
+});

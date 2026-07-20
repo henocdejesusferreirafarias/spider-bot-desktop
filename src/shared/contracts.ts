@@ -363,6 +363,24 @@ export interface ExportRecord {
   metadata: Record<string, string | number | boolean>;
 }
 
+export interface ProfileDeletionItemResult {
+  profileId: string;
+  profileName: string;
+  status: "deleted" | "failed";
+  reason?: string;
+}
+
+export interface ProfileDeletionProgress {
+  total: number;
+  completed: number;
+  deleted: number;
+  failed: number;
+}
+
+export interface ProfileDeletionResult extends ProfileDeletionProgress {
+  items: ProfileDeletionItemResult[];
+}
+
 export interface AppSnapshot {
   profiles: ProfileSummary[];
   proxies: ProxyConfig[];
