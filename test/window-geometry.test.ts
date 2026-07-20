@@ -290,3 +290,25 @@ test("escala inválida cai para 1 e emite diagnóstico", () => {
   );
   assert.equal(diagnostics, 2);
 });
+
+test("preview 5x2 em 150% volta da pegada física para o mesmo slot DIP", () => {
+  const workArea = { x: 0, y: 0, width: 1280, height: 672 };
+  const slot = buildLogicalLayout(workArea, layout).slots[0];
+  assert.ok(slot);
+  const placement = buildDpiAwarePlacement(
+    slot,
+    "grid",
+    { x: 0, y: 0, width: 1280, height: 720 },
+    workArea,
+    primaryConverter(1.5)
+  );
+  const physicalToDip = primaryConverter(1 / 1.5);
+  assert.deepEqual(toPreviewDipRect(placement, physicalToDip), {
+    x: 8,
+    y: 8,
+    width: 246,
+    height: 324
+  });
+  assert.equal(placement.overlaps, false);
+  assert.equal(placement.cutOff, false);
+});

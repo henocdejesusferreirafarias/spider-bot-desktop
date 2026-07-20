@@ -17,7 +17,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 import * as electron from "electron";
-import type { Rectangle } from "electron";
 import {
   chromium as patchrightChromium,
   type BrowserContext,
@@ -58,6 +57,12 @@ import {
 } from "./spa-navigation.js";
 import type { RouteKind, RouteTarget } from "./spa-navigation.js";
 import {
+  buildDpiAwarePlacement,
+  toChromiumWindowGeometry,
+  toPreviewDipRect,
+  type DpiAwarePlacement
+} from "./window-geometry.js";
+import {
   NAVIGATION_MODE_LAUNCH_ARG_PREFIX,
   NAVIGATION_MODES,
   type AppSettings,
@@ -71,30 +76,17 @@ import {
   type RuntimeWindowTarget,
   type ScreenLayoutSettings
 } from "../../shared/contracts.js";
+import {
+  buildLogicalLayout,
+  getScreenLayoutSlotCount,
+  normalizeScreenLayout,
+  type LayoutRect
+} from "../../shared/window-layout.js";
 
 const { screen } = electron;
 
 type RuntimeNotifier = (profileId: string, status: RuntimeStatus, detail?: string) => void;
 type BrowserLaunchOptions = NonNullable<Parameters<typeof patchrightChromium.launchPersistentContext>[1]>;
-const FIXED_GRID_GAP = 8;
-const FIXED_GRID_MARGIN = 8;
-const MIN_ADAPTIVE_GRID_WINDOW_HEIGHT = 96;
-const MIN_ADAPTIVE_GRID_WINDOW_WIDTH = 128;
-// Teto da escala da interface do Chromium (--force-device-scale-factor) no modo grade: escala nativa.
-// Enquanto a celula da grade for grande o suficiente, a janela roda sem forcar escala (=1, o flag e
-// omitido). So encolhe quando precisa caber (ver resolveAdaptiveGridScale).
-const MAX_INTERFACE_SCALE = 1;
-// Piso da escala adaptavel. Abaixo disto o Chromium passa a renderizar mal o force-device-scale-factor
-// e a janela fica pequena demais para operar; ao saturar no piso a sobreposicao volta a ser inevitavel
-// (ha colunas/linhas demais para a area do monitor). ~0.5 cobre ate ~7-8 colunas em 1920px. Ajuste para
-// calibrar (ex.: 0.4 empacota mais janelas; 0.6 prioriza legibilidade).
-const MIN_INTERFACE_SCALE = 0.5;
-// Dimensoes minimas de janela (em DIP) que o Chromium impoe: ele NAO cria janelas menores que isto.
-// Com force-device-scale-factor=s a janela fisica minima vira MIN_DIP*s; para a celula da grade caber
-// sem invadir a vizinha precisamos de s <= celula/MIN_DIP. Esta e a unica constante fisica da formula
-// (a largura, ~barra de ferramentas, e a restricao dominante). Ajuste para calibrar.
-const CHROMIUM_MIN_WINDOW_DIP_WIDTH = 500;
-const CHROMIUM_MIN_WINDOW_DIP_HEIGHT = 250;
 const execFileAsync = promisify(execFile);
 const PATCHRIGHT_INIT_SCRIPT_CONTEXT = false;
 
@@ -261,7 +253,8 @@ interface RuntimeHandle {
   primaryPage: Page;
   pageOrder: Page[];
   slotIndex: number;
-  placement: BrowserPlacement;
+  placement: DpiAwarePlacement;
+  launchedScale: number;
   ipLabel: string;
   homeUrl: string;
   speedRate: number;
@@ -340,21 +333,6 @@ export async function closeProfileBrowser(
   }
 }
 
-interface BrowserPlacement {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  slotIndex: number;
-  // Fator de escala da interface do Chromium para esta celula (1 = sem escala).
-  scale: number;
-  // Origem (canto superior-esquerdo) da workArea do monitor de destino, em DIP no
-  // espaco global da tela. So o offset DENTRO do monitor e a dimensao passam pela
-  // escala da janela; a origem e reanexada sem escala (ver toWindowGeometry).
-  originX: number;
-  originY: number;
-}
-
 export interface LayoutPreviewSlot {
   label: string;
   x: number;
@@ -370,7 +348,7 @@ export interface LayoutPreviewSlot {
 
 export interface LayoutPreviewResult {
   mode: "grid" | "cascade";
-  workArea: Rectangle;
+  workArea: LayoutRect;
   slots: LayoutPreviewSlot[];
 }
 
@@ -1221,20 +1199,29 @@ export class BrowserRuntimeService {
         `📱 Emulando dispositivo: ${mobileEmulation.deviceLabel}`
       );
     }
-    if (placement.scale < 1) {
+    if (placement.idealScale < 1) {
       const layoutDisplayScale = this.resolveLayoutDisplay(
         this.resolvePlacementSettings(settings).screenLayout
       ).scaleFactor;
       const reportedDpr =
         Number.isFinite(layoutDisplayScale) && layoutDisplayScale > 0 ? layoutDisplayScale : 1;
       fingerprintConfig.devicePixelRatio = reportedDpr;
-      fingerprintConfig.screenDimensionScale = placement.scale / reportedDpr;
+      fingerprintConfig.screenDimensionScale = placement.idealScale / reportedDpr;
     }
     this.prepareBrowserPreferences(profile.storagePath, profile.persona.webRtcMode);
-    const windowGeometry = this.toWindowGeometry(placement, placement.scale);
+    const launchedScale = placement.idealScale;
+    const windowGeometry = toChromiumWindowGeometry(
+      placement,
+      launchedScale,
+      () => appendInputDiagnostic({
+        kind: "invalid-window-interface-scale",
+        profileId: profile.id,
+        slotIndex: placement.slotIndex,
+        effectiveScale: launchedScale
+      })
+    );
     // Escala efetivamente passada nos args; force-device-scale-factor nao muda em runtime, entao todo
     // reposicionamento desta janela usa esta escala mesmo que a grade mude durante a abertura.
-    const launchedScale = placement.scale;
     const args = this.mergeDisableFeatureArgs([
       ...profile.persona.launchArgs.filter(
         (arg) =>
@@ -1260,8 +1247,8 @@ export class BrowserRuntimeService {
       ...(resolvedUserAgent ? [`--user-agent=${resolvedUserAgent}`] : []),
       `--window-position=${windowGeometry.x},${windowGeometry.y}`,
       `--window-size=${windowGeometry.width},${windowGeometry.height}`,
-      ...(placement.scale < 1
-        ? [`--force-device-scale-factor=${placement.scale}`, "--high-dpi-support=1"]
+      ...(launchedScale < 1
+        ? [`--force-device-scale-factor=${launchedScale}`, "--high-dpi-support=1"]
         : []),
       ...(launchProxy.proxy ? [WEBRTC_PROXIED_UDP_ONLY_ARG] : []),
       ...this.buildHostRulesArgs()
@@ -1381,7 +1368,7 @@ export class BrowserRuntimeService {
         STEALTH_INIT_SCRIPT,
         this.buildServiceWorkerCleanupScript(),
         this.buildInputDiagnosticsScript(),
-        this.buildBadgesScript(profile.id, placement, launchProxy.ipLabel),
+        this.buildBadgesScript(profile.id, placement, launchedScale, launchProxy.ipLabel),
         this.buildSplashOverlayScript(logoDataUrl),
       ];
       const accountInfoScript = this.buildAccountInfoScript(profile);
@@ -1430,7 +1417,7 @@ export class BrowserRuntimeService {
     // resta (badges, handlers, registro do handle) e barato e nao contende GPU.
     releaseLaunchSlotOnce();
     const visibleIp = await this.resolveVisibleIp(primaryPage, launchProxy.ipLabel);
-    await this.updateContextBadges(profile.id, context, placement, visibleIp);
+    await this.updateContextBadges(profile.id, context, placement, launchedScale, visibleIp);
     await this.applySpeedToPage(primaryPage, this.defaultSpeedRate);
     await this.applyMirrorConfigToPage(primaryPage);
     await this.applyPopupCloserConfigToPage(primaryPage);
@@ -1451,7 +1438,7 @@ export class BrowserRuntimeService {
           if (handle) {
             await this.applyRuntimeStateToPage(handle, page);
           } else {
-            await this.applyBadgeToPage(page, profile.id, placement, visibleIp);
+            await this.applyBadgeToPage(page, profile.id, placement, launchedScale, visibleIp);
             await this.applySpeedToPage(page, this.defaultSpeedRate);
             await this.applyMirrorConfigToPage(page);
             await this.applyPopupCloserConfigToPage(page);
@@ -1470,7 +1457,8 @@ export class BrowserRuntimeService {
       primaryPage,
       pageOrder: [primaryPage],
       slotIndex: placement.slotIndex,
-      placement: { ...placement, scale: launchedScale },
+      placement,
+      launchedScale,
       ipLabel: visibleIp,
       homeUrl: profile.homeUrl,
       speedRate: this.defaultSpeedRate,
@@ -1542,9 +1530,9 @@ export class BrowserRuntimeService {
   async applyLayout(settings: AppSettings): Promise<void> {
     this.setScreenLayout(settings.screenLayout);
     const handles = [...this.handles.entries()].sort(([, a], [, b]) => a.slotIndex - b.slotIndex);
-    const effectiveLayout = this.normalizeScreenLayout(settings.screenLayout);
+    const effectiveLayout = normalizeScreenLayout(settings.screenLayout);
     const allocationSlotCount = Math.max(
-      this.getLayoutSlotCount(effectiveLayout),
+      getScreenLayoutSlotCount(effectiveLayout),
       handles.length
     );
     const takenSlots = new Set<number>();
@@ -1562,7 +1550,6 @@ export class BrowserRuntimeService {
       }
       takenSlots.add(slot);
 
-      const previousScale = handle.placement.scale;
       const placement = this.buildBrowserPlacement(this.resolvePlacementSettings(settings), slot);
       const page =
         !handle.primaryPage.isClosed()
@@ -1573,22 +1560,27 @@ export class BrowserRuntimeService {
         continue;
       }
 
-      // A escala (force-device-scale-factor) so vale no launch; reposicionamos a janela viva usando a
-      // escala atual dela. A nova escala so entra em vigor quando este navegador for reaberto.
-      const boundsApplied = await this.applyPlacementToPage(page, placement, previousScale);
+      const boundsApplied = await this.applyPlacementToPage(
+        page,
+        placement,
+        handle.launchedScale
+      );
       this.mirrorViewportCache.delete(page);
-      await this.updateContextBadges(handle.profileId, handle.context, placement, handle.ipLabel).catch(() => null);
+      await this.updateContextBadges(
+        handle.profileId,
+        handle.context,
+        placement,
+        handle.launchedScale,
+        handle.ipLabel
+      ).catch(() => null);
       handle.primaryPage = page;
       handle.slotIndex = placement.slotIndex;
-      handle.placement = { ...placement, scale: previousScale };
-      const scaleChanged = Math.abs(placement.scale - previousScale) > 0.001;
+      handle.placement = placement;
       this.notify(
         profileId,
         "active",
         boundsApplied
-          ? scaleChanged
-            ? "Layout aplicado. Reabra este navegador para ajustar a escala da interface."
-            : "Layout de tela aplicado ao navegador."
+          ? "Layout de tela aplicado ao navegador."
           : "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
       );
     }
@@ -1661,7 +1653,13 @@ export class BrowserRuntimeService {
 
     await Promise.allSettled(
       [...this.handles.values()].map((handle) =>
-        this.updateContextBadges(handle.profileId, handle.context, handle.placement, handle.ipLabel)
+        this.updateContextBadges(
+          handle.profileId,
+          handle.context,
+          handle.placement,
+          handle.launchedScale,
+          handle.ipLabel
+        )
       )
     );
   }
@@ -2641,7 +2639,13 @@ export class BrowserRuntimeService {
       return;
     }
 
-    await this.applyBadgeToPage(page, handle.profileId, handle.placement, handle.ipLabel);
+    await this.applyBadgeToPage(
+      page,
+      handle.profileId,
+      handle.placement,
+      handle.launchedScale,
+      handle.ipLabel
+    );
     await this.applySpeedToPage(page, handle.speedRate);
     await this.applyMirrorConfigToPage(page);
     await this.applyPopupCloserConfigToPage(page);
@@ -7711,8 +7715,8 @@ export class BrowserRuntimeService {
 
   private async applyPlacementToPage(
     page: Page,
-    placement: BrowserPlacement,
-    effectiveScale?: number
+    placement: DpiAwarePlacement,
+    effectiveScale: number
   ): Promise<boolean> {
     if (page.isClosed()) {
       return false;
@@ -7742,7 +7746,15 @@ export class BrowserRuntimeService {
         })
         .catch(() => undefined);
 
-      const geometry = this.toWindowGeometry(placement, effectiveScale ?? placement.scale);
+      const geometry = toChromiumWindowGeometry(
+        placement,
+        effectiveScale,
+        () => appendInputDiagnostic({
+          kind: "invalid-window-interface-scale",
+          slotIndex: placement.slotIndex,
+          effectiveScale
+        })
+      );
       await session.send("Browser.setWindowBounds", {
         windowId,
         bounds: {
@@ -7777,69 +7789,53 @@ export class BrowserRuntimeService {
     }
   }
 
-  private buildBrowserPlacement(settings: AppSettings, forcedSlotIndex?: number): BrowserPlacement {
-    const layout = settings.screenLayout;
-    const workArea = this.resolveLayoutDisplay(layout).workArea;
-    const effectiveLayout = this.normalizeScreenLayout(layout);
-    const slotCount = this.getLayoutSlotCount(effectiveLayout);
+  private buildBrowserPlacement(
+    settings: AppSettings,
+    forcedSlotIndex?: number
+  ): DpiAwarePlacement {
+    const display = this.resolveLayoutDisplay(settings.screenLayout);
+    const logical = buildLogicalLayout(display.workArea, settings.screenLayout);
+    const slotCount = logical.slots.length;
     const slotIndex = forcedSlotIndex ?? this.allocateSlotIndex(slotCount);
-
-    if (effectiveLayout.mode === "cascade") {
-      return this.buildCascadePlacement(workArea, slotIndex);
+    const template = logical.slots[slotIndex % slotCount];
+    if (!template) {
+      throw new Error("Layout sem slots disponíveis.");
     }
-
-    return this.buildGridPlacement(workArea, effectiveLayout, slotIndex);
+    const slot = { ...template, slotIndex };
+    return buildDpiAwarePlacement(
+      slot,
+      logical.mode,
+      display.bounds,
+      display.workArea,
+      (rect) => screen.dipToScreenRect(null, rect)
+    );
   }
 
-  // Retangulos (em DIP, no espaco do monitor escolhido) de TODOS os slots da predefinicao atual, sem
-  // mutar o estado do runtime. Usado pela pre-visualizacao para desenhar janelas-fantasma exatamente
-  // onde os navegadores abririam. Espelha a mesma matematica de buildBrowserPlacement.
   getLayoutPreviewRects(settings: AppSettings): LayoutPreviewResult {
-    const effectiveLayout = this.normalizeScreenLayout(settings.screenLayout);
     const display = this.resolveLayoutDisplay(settings.screenLayout);
-    const workArea = display.workArea;
-    const slotCount = this.getLayoutSlotCount(effectiveLayout);
-    const slots: LayoutPreviewSlot[] = [];
-
-    for (let slotIndex = 0; slotIndex < slotCount; slotIndex += 1) {
-      const placement =
-        effectiveLayout.mode === "cascade"
-          ? this.buildCascadePlacement(workArea, slotIndex)
-          : this.buildGridPlacement(workArea, effectiveLayout, slotIndex);
-
-      // Tamanho REAL na tela: o Chromium nao encolhe a janela abaixo de CHROMIUM_MIN_WINDOW_DIP_* * escala.
-      // Enquanto a escala nao satura no piso, isto e igual a celula; quando satura (colunas/linhas demais),
-      // a janela fica maior que a celula e invade a vizinha. A previa precisa mostrar essa sobreposicao.
-      const onScreenWidth = Math.max(
-        placement.width,
-        Math.round(CHROMIUM_MIN_WINDOW_DIP_WIDTH * placement.scale)
+    const logical = buildLogicalLayout(display.workArea, settings.screenLayout);
+    const slots = logical.slots.map((slot) => {
+      const placement = buildDpiAwarePlacement(
+        slot,
+        logical.mode,
+        display.bounds,
+        display.workArea,
+        (rect) => screen.dipToScreenRect(null, rect)
       );
-      const onScreenHeight = Math.max(
-        placement.height,
-        Math.round(CHROMIUM_MIN_WINDOW_DIP_HEIGHT * placement.scale)
+      const preview = toPreviewDipRect(
+        placement,
+        (rect) => screen.screenToDipRect(null, rect)
       );
-      const overlaps = onScreenWidth > placement.width + 1 || onScreenHeight > placement.height + 1;
+      return {
+        label: String(slot.slotIndex + 1),
+        ...preview,
+        scale: placement.idealScale,
+        overlaps: placement.overlaps,
+        cutOff: placement.cutOff
+      };
+    });
 
-      // A janela real cresce alem da celula mas mantem o canto superior-esquerdo em placement.x/y e
-      // NAO e reposicionada: estende-se para a direita/baixo e e cortada pela borda do monitor (a
-      // ultima coluna/linha fica cortada para fora da tela). A previa reproduz isso fielmente —
-      // posiciona no mesmo ponto e deixa o monitor recortar; nao empurramos a janela para dentro.
-      const cutOffRight = placement.x + onScreenWidth > workArea.x + workArea.width + 1;
-      const cutOffBottom = placement.y + onScreenHeight > workArea.y + workArea.height + 1;
-
-      slots.push({
-        label: String(slotIndex + 1),
-        x: placement.x,
-        y: placement.y,
-        width: onScreenWidth,
-        height: onScreenHeight,
-        scale: placement.scale,
-        overlaps,
-        cutOff: cutOffRight || cutOffBottom
-      });
-    }
-
-    return { mode: effectiveLayout.mode === "cascade" ? "cascade" : "grid", workArea, slots };
+    return { mode: logical.mode, workArea: display.workArea, slots };
   }
 
   private resolveLayoutDisplay(layout: ScreenLayoutSettings) {
@@ -7854,125 +7850,6 @@ export class BrowserRuntimeService {
     }
 
     return primary;
-  }
-
-  private getLayoutSlotCount(layout: ScreenLayoutSettings): number {
-    if (layout.mode === "cascade") {
-      return 8;
-    }
-
-    return Math.max(1, this.sanitizeGridAxis(layout.columns) * this.sanitizeGridAxis(layout.rows));
-  }
-
-  private normalizeScreenLayout(layout: ScreenLayoutSettings): ScreenLayoutSettings {
-    if (layout.mode === "cascade") {
-      return {
-        ...layout,
-        gap: FIXED_GRID_GAP,
-        margin: FIXED_GRID_MARGIN,
-        customSlots: []
-      };
-    }
-
-    return {
-      ...layout,
-      mode: "grid",
-      gap: FIXED_GRID_GAP,
-      margin: FIXED_GRID_MARGIN,
-      columns: this.sanitizeGridAxis(layout.columns),
-      rows: this.sanitizeGridAxis(layout.rows),
-      customSlots: []
-    };
-  }
-
-  private sanitizeGridAxis(value: number): number {
-    return Math.max(1, Math.trunc(Number.isFinite(value) ? value : 1));
-  }
-
-  private buildGridPlacement(
-    workArea: Rectangle,
-    layout: ScreenLayoutSettings,
-    slotIndex: number
-  ): BrowserPlacement {
-    const columns = this.sanitizeGridAxis(layout.columns);
-    const rows = this.sanitizeGridAxis(layout.rows);
-    const positionSlot = slotIndex % Math.max(1, columns * rows);
-    const column = positionSlot % columns;
-    const row = Math.floor(positionSlot / columns);
-    const gap = FIXED_GRID_GAP;
-    const margin = FIXED_GRID_MARGIN;
-    const width = Math.max(
-      MIN_ADAPTIVE_GRID_WINDOW_WIDTH,
-      Math.floor((workArea.width - margin * 2 - gap * (columns - 1)) / columns)
-    );
-    const height = Math.max(
-      MIN_ADAPTIVE_GRID_WINDOW_HEIGHT,
-      Math.floor((workArea.height - margin * 2 - gap * (rows - 1)) / rows)
-    );
-
-    return {
-      x: workArea.x + margin + column * (width + gap),
-      y: workArea.y + margin + row * (height + gap),
-      width,
-      height,
-      slotIndex,
-      scale: this.resolveAdaptiveGridScale(width, height),
-      originX: workArea.x,
-      originY: workArea.y
-    };
-  }
-
-  // Formula da escala da interface (force-device-scale-factor) que faz a janela caber na celula da grade.
-  // O Chromium nunca cria janelas menores que CHROMIUM_MIN_WINDOW_DIP_* (em DIP); como a janela fisica
-  // minima vira MIN_DIP*scale, a maior escala que ainda cabe sem invadir a vizinha e celula/MIN_DIP.
-  // Teto = 1 (escala nativa quando sobra espaco); piso = MIN_INTERFACE_SCALE (abaixo disso o Chromium
-  // renderiza mal e a janela fica pequena demais; ao saturar no piso a sobreposicao volta a ser inevitavel).
-  private resolveAdaptiveGridScale(cellWidth: number, cellHeight: number): number {
-    const widthFitScale = cellWidth / CHROMIUM_MIN_WINDOW_DIP_WIDTH;
-    const heightFitScale = cellHeight / CHROMIUM_MIN_WINDOW_DIP_HEIGHT;
-    const fitScale = Math.min(MAX_INTERFACE_SCALE, widthFitScale, heightFitScale);
-    return Math.max(MIN_INTERFACE_SCALE, fitScale);
-  }
-
-  // Converte um placement em pixels fisicos para as unidades (DIP) esperadas por --window-size/--window-position
-  // e por Browser.setWindowBounds. Com force-device-scale-factor=s, 1 DIP equivale a s pixels fisicos.
-  private toWindowGeometry(
-    placement: BrowserPlacement,
-    scale: number
-  ): { x: number; y: number; width: number; height: number } {
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-    // A posicao da janela (left/top) vive no espaco-DIP global da tela; a origem do
-    // monitor de destino NAO pode ser dividida pela escala da janela (force-device-
-    // scale-factor), senao monitores com origem != 0 sao deslocados por
-    // origem*(1-1/escala). So o offset DENTRO do monitor e o tamanho passam pela escala.
-    return {
-      x: Math.round(placement.originX + (placement.x - placement.originX) / safeScale),
-      y: Math.round(placement.originY + (placement.y - placement.originY) / safeScale),
-      width: Math.round(placement.width / safeScale),
-      height: Math.round(placement.height / safeScale)
-    };
-  }
-
-  private buildCascadePlacement(workArea: Rectangle, slotIndex: number): BrowserPlacement {
-    const positionSlot = slotIndex % 8;
-    const offset = 32;
-    const width = Math.max(360, Math.floor(workArea.width * 0.66));
-    const height = Math.max(300, Math.floor(workArea.height * 0.72));
-    const maxXOffset = Math.max(0, workArea.width - width);
-    const maxYOffset = Math.max(0, workArea.height - height);
-    const shift = positionSlot * offset;
-
-    return {
-      x: workArea.x + Math.min(shift, maxXOffset),
-      y: workArea.y + Math.min(shift, maxYOffset),
-      width,
-      height,
-      slotIndex,
-      // Cascata usa janelas grandes (66%/72%); nao ha borda excessiva, entao mantemos escala nativa.
-      scale: 1,
-      originX: workArea.x,
-      originY: workArea.y
-    };
   }
 
   private allocateSlotIndex(slotCount: number): number {
@@ -8513,7 +8390,12 @@ export class BrowserRuntimeService {
     })();
   }
 
-  private buildBadgesScript(profileId: string, placement: BrowserPlacement, ipLabel: string): string {
+  private buildBadgesScript(
+    profileId: string,
+    placement: DpiAwarePlacement,
+    effectiveScale: number,
+    ipLabel: string
+  ): string {
     const initialState = {
       screenLabel: this.buildScreenBadgeText(placement),
       ipLabel: this.buildIpBadgeText(ipLabel),
@@ -8523,7 +8405,10 @@ export class BrowserRuntimeService {
     // Compensa o force-device-scale-factor para manter o badge sempre com o mesmo tamanho fisico ao
     // usuario, independente da escala. Em 0.8 -> 1.25, em 1.0 -> 1.0. Limitado a [1, 2] para evitar
     // badges absurdamente grandes se a escala for muito pequena.
-    const compensation = Math.min(2, Math.max(1, 1 / (placement.scale > 0 ? placement.scale : 1)));
+    const compensation = Math.min(
+      2,
+      Math.max(1, 1 / (effectiveScale > 0 ? effectiveScale : 1))
+    );
     const px = (value: number) => `${Math.max(1, Math.round(value * compensation * 100) / 100)}px`;
 
     return `
@@ -8623,16 +8508,30 @@ export class BrowserRuntimeService {
   private async updateContextBadges(
     profileId: string,
     context: BrowserContext,
-    placement: BrowserPlacement,
+    placement: DpiAwarePlacement,
+    effectiveScale: number,
     ipLabel: string
   ): Promise<void> {
-    await Promise.allSettled(context.pages().map((page) => this.applyBadgeToPage(page, profileId, placement, ipLabel)));
+    await Promise.allSettled(
+      context
+        .pages()
+        .map((page) =>
+          this.applyBadgeToPage(
+            page,
+            profileId,
+            placement,
+            effectiveScale,
+            ipLabel
+          )
+        )
+    );
   }
 
   private async applyBadgeToPage(
     page: Page,
     profileId: string,
-    placement: BrowserPlacement,
+    placement: DpiAwarePlacement,
+    _effectiveScale: number,
     ipLabel: string
   ): Promise<void> {
     if (page.isClosed()) {
@@ -8660,7 +8559,7 @@ export class BrowserRuntimeService {
       .catch(() => null);
   }
 
-  private isPlacementSelected(profileId: string, placement: BrowserPlacement): boolean {
+  private isPlacementSelected(profileId: string, placement: DpiAwarePlacement): boolean {
     if (this.selectedWindowState.mode === "all") {
       return false;
     }
@@ -8724,7 +8623,7 @@ export class BrowserRuntimeService {
     return normalized || "direto";
   }
 
-  private buildScreenBadgeText(placement: BrowserPlacement): string {
+  private buildScreenBadgeText(placement: DpiAwarePlacement): string {
     return `Tela ${placement.slotIndex + 1}`;
   }
 
