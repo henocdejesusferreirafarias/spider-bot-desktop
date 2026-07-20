@@ -267,3 +267,188 @@ export async function runWindowsWindowPlacement(
     child.stdin.end(JSON.stringify(validated));
   });
 }
+
+interface PlacementRequest {
+  target: NativeWindowPlacementTarget;
+  waiters: Array<(result: NativeWindowPlacementResult) => void>;
+}
+
+export interface NativeWindowPlacementCoordinator {
+  enqueue(target: NativeWindowPlacementTarget): Promise<NativeWindowPlacementResult>;
+  enqueueMany(
+    targets: readonly NativeWindowPlacementTarget[]
+  ): Promise<NativeWindowPlacementResult[]>;
+  cancel(profileId: string): void;
+  shutdown(): Promise<void>;
+}
+
+export interface WindowsWindowPlacementServiceOptions {
+  runner?: NativePlacementRunner;
+  debounceMs?: number;
+  retryDelayMs?: number;
+  maxAttempts?: number;
+}
+
+const failureResult = (profileId: string, error: string): NativeWindowPlacementResult => ({
+  profileId,
+  status: "failed",
+  error
+});
+
+export class WindowsWindowPlacementService implements NativeWindowPlacementCoordinator {
+  private readonly pending = new Map<string, PlacementRequest>();
+  private readonly runner: NativePlacementRunner;
+  private readonly debounceMs: number;
+  private readonly retryDelayMs: number;
+  private readonly maxAttempts: number;
+  private timer?: NodeJS.Timeout;
+  private active: Promise<void> = Promise.resolve();
+  private running = false;
+  private closed = false;
+
+  constructor(options: WindowsWindowPlacementServiceOptions = {}) {
+    this.runner = options.runner ?? runWindowsWindowPlacement;
+    this.debounceMs = Math.max(0, options.debounceMs ?? NATIVE_PLACEMENT_DEBOUNCE_MS);
+    this.retryDelayMs = Math.max(0, options.retryDelayMs ?? 150);
+    this.maxAttempts = Math.max(1, Math.trunc(options.maxAttempts ?? NATIVE_PLACEMENT_MAX_ATTEMPTS));
+  }
+
+  enqueue(target: NativeWindowPlacementTarget): Promise<NativeWindowPlacementResult> {
+    const validated = validateNativePlacementTarget(target);
+    if (this.closed) {
+      return Promise.resolve(failureResult(validated.profileId, "service-shutdown"));
+    }
+    const promise = new Promise<NativeWindowPlacementResult>((resolve) => {
+      const existing = this.pending.get(validated.profileId);
+      if (existing) {
+        existing.target = validated;
+        existing.waiters.push(resolve);
+      } else {
+        this.pending.set(validated.profileId, {
+          target: validated,
+          waiters: [resolve]
+        });
+      }
+    });
+    this.schedule();
+    return promise;
+  }
+
+  enqueueMany(
+    targets: readonly NativeWindowPlacementTarget[]
+  ): Promise<NativeWindowPlacementResult[]> {
+    return Promise.all(targets.map((target) => this.enqueue(target)));
+  }
+
+  cancel(profileId: string): void {
+    const request = this.pending.get(profileId);
+    if (!request) {
+      return;
+    }
+    this.pending.delete(profileId);
+    this.resolveRequest(request, failureResult(profileId, "cancelled"));
+    if (this.pending.size === 0 && this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.closed) {
+      await this.active;
+      return;
+    }
+    this.closed = true;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    for (const [profileId, request] of this.pending) {
+      this.resolveRequest(request, failureResult(profileId, "shutdown"));
+    }
+    this.pending.clear();
+    await this.active;
+  }
+
+  private schedule(): void {
+    if (this.closed || this.running || this.timer || this.pending.size === 0) {
+      return;
+    }
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.startDrain();
+    }, this.debounceMs);
+  }
+
+  private startDrain(): void {
+    if (this.closed || this.running || this.pending.size === 0) {
+      return;
+    }
+    const snapshot = [...this.pending.values()];
+    this.pending.clear();
+    this.running = true;
+    this.active = this.processSnapshot(snapshot).finally(() => {
+      this.running = false;
+      this.schedule();
+    });
+  }
+
+  private async processSnapshot(snapshot: PlacementRequest[]): Promise<void> {
+    const results = await this.runWithRetries(snapshot.map(({ target }) => target));
+    const resultByProfile = new Map(results.map((result) => [result.profileId, result]));
+    for (const request of snapshot) {
+      const result = resultByProfile.get(request.target.profileId) ??
+        failureResult(request.target.profileId, "missing-helper-result");
+      this.resolveRequest(request, result);
+    }
+  }
+
+  private async runWithRetries(
+    targets: NativeWindowPlacementTarget[]
+  ): Promise<NativeWindowPlacementResult[]> {
+    const completed = new Map<string, NativeWindowPlacementResult>();
+    let remaining = targets;
+
+    for (let attempt = 1; attempt <= this.maxAttempts && remaining.length > 0; attempt += 1) {
+      let attemptResults: NativeWindowPlacementResult[];
+      try {
+        attemptResults = await this.runner(remaining);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        for (const target of remaining) {
+          completed.set(target.profileId, failureResult(target.profileId, detail));
+        }
+        break;
+      }
+
+      const byProfile = new Map(attemptResults.map((result) => [result.profileId, result]));
+      const retry: NativeWindowPlacementTarget[] = [];
+      for (const target of remaining) {
+        const result = byProfile.get(target.profileId) ??
+          failureResult(target.profileId, "missing-helper-result");
+        if (result.status === "window-not-ready" && attempt < this.maxAttempts) {
+          retry.push(target);
+        } else {
+          completed.set(target.profileId, result);
+        }
+      }
+      remaining = retry;
+      if (remaining.length > 0 && this.retryDelayMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, this.retryDelayMs));
+      }
+    }
+
+    return targets.map(({ profileId }) =>
+      completed.get(profileId) ?? failureResult(profileId, "missing-helper-result")
+    );
+  }
+
+  private resolveRequest(
+    request: PlacementRequest,
+    result: NativeWindowPlacementResult
+  ): void {
+    for (const resolve of request.waiters) {
+      resolve(result);
+    }
+  }
+}
