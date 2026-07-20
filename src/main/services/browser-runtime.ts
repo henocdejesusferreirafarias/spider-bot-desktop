@@ -1418,7 +1418,7 @@ export class BrowserRuntimeService {
     // resta (badges, handlers, registro do handle) e barato e nao contende GPU.
     releaseLaunchSlotOnce();
     const visibleIp = await this.resolveVisibleIp(primaryPage, launchProxy.ipLabel);
-    await this.updateContextBadges(profile.id, context, placement, launchedScale, visibleIp);
+    await this.updateContextBadges(profile.id, context, placement, visibleIp);
     await this.applySpeedToPage(primaryPage, this.defaultSpeedRate);
     await this.applyMirrorConfigToPage(primaryPage);
     await this.applyPopupCloserConfigToPage(primaryPage);
@@ -1439,7 +1439,7 @@ export class BrowserRuntimeService {
           if (handle) {
             await this.applyRuntimeStateToPage(handle, page);
           } else {
-            await this.applyBadgeToPage(page, profile.id, placement, launchedScale, visibleIp);
+            await this.applyBadgeToPage(page, profile.id, placement, visibleIp);
             await this.applySpeedToPage(page, this.defaultSpeedRate);
             await this.applyMirrorConfigToPage(page);
             await this.applyPopupCloserConfigToPage(page);
@@ -1572,7 +1572,6 @@ export class BrowserRuntimeService {
           handle.profileId,
           handle.context,
           placement,
-          handle.launchedScale,
           handle.ipLabel
         ).catch(() => null);
         handle.primaryPage = page;
@@ -1660,7 +1659,6 @@ export class BrowserRuntimeService {
           handle.profileId,
           handle.context,
           handle.placement,
-          handle.launchedScale,
           handle.ipLabel
         )
       )
@@ -2646,7 +2644,6 @@ export class BrowserRuntimeService {
       page,
       handle.profileId,
       handle.placement,
-      handle.launchedScale,
       handle.ipLabel
     );
     await this.applySpeedToPage(page, handle.speedRate);
@@ -8522,7 +8519,6 @@ export class BrowserRuntimeService {
     profileId: string,
     context: BrowserContext,
     placement: DpiAwarePlacement,
-    effectiveScale: number,
     ipLabel: string
   ): Promise<void> {
     await Promise.allSettled(
@@ -8533,7 +8529,6 @@ export class BrowserRuntimeService {
             page,
             profileId,
             placement,
-            effectiveScale,
             ipLabel
           )
         )
@@ -8544,7 +8539,6 @@ export class BrowserRuntimeService {
     page: Page,
     profileId: string,
     placement: DpiAwarePlacement,
-    _effectiveScale: number,
     ipLabel: string
   ): Promise<void> {
     if (page.isClosed()) {
