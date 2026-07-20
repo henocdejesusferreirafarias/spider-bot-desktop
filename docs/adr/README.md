@@ -23,3 +23,4 @@ Convenção:
 | [0008](0008-serializar-bootstrap-cadastro-por-readiness.md) | Serializar o bootstrap de cadastro por readiness | Aceito |
 | [0009](0009-exclusao-em-lote-nao-bloqueante.md) | Exclusão em lote não bloqueante de perfis | Aceito |
 | [0010](0010-geometria-de-janelas-consciente-de-dpi.md) | Geometria de janelas consciente de DPI | Aceito |
+| [0011](0011-grades-ordenadas-por-monitor.md) | Grades ordenadas por monitor | Aceito |
