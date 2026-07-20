@@ -27,7 +27,10 @@ import { SystemLogsView } from "./components/SystemLogsView.js";
 import { OperationFooter } from "./components/OperationFooter.js";
 import { PixKeysPanel } from "./components/PixKeysPanel.js";
 import { countAvailablePixKeys } from "./lib/pix-key-status.js";
-import { describeProfileDeletionFailures } from "./lib/profile-deletion.js";
+import {
+  describeProfileDeletionFailures,
+  formatProfileDeletionProgress
+} from "./lib/profile-deletion.js";
 import { ProfileDetailModal } from "./components/ProfileDetailModal.js";
 import { ProfileEditorModal } from "./components/ProfileEditorModal.js";
 import { ProfileFactoryPanel } from "./components/ProfileFactoryPanel.js";
@@ -951,7 +954,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
         busy={app.busyAction === "profiles:delete-many"}
         confirmLabel={`Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""}`}
         message={app.profileDeletionProgress
-          ? `Excluindo ${app.profileDeletionProgress.completed} de ${app.profileDeletionProgress.total}...`
+          ? formatProfileDeletionProgress(app.profileDeletionProgress)
           : `Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""} selecionada${selectedProfileCount > 1 ? "s" : ""}? Esta ação não pode ser desfeita.`}
         onCancel={() => {
           if (app.busyAction !== "profiles:delete-many") {

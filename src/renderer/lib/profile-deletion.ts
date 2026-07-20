@@ -1,4 +1,13 @@
-import type { ProfileDeletionResult } from "../../shared/contracts.js";
+import type {
+  ProfileDeletionProgress,
+  ProfileDeletionResult
+} from "../../shared/contracts.js";
+
+export function formatProfileDeletionProgress(
+  progress: ProfileDeletionProgress
+): string {
+  return `Excluindo ${progress.completed} de ${progress.total}...`;
+}
 
 export function failedProfileIds(result: ProfileDeletionResult): string[] {
   return result.items

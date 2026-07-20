@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -109,6 +109,34 @@ test("deleteProfile waits for asynchronous storage removal before deleting the d
   assert.ok(finishDirectoryRemoval);
   finishDirectoryRemoval();
   await deletion;
+  assert.equal(db.profileExists(profile.id), false);
+});
+
+test("recursive profile storage removal lets the event loop advance", async () => {
+  const db = new PredatorDatabase(createPaths(), plainStore);
+  const profile = db.createProfile({
+    name: "Event loop deletion",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+  mkdirSync(profile.storagePath, { recursive: true });
+  for (let index = 0; index < 3000; index += 1) {
+    writeFileSync(join(profile.storagePath, `cache-${index}.bin`), "session-cache");
+  }
+
+  let deletionPending = true;
+  let ticksWhilePending = 0;
+  const ticker = setInterval(() => {
+    if (deletionPending) ticksWhilePending += 1;
+  }, 1);
+
+  await db.deleteProfile(profile.id);
+  deletionPending = false;
+  clearInterval(ticker);
+
+  assert.ok(ticksWhilePending > 0);
   assert.equal(db.profileExists(profile.id), false);
 });
 

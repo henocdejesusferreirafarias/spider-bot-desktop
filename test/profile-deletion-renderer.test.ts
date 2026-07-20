@@ -3,7 +3,8 @@ import test from "node:test";
 import type { ProfileDeletionResult } from "../src/shared/contracts.js";
 import {
   describeProfileDeletionFailures,
-  failedProfileIds
+  failedProfileIds,
+  formatProfileDeletionProgress
 } from "../src/renderer/lib/profile-deletion.js";
 
 const partialResult: ProfileDeletionResult = {
@@ -40,5 +41,17 @@ test("successful deletion does not create a failure summary", () => {
       items: [{ profileId: "a", profileName: "Perfil A", status: "deleted" }]
     }),
     undefined
+  );
+});
+
+test("profile deletion progress is formatted for the confirmation dialog", () => {
+  assert.equal(
+    formatProfileDeletionProgress({
+      total: 10,
+      completed: 3,
+      deleted: 2,
+      failed: 1
+    }),
+    "Excluindo 3 de 10..."
   );
 });
