@@ -52,7 +52,29 @@ test("graceful profile browser close does not force kill", async () => {
   assert.deepEqual(calls, ["page", "context"]);
 });
 
-test("bulk deletion can stop an active browser without intermediate status snapshots", async () => {
+test("profile browser stop remains bounded when force kill never settles", async () => {
+  const never = new Promise<void>(() => undefined);
+  const target = {
+    storagePath: "C:\\profiles\\profile-c",
+    context: {
+      pages: () => [{ close: () => never }],
+      close: () => never
+    }
+  };
+
+  const outcome = await Promise.race([
+    closeProfileBrowser(target, {
+      timeoutMs: 5,
+      forceKillTimeoutMs: 5,
+      forceKill: () => never
+    }).then(() => "completed" as const),
+    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 80))
+  ]);
+
+  assert.equal(outcome, "completed");
+});
+
+test("active browser stop keeps runtime status notifications for persistence", async () => {
   const notifications: string[] = [];
   const runtime = new BrowserRuntimeService((_profileId, status) => {
     notifications.push(status);
@@ -81,8 +103,9 @@ test("bulk deletion can stop an active browser without intermediate status snaps
     context
   });
 
-  await runtime.stopProfile("profile-a", { notify: false });
+  await runtime.stopProfile("profile-a");
 
-  assert.deepEqual(notifications, []);
+  assert.equal(notifications[0], "stopping");
+  assert.ok(notifications.includes("idle"));
   assert.equal(runtime.isActive("profile-a"), false);
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   deleteProfilesWithConcurrency,
+  getSingleProfileDeletionError,
   type ProfileDeletionProgress
 } from "../src/main/services/profile-deletion.js";
 
@@ -96,4 +97,65 @@ test("duplicate ids run once and missing profiles become explicit failures", asy
     status: "failed",
     reason: "Perfil nao encontrado."
   });
+});
+
+test("profile lookup errors stay isolated to their item", async () => {
+  const attempted: string[] = [];
+
+  const result = await deleteProfilesWithConcurrency(
+    ["broken", "healthy"],
+    {
+      getProfileName: (profileId) => {
+        if (profileId === "broken") throw new Error("sqlite read failed");
+        return "Healthy";
+      },
+      isProfileActive: () => false,
+      stopProfile: async () => undefined,
+      deleteProfile: async (profileId) => {
+        attempted.push(profileId);
+      }
+    },
+    2
+  );
+
+  assert.deepEqual(attempted, ["healthy"]);
+  assert.equal(result.deleted, 1);
+  assert.equal(result.failed, 1);
+  assert.equal(result.items[0]?.reason, "sqlite read failed");
+});
+
+test("individual deletion keeps a missing profile as a successful no-op", () => {
+  assert.equal(
+    getSingleProfileDeletionError({
+      total: 1,
+      completed: 1,
+      deleted: 0,
+      failed: 1,
+      items: [{
+        profileId: "missing",
+        profileName: "missing",
+        status: "failed",
+        reason: "Perfil nao encontrado."
+      }]
+    }),
+    undefined
+  );
+});
+
+test("individual deletion still rejects a real profile failure", () => {
+  assert.equal(
+    getSingleProfileDeletionError({
+      total: 1,
+      completed: 1,
+      deleted: 0,
+      failed: 1,
+      items: [{
+        profileId: "a",
+        profileName: "Profile A",
+        status: "failed",
+        reason: "disk busy"
+      }]
+    }),
+    "disk busy"
+  );
 });

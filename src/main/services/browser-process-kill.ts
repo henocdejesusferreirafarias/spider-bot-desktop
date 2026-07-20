@@ -7,6 +7,7 @@ const execFileAsync = promisify(execFile);
 // kill. Um valor vazio/curto casaria com QUALQUER processo e reintroduziria o bug
 // que este modulo existe para consertar (matar todos os navegadores da maquina).
 const MIN_USER_DATA_DIR_LENGTH = 3;
+const PROCESS_COMMAND_TIMEOUT_MS = 3000;
 
 export interface BrowserProcessInfo {
   pid: number;
@@ -50,7 +51,10 @@ async function listBrowserProcesses(): Promise<BrowserProcessInfo[]> {
     "-NonInteractive",
     "-Command",
     script
-  ]);
+  ], {
+    timeout: PROCESS_COMMAND_TIMEOUT_MS,
+    windowsHide: true
+  });
   const trimmed = stdout.trim();
   if (!trimmed) {
     return [];
@@ -82,7 +86,10 @@ export async function forceKillProfileBrowser(userDataDir: string): Promise<void
   const pids = selectPidsForUserDataDir(processes, userDataDir);
   await Promise.all(
     pids.map((pid) =>
-      execFileAsync("taskkill", ["/F", "/PID", String(pid), "/T"]).catch(() => null)
+      execFileAsync("taskkill", ["/F", "/PID", String(pid), "/T"], {
+        timeout: PROCESS_COMMAND_TIMEOUT_MS,
+        windowsHide: true
+      }).catch(() => null)
     )
   );
 }

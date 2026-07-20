@@ -18,6 +18,19 @@ export interface ProfileDeletionDependencies {
   onProgress?: (progress: ProfileDeletionProgress) => void;
 }
 
+export const PROFILE_NOT_FOUND_REASON = "Perfil nao encontrado.";
+
+export function getSingleProfileDeletionError(
+  result: ProfileDeletionResult
+): string | undefined {
+  const item = result.items[0];
+  if (!item) return "Nao foi possivel excluir o perfil.";
+  if (item.status === "deleted" || item.reason === PROFILE_NOT_FOUND_REASON) {
+    return undefined;
+  }
+  return item.reason ?? "Nao foi possivel excluir o perfil.";
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -54,21 +67,22 @@ export async function deleteProfilesWithConcurrency(
       const profileId = uniqueProfileIds[index];
       if (!profileId) continue;
 
-      const profileName = dependencies.getProfileName(profileId);
-      if (!profileName) {
-        items[index] = {
-          profileId,
-          profileName: profileId,
-          status: "failed",
-          reason: "Perfil nao encontrado."
-        };
-        failed += 1;
-        completed += 1;
-        reportProgress();
-        continue;
-      }
-
+      let profileName = profileId;
       try {
+        const resolvedProfileName = dependencies.getProfileName(profileId);
+        if (!resolvedProfileName) {
+          items[index] = {
+            profileId,
+            profileName,
+            status: "failed",
+            reason: PROFILE_NOT_FOUND_REASON
+          };
+          failed += 1;
+          completed += 1;
+          reportProgress();
+          continue;
+        }
+        profileName = resolvedProfileName;
         if (dependencies.isProfileActive(profileId)) {
           await dependencies.stopProfile(profileId);
         }

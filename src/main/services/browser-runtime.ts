@@ -287,6 +287,7 @@ interface CloseProfileBrowserTarget {
 
 interface CloseProfileBrowserOptions {
   timeoutMs?: number;
+  forceKillTimeoutMs?: number;
   forceKill?: (storagePath: string) => Promise<void>;
 }
 
@@ -295,8 +296,23 @@ export async function closeProfileBrowser(
   options: CloseProfileBrowserOptions = {}
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? 3000;
+  const forceKillTimeoutMs = options.forceKillTimeoutMs ?? 3000;
   const forceKill = options.forceKill ?? forceKillProfileBrowser;
   let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  const runBoundedForceKill = async () => {
+    let forceKillTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        forceKill(target.storagePath).catch(() => undefined),
+        new Promise<void>((resolve) => {
+          forceKillTimeout = setTimeout(resolve, forceKillTimeoutMs);
+        })
+      ]);
+    } finally {
+      if (forceKillTimeout) clearTimeout(forceKillTimeout);
+    }
+  };
 
   const gracefulClose = async () => {
     await Promise.all(
@@ -315,10 +331,10 @@ export async function closeProfileBrowser(
       })
     ]);
     if (outcome === "timeout") {
-      await forceKill(target.storagePath).catch(() => undefined);
+      await runBoundedForceKill();
     }
   } catch {
-    await forceKill(target.storagePath).catch(() => undefined);
+    await runBoundedForceKill();
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -1068,7 +1084,6 @@ export class BrowserRuntimeService {
   private readonly mirrorTouchActive = new WeakMap<Page, boolean>();
   private readonly contextSpeedRates = new WeakMap<BrowserContext, number>();
   private readonly launchingSlotIndexes = new Set<number>();
-  private readonly silentlyClosingContexts = new WeakSet<BrowserContext>();
   private readonly activeSplashes = new Map<string, string>();
   private activeScreenLayout?: ScreenLayoutSettings;
   private screenLayoutRevision = 0;
@@ -1126,9 +1141,7 @@ export class BrowserRuntimeService {
       this.handles.delete(profileId);
       this.disableMirrorForUnavailableTargets("browser-context-close");
       void proxyChain?.stop().catch(() => undefined);
-      if (!this.silentlyClosingContexts.has(context)) {
-        this.notify(profileId, "idle", "🧹 Navegador fechado.");
-      }
+      this.notify(profileId, "idle", "🧹 Navegador fechado.");
     });
   }
 
@@ -1503,23 +1516,14 @@ export class BrowserRuntimeService {
     }
   }
 
-  async stopProfile(
-    profileId: string,
-    options: { notify?: boolean } = {}
-  ): Promise<void> {
+  async stopProfile(profileId: string): Promise<void> {
     const handle = this.handles.get(profileId);
     if (!handle) {
-      if (options.notify !== false) {
-        this.notify(profileId, "idle", "ðŸ§¹ Navegador jÃ¡ estava fechado.");
-      }
+      this.notify(profileId, "idle", "ðŸ§¹ Navegador jÃ¡ estava fechado.");
       return;
     }
 
-    if (options.notify !== false) {
-      this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
-    } else {
-      this.silentlyClosingContexts.add(handle.context);
-    }
+    this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
 
     // O teto cobre paginas E contexto. Se qualquer etapa travar, o kill continua
     // escopado ao user-data-dir deste perfil — nunca aos demais.
@@ -1527,9 +1531,7 @@ export class BrowserRuntimeService {
     this.handles.delete(profileId);
     this.disableMirrorForUnavailableTargets("profile-stopped");
     this.latestAccountInfoFields.delete(profileId);
-    if (options.notify !== false) {
-      this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
-    }
+    this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
   }
 
   async restartProfile(profile: ProfileSummary, settings: AppSettings): Promise<void> {
