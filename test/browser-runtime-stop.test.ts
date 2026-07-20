@@ -57,16 +57,28 @@ test("bulk deletion can stop an active browser without intermediate status snaps
   const runtime = new BrowserRuntimeService((_profileId, status) => {
     notifications.push(status);
   });
+  let closeListener: (() => void) | undefined;
+  const context = {
+    pages: () => [],
+    on: (event: string, listener: () => void) => {
+      if (event === "close") closeListener = listener;
+    },
+    close: async () => {
+      closeListener?.();
+    }
+  };
   const runtimeInternals = runtime as unknown as {
     handles: Map<string, unknown>;
+    attachContextCloseHandler: (
+      profileId: string,
+      context: typeof context
+    ) => void;
   };
+  runtimeInternals.attachContextCloseHandler("profile-a", context);
   runtimeInternals.handles.set("profile-a", {
     profileId: "profile-a",
     storagePath: "C:\\profiles\\profile-a",
-    context: {
-      pages: () => [],
-      close: async () => undefined
-    }
+    context
   });
 
   await runtime.stopProfile("profile-a", { notify: false });

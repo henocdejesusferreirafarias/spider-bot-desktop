@@ -1068,6 +1068,7 @@ export class BrowserRuntimeService {
   private readonly mirrorTouchActive = new WeakMap<Page, boolean>();
   private readonly contextSpeedRates = new WeakMap<BrowserContext, number>();
   private readonly launchingSlotIndexes = new Set<number>();
+  private readonly silentlyClosingContexts = new WeakSet<BrowserContext>();
   private readonly activeSplashes = new Map<string, string>();
   private activeScreenLayout?: ScreenLayoutSettings;
   private screenLayoutRevision = 0;
@@ -1107,6 +1108,27 @@ export class BrowserRuntimeService {
     appendInputDiagnostic({
       kind: "diagnostic-session-start",
       pid: process.pid
+    });
+  }
+
+  private attachContextCloseHandler(
+    profileId: string,
+    context: BrowserContext,
+    proxyChain?: ProxyChainService
+  ): void {
+    context.on("close", () => {
+      appendInputDiagnostic({
+        kind: "browser-context-close",
+        profileId
+      });
+      this.activeSplashes.delete(profileId);
+      this.mirrorReplayProfileChains.delete(profileId);
+      this.handles.delete(profileId);
+      this.disableMirrorForUnavailableTargets("browser-context-close");
+      void proxyChain?.stop().catch(() => undefined);
+      if (!this.silentlyClosingContexts.has(context)) {
+        this.notify(profileId, "idle", "🧹 Navegador fechado.");
+      }
     });
   }
 
@@ -1424,18 +1446,7 @@ export class BrowserRuntimeService {
         });
     });
 
-    context.on("close", () => {
-      appendInputDiagnostic({
-        kind: "browser-context-close",
-        profileId: profile.id
-      });
-      this.activeSplashes.delete(profile.id);
-      this.mirrorReplayProfileChains.delete(profile.id);
-      this.handles.delete(profile.id);
-      this.disableMirrorForUnavailableTargets("browser-context-close");
-      void launchProxy.proxyChain?.stop().catch(() => undefined);
-      this.notify(profile.id, "idle", "🧹 Navegador fechado.");
-    });
+    this.attachContextCloseHandler(profile.id, context, launchProxy.proxyChain);
 
     refreshPlacementFromLatestLayout();
     await this.applyPlacementToPage(primaryPage, placement, launchedScale).catch(() => null);
@@ -1506,6 +1517,8 @@ export class BrowserRuntimeService {
 
     if (options.notify !== false) {
       this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
+    } else {
+      this.silentlyClosingContexts.add(handle.context);
     }
 
     // O teto cobre paginas E contexto. Se qualquer etapa travar, o kill continua
