@@ -275,6 +275,55 @@ interface RuntimeHandle {
   usesIframeApp?: boolean;
 }
 
+interface CloseProfileBrowserTarget {
+  storagePath: string;
+  context: {
+    pages: () => Array<{
+      close: (options: { runBeforeUnload: boolean }) => Promise<unknown>;
+    }>;
+    close: () => Promise<unknown>;
+  };
+}
+
+interface CloseProfileBrowserOptions {
+  timeoutMs?: number;
+  forceKill?: (storagePath: string) => Promise<void>;
+}
+
+export async function closeProfileBrowser(
+  target: CloseProfileBrowserTarget,
+  options: CloseProfileBrowserOptions = {}
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 3000;
+  const forceKill = options.forceKill ?? forceKillProfileBrowser;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  const gracefulClose = async () => {
+    await Promise.all(
+      target.context.pages().map((page) =>
+        page.close({ runBeforeUnload: false }).catch(() => undefined)
+      )
+    );
+    await target.context.close();
+  };
+
+  try {
+    const outcome = await Promise.race([
+      gracefulClose().then(() => "closed" as const),
+      new Promise<"timeout">((resolve) => {
+        timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+      })
+    ]);
+    if (outcome === "timeout") {
+      await forceKill(target.storagePath).catch(() => undefined);
+    }
+  } catch {
+    await forceKill(target.storagePath).catch(() => undefined);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 interface BrowserPlacement {
   x: number;
   y: number;
@@ -1452,35 +1501,9 @@ export class BrowserRuntimeService {
 
     this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
 
-    // Fecha todas as páginas primeiro para evitar travamentos
-    try {
-      const pages = handle.context.pages();
-      await Promise.all(
-        pages.map(page => page.close({ runBeforeUnload: false }).catch(() => null))
-      );
-    } catch {}
-
-    // Timeout de 3 segundos para forçar encerramento se context.close() travar.
-    // O kill é escopado ao user-data-dir DESTE perfil — nunca aos demais.
-    const closeWithTimeout = async () => {
-      return new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          forceKillProfileBrowser(handle.storagePath).catch(() => null);
-          resolve();
-        }, 3000);
-
-        handle.context.close().finally(() => {
-          clearTimeout(timeout);
-          resolve();
-        }).catch(() => {
-          clearTimeout(timeout);
-          forceKillProfileBrowser(handle.storagePath).catch(() => null);
-          resolve();
-        });
-      });
-    };
-
-    await closeWithTimeout();
+    // O teto cobre paginas E contexto. Se qualquer etapa travar, o kill continua
+    // escopado ao user-data-dir deste perfil — nunca aos demais.
+    await closeProfileBrowser(handle);
     this.handles.delete(profileId);
     this.disableMirrorForUnavailableTargets("profile-stopped");
     this.latestAccountInfoFields.delete(profileId);
