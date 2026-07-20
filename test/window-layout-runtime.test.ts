@@ -77,6 +77,7 @@ class FakeNativePlacementService implements NativeWindowPlacementCoordinator {
   readonly batches: NativeWindowPlacementTarget[][] = [];
   readonly cancelled: string[] = [];
   readonly statuses = new Map<string, NativeWindowPlacementStatus>();
+  block?: Promise<void>;
   shutdownCalled = false;
 
   async enqueue(target: NativeWindowPlacementTarget): Promise<NativeWindowPlacementResult> {
@@ -89,6 +90,7 @@ class FakeNativePlacementService implements NativeWindowPlacementCoordinator {
     targets: readonly NativeWindowPlacementTarget[]
   ): Promise<NativeWindowPlacementResult[]> {
     this.batches.push([...targets]);
+    await this.block;
     return targets.map(({ profileId, x, y }) => {
       const status = this.statuses.get(profileId) ?? "positioned";
       return {
@@ -108,6 +110,19 @@ class FakeNativePlacementService implements NativeWindowPlacementCoordinator {
   async shutdown(): Promise<void> {
     this.shutdownCalled = true;
   }
+}
+
+const deferred = () => {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve: () => resolve?.() };
+};
+
+async function waitForNativeBatch(service: FakeNativePlacementService): Promise<void> {
+  for (let attempt = 0; attempt < 20 && service.batches.length === 0; attempt += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(service.batches.length, 1);
 }
 
 function fakePage(returnedBounds: Record<string, number>) {
@@ -232,6 +247,39 @@ test("native target uses the physical slot instead of Chromium coordinates", () 
   );
 });
 
+test("launch placement is discarded when its runtime handle is removed while awaiting Win32", async () => {
+  const nativePlacement = new FakeNativePlacementService();
+  const blocked = deferred();
+  nativePlacement.block = blocked.promise;
+  const runtime = new BrowserRuntimeService(() => undefined, nativePlacement);
+  const { page } = fakePage({});
+  const handle = { profileId: "profile-a", primaryPage: page };
+  const harness = runtime as unknown as {
+    handles: Map<string, unknown>;
+    positionLaunchedWindow(
+      profileId: string,
+      storagePath: string,
+      handle: unknown,
+      page: Page,
+      placement: DpiAwarePlacement
+    ): Promise<NativeWindowPlacementResult | undefined>;
+  };
+  harness.handles = new Map([["profile-a", handle]]);
+
+  const positioning = harness.positionLaunchedWindow(
+    "profile-a",
+    "C:\\Predator\\profiles\\profile-a",
+    handle,
+    page,
+    placement
+  );
+  await waitForNativeBatch(nativePlacement);
+  harness.handles.delete("profile-a");
+  blocked.resolve();
+
+  assert.equal(await positioning, undefined);
+});
+
 test("apply isolates a placement failure and continues with the next window", async () => {
   const notifications: string[] = [];
   const nativePlacement = new FakeNativePlacementService();
@@ -290,6 +338,46 @@ test("apply isolates a placement failure and continues with the next window", as
   assert.equal((handles.get("second") as { slotIndex: number }).slotIndex, 1);
   assert.ok(notifications.some((message) => message.startsWith("first:")));
   assert.ok(notifications.some((message) => message.startsWith("second:")));
+});
+
+test("apply discards a native result from an obsolete layout revision", async () => {
+  const notifications: string[] = [];
+  const nativePlacement = new FakeNativePlacementService();
+  const blocked = deferred();
+  nativePlacement.block = blocked.promise;
+  const runtime = new BrowserRuntimeService((_profileId, _status, detail) => {
+    notifications.push(detail ?? "");
+  }, nativePlacement);
+  const { page } = fakePage({});
+  const context = { pages: () => [page] };
+  const handle = {
+    profileId: "profile-a",
+    slotIndex: 10,
+    primaryPage: page,
+    context,
+    storagePath: "C:\\Predator\\profiles\\profile-a",
+    launchedScale: 0.75,
+    placement
+  };
+  const harness = runtime as unknown as {
+    handles: Map<string, unknown>;
+    buildBrowserPlacement: (_settings: AppSettings, slotIndex: number) => DpiAwarePlacement;
+    applyPlacementToPage: () => Promise<boolean>;
+    updateContextBadges: () => Promise<void>;
+  };
+  harness.handles = new Map([["profile-a", handle]]);
+  harness.buildBrowserPlacement = (_settings, slotIndex) => ({ ...placement, slotIndex });
+  harness.applyPlacementToPage = async () => true;
+  harness.updateContextBadges = async () => undefined;
+
+  const applying = runtime.applyLayout(multiMonitorSettings);
+  await waitForNativeBatch(nativePlacement);
+  runtime.setScreenLayout(multiMonitorSettings.screenLayout);
+  blocked.resolve();
+  await applying;
+
+  assert.equal(handle.slotIndex, 10);
+  assert.equal(notifications.some((message) => message.includes("aplicado")), false);
 });
 
 test("runtime cancels pending native work and shuts the coordinator down", async () => {

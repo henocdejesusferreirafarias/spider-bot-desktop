@@ -1032,6 +1032,7 @@ const STEALTH_INIT_SCRIPT = `
 
 export class BrowserRuntimeService {
   private readonly handles = new Map<string, RuntimeHandle>();
+  private readonly stoppingProfileIds = new Set<string>();
   private selectedWindowState: RuntimeControlSelectionState = { mode: "all" };
   private mirrorTargetSelection: RuntimeControlTargetSelection = { mode: "all" };
   private readonly mirrorSlotNumbers = new Set<number>();
@@ -1465,7 +1466,7 @@ export class BrowserRuntimeService {
 
     refreshPlacementFromLatestLayout();
     await this.applyPlacementToPage(primaryPage, placement, launchedScale).catch(() => null);
-    this.handles.set(profile.id, {
+    const runtimeHandle: RuntimeHandle = {
       profileId: profile.id,
       context,
       storagePath: profile.storagePath,
@@ -1481,21 +1482,19 @@ export class BrowserRuntimeService {
       mobileLike,
       ...(launchProxy.proxyChain ? { proxyChain: launchProxy.proxyChain } : {}),
       ...(deferNavigation ? { pendingNavigation: { homeUrl: profile.homeUrl } } : {})
-    });
-    const nativeResult = await this.nativeWindowPlacement
-      .enqueue(this.buildNativePlacementTarget(profile.id, profile.storagePath, placement))
-      .catch((error: unknown): NativeWindowPlacementResult => ({
-        profileId: profile.id,
-        status: "failed",
-        error: error instanceof Error ? error.message : String(error)
-      }));
-    appendInputDiagnostic({
-      kind: "native-window-placement",
-      profileId: profile.id,
-      slotIndex: placement.slotIndex,
-      requested: placement.targetPhysicalRect,
-      result: nativeResult
-    });
+    };
+    this.handles.set(profile.id, runtimeHandle);
+    const nativeResult = await this.positionLaunchedWindow(
+      profile.id,
+      profile.storagePath,
+      runtimeHandle,
+      primaryPage,
+      placement
+    );
+    if (!nativeResult) {
+      this.launchingSlotIndexes.delete(placement.slotIndex);
+      return;
+    }
     appendInputDiagnostic({
       kind: "profile-launch-ready",
       profileId: profile.id,
@@ -1510,8 +1509,12 @@ export class BrowserRuntimeService {
       throw error;
     }
     const handle = this.handles.get(profile.id);
-    if (handle && primaryPage) {
-      await this.applyRuntimeStateToPage(handle, primaryPage);
+    if (!handle || !this.isPlacementRequestCurrent(profile.id, handle, primaryPage)) {
+      return;
+    }
+    await this.applyRuntimeStateToPage(handle, primaryPage);
+    if (!this.isPlacementRequestCurrent(profile.id, handle, primaryPage)) {
+      return;
     }
     this.notify(profile.id, "active", "ðŸŒ Navegador aberto e pronto.");
   }
@@ -1542,14 +1545,21 @@ export class BrowserRuntimeService {
     }
 
     this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
+    this.stoppingProfileIds.add(profileId);
 
     // O teto cobre paginas E contexto. Se qualquer etapa travar, o kill continua
     // escopado ao user-data-dir deste perfil — nunca aos demais.
-    await closeProfileBrowser(handle);
-    this.handles.delete(profileId);
-    this.disableMirrorForUnavailableTargets("profile-stopped");
-    this.latestAccountInfoFields.delete(profileId);
-    this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
+    try {
+      await closeProfileBrowser(handle);
+      if (this.handles.get(profileId) === handle) {
+        this.handles.delete(profileId);
+      }
+      this.disableMirrorForUnavailableTargets("profile-stopped");
+      this.latestAccountInfoFields.delete(profileId);
+      this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
+    } finally {
+      this.stoppingProfileIds.delete(profileId);
+    }
   }
 
   async restartProfile(profile: ProfileSummary, settings: AppSettings): Promise<void> {
@@ -1559,6 +1569,7 @@ export class BrowserRuntimeService {
 
   async applyLayout(settings: AppSettings): Promise<void> {
     this.setScreenLayout(settings.screenLayout);
+    const layoutRevision = this.screenLayoutRevision;
     const handles = [...this.handles.entries()].sort(([, a], [, b]) => a.slotIndex - b.slotIndex);
     const pending: Array<{
       profileId: string;
@@ -1588,6 +1599,9 @@ export class BrowserRuntimeService {
           placement,
           handle.launchedScale
         );
+        if (!this.isPlacementRequestCurrent(profileId, handle, page, layoutRevision)) {
+          continue;
+        }
         if (boundsApplied) {
           pending.push({ profileId, handle, page, placement });
         } else {
@@ -1630,6 +1644,15 @@ export class BrowserRuntimeService {
         requested: placement.targetPhysicalRect,
         result: nativeResult ?? { status: "failed", error: "missing-native-result" }
       });
+      if (!this.isPlacementRequestCurrent(profileId, handle, page, layoutRevision)) {
+        appendInputDiagnostic({
+          kind: "native-window-placement-stale",
+          profileId,
+          slotIndex: placement.slotIndex,
+          layoutRevision
+        });
+        continue;
+      }
       if (nativeResult?.status !== "positioned") {
         this.notify(
           profileId,
@@ -1645,6 +1668,9 @@ export class BrowserRuntimeService {
         placement,
         handle.ipLabel
       ).catch(() => null);
+      if (!this.isPlacementRequestCurrent(profileId, handle, page, layoutRevision)) {
+        continue;
+      }
       handle.primaryPage = page;
       handle.slotIndex = placement.slotIndex;
       handle.placement = placement;
@@ -7789,6 +7815,51 @@ export class BrowserRuntimeService {
       x: placement.targetPhysicalRect.x,
       y: placement.targetPhysicalRect.y
     };
+  }
+
+  private isPlacementRequestCurrent(
+    profileId: string,
+    handle: RuntimeHandle,
+    page: Page,
+    layoutRevision?: number
+  ): boolean {
+    return this.handles.get(profileId) === handle &&
+      !this.stoppingProfileIds.has(profileId) &&
+      !page.isClosed() &&
+      (layoutRevision === undefined || layoutRevision === this.screenLayoutRevision);
+  }
+
+  private async positionLaunchedWindow(
+    profileId: string,
+    storagePath: string,
+    handle: RuntimeHandle,
+    page: Page,
+    placement: DpiAwarePlacement
+  ): Promise<NativeWindowPlacementResult | undefined> {
+    const result = await this.nativeWindowPlacement
+      .enqueue(this.buildNativePlacementTarget(profileId, storagePath, placement))
+      .catch((error: unknown): NativeWindowPlacementResult => ({
+        profileId,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    appendInputDiagnostic({
+      kind: "native-window-placement",
+      profileId,
+      slotIndex: placement.slotIndex,
+      requested: placement.targetPhysicalRect,
+      result
+    });
+    if (!this.isPlacementRequestCurrent(profileId, handle, page)) {
+      appendInputDiagnostic({
+        kind: "native-window-placement-stale",
+        profileId,
+        slotIndex: placement.slotIndex,
+        phase: "launch"
+      });
+      return undefined;
+    }
+    return result;
   }
 
   private async applyPlacementToPage(

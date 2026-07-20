@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import {
@@ -6,6 +9,8 @@ import {
   WINDOWS_WINDOW_PLACEMENT_SCRIPT,
   type NativeWindowPlacementTarget,
   parseNativePlacementResults,
+  runWindowsWindowPlacement,
+  validateNativePlacementResults,
   validateNativePlacementTarget
 } from "../src/main/services/windows-window-placement.js";
 
@@ -46,6 +51,28 @@ test("rejects empty, invalid or unknown helper output", () => {
     profileId: "profile-a",
     status: "moved"
   })));
+  assert.throws(() => parseNativePlacementResults(JSON.stringify({
+    profileId: "profile-a",
+    status: "positioned"
+  })));
+});
+
+test("rejects helper success outside the requested physical coordinates", () => {
+  assert.throws(() => validateNativePlacementResults([target], [{
+    profileId: target.profileId,
+    status: "positioned",
+    actual: { x: target.x + 3, y: target.y }
+  }]));
+
+  assert.deepEqual(validateNativePlacementResults([target], [{
+    profileId: target.profileId,
+    status: "positioned",
+    actual: { x: target.x + 2, y: target.y - 2 }
+  }]), [{
+    profileId: target.profileId,
+    status: "positioned",
+    actual: { x: target.x + 2, y: target.y - 2 }
+  }]);
 });
 
 test("PowerShell helper is position-only and associates windows fail-closed", () => {
@@ -57,12 +84,39 @@ test("PowerShell helper is position-only and associates windows fail-closed", ()
     "SWP_NOACTIVATE",
     "SetProcessDpiAwarenessContext",
     "EnablePerMonitorDpiAwareness",
+    "Marshal.GetLastWin32Error",
     "Chrome_WidgetWin_1",
     "--user-data-dir"
   ]) {
     assert.match(WINDOWS_WINDOW_PLACEMENT_SCRIPT, new RegExp(required));
   }
   assert.doesNotMatch(WINDOWS_WINDOW_PLACEMENT_SCRIPT, /SetWindowText|ShowWindow|MainWindowTitle/);
+  assert.match(
+    WINDOWS_WINDOW_PLACEMENT_SCRIPT,
+    /if \(!SetProcessDpiAwarenessContext\(new IntPtr\(-4\)\)\)/
+  );
+});
+
+test("rejects a broken helper stdin without leaving an unhandled stream error", async () => {
+  let killed = false;
+  const child = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+  Object.assign(child, {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: () => {
+      killed = true;
+      return true;
+    }
+  });
+
+  const placement = runWindowsWindowPlacement([target], () => {
+    queueMicrotask(() => child.stdin.destroy(new Error("broken pipe")));
+    return child;
+  });
+
+  await assert.rejects(placement, /broken pipe/);
+  assert.equal(killed, true);
 });
 
 const placementTarget = (index: number): NativeWindowPlacementTarget => ({

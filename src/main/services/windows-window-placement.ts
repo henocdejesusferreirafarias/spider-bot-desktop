@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 export const NATIVE_POSITION_TOLERANCE = 2;
 export const NATIVE_PLACEMENT_TIMEOUT_MS = 5000;
@@ -77,6 +77,9 @@ function parseNativePlacementResult(value: unknown): NativeWindowPlacementResult
     }
     result.actual = { x: value.actual.x, y: value.actual.y };
   }
+  if (result.status === "positioned" && !result.actual) {
+    throw new Error("Native placement helper reported success without physical coordinates.");
+  }
   if (typeof value.error === "string" && value.error) {
     result.error = value.error;
   }
@@ -94,6 +97,37 @@ export function parseNativePlacementResults(stdout: string): NativeWindowPlaceme
     throw new Error("Native placement helper returned an empty result.");
   }
   return values.map(parseNativePlacementResult);
+}
+
+export function validateNativePlacementResults(
+  targets: readonly NativeWindowPlacementTarget[],
+  results: readonly NativeWindowPlacementResult[]
+): NativeWindowPlacementResult[] {
+  const targetByProfile = new Map(targets.map((target) => [target.profileId, target]));
+  const resultByProfile = new Map(results.map((result) => [result.profileId, result]));
+  if (targetByProfile.size !== targets.length) {
+    throw new Error("Native placement request contains duplicate profiles.");
+  }
+  if (resultByProfile.size !== results.length || targetByProfile.size !== resultByProfile.size) {
+    throw new Error("Native placement helper returned duplicate or missing profiles.");
+  }
+  for (const [profileId, target] of targetByProfile) {
+    const result = resultByProfile.get(profileId);
+    if (!result) {
+      throw new Error(`Native placement helper omitted ${profileId}.`);
+    }
+    if (result.status === "positioned") {
+      if (!result.actual) {
+        throw new Error(`Native placement helper omitted physical coordinates for ${profileId}.`);
+      }
+      const deltaX = Math.abs(result.actual.x - target.x);
+      const deltaY = Math.abs(result.actual.y - target.y);
+      if (deltaX > NATIVE_POSITION_TOLERANCE || deltaY > NATIVE_POSITION_TOLERANCE) {
+        throw new Error(`Native placement helper returned mismatched coordinates for ${profileId}.`);
+      }
+    }
+  }
+  return [...results];
 }
 
 export const WINDOWS_WINDOW_PLACEMENT_SCRIPT = String.raw`
@@ -119,7 +153,7 @@ public static class SpiderWindowApi {
   [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder name, int length);
   [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
-  [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+  [DllImport("user32.dll", SetLastError = true)] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
   [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
   private const uint SWP_NOSIZE = 0x0001;
@@ -127,7 +161,9 @@ public static class SpiderWindowApi {
   private const uint SWP_NOACTIVATE = 0x0010;
 
   public static void EnablePerMonitorDpiAwareness() {
-    SetProcessDpiAwarenessContext(new IntPtr(-4));
+    if (!SetProcessDpiAwarenessContext(new IntPtr(-4))) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
   }
 
   public static NativeWindowInfo[] Enumerate() {
@@ -204,7 +240,14 @@ $results = foreach ($target in $targets) {
 `;
 
 export async function runWindowsWindowPlacement(
-  targets: readonly NativeWindowPlacementTarget[]
+  targets: readonly NativeWindowPlacementTarget[],
+  spawnProcess: (
+    command: string,
+    args: readonly string[]
+  ) => ChildProcessWithoutNullStreams = (command, args) => spawn(command, args, {
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"]
+  })
 ): Promise<NativeWindowPlacementResult[]> {
   if (targets.length === 0) {
     return [];
@@ -216,22 +259,34 @@ export async function runWindowsWindowPlacement(
   const encodedScript = Buffer.from(WINDOWS_WINDOW_PLACEMENT_SCRIPT, "utf16le").toString("base64");
 
   return new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", [
+    const child = spawnProcess("powershell.exe", [
       "-NoProfile",
       "-NonInteractive",
       "-WindowStyle",
       "Hidden",
       "-EncodedCommand",
       encodedScript
-    ], {
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
+    ]);
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const settleError = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      reject(error);
+    };
+    const settleSuccess = (results: NativeWindowPlacementResult[]): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolve(results);
+    };
+    timeout = setTimeout(() => {
+      settleError(new Error(
+        `Native placement helper timed out after ${NATIVE_PLACEMENT_TIMEOUT_MS}ms.`
+      ));
       child.kill();
     }, NATIVE_PLACEMENT_TIMEOUT_MS);
 
@@ -239,35 +294,26 @@ export async function runWindowsWindowPlacement(
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => { stdout += chunk; });
     child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
+    child.once("error", settleError);
+    child.stdin.once("error", (error) => {
+      settleError(error);
+      child.kill();
     });
     child.once("close", (code) => {
-      clearTimeout(timeout);
-      if (timedOut) {
-        reject(new Error(`Native placement helper timed out after ${NATIVE_PLACEMENT_TIMEOUT_MS}ms.`));
-        return;
-      }
+      if (settled) return;
       if (code !== 0) {
-        reject(new Error(`Native placement helper exited with code ${String(code)}: ${stderr.trim()}`));
+        settleError(new Error(
+          `Native placement helper exited with code ${String(code)}: ${stderr.trim()}`
+        ));
         return;
       }
       try {
-        const results = parseNativePlacementResults(stdout);
-        const expectedIds = new Set(validated.map(({ profileId }) => profileId));
-        const returnedIds = new Set(results.map(({ profileId }) => profileId));
-        if (returnedIds.size !== results.length || expectedIds.size !== returnedIds.size) {
-          throw new Error("Native placement helper returned duplicate or missing profiles.");
-        }
-        for (const profileId of expectedIds) {
-          if (!returnedIds.has(profileId)) {
-            throw new Error(`Native placement helper omitted ${profileId}.`);
-          }
-        }
-        resolve(results);
+        settleSuccess(validateNativePlacementResults(
+          validated,
+          parseNativePlacementResults(stdout)
+        ));
       } catch (error) {
-        reject(error);
+        settleError(error instanceof Error ? error : new Error(String(error)));
       }
     });
     child.stdin.end(JSON.stringify(validated));
