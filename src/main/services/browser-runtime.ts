@@ -58,6 +58,7 @@ import {
 import type { RouteKind, RouteTarget } from "./spa-navigation.js";
 import {
   buildDpiAwarePlacement,
+  chromiumBoundsMatch,
   toChromiumWindowGeometry,
   toPreviewDipRect,
   type DpiAwarePlacement
@@ -1565,17 +1566,19 @@ export class BrowserRuntimeService {
         placement,
         handle.launchedScale
       );
-      this.mirrorViewportCache.delete(page);
-      await this.updateContextBadges(
-        handle.profileId,
-        handle.context,
-        placement,
-        handle.launchedScale,
-        handle.ipLabel
-      ).catch(() => null);
-      handle.primaryPage = page;
-      handle.slotIndex = placement.slotIndex;
-      handle.placement = placement;
+      if (boundsApplied) {
+        this.mirrorViewportCache.delete(page);
+        await this.updateContextBadges(
+          handle.profileId,
+          handle.context,
+          placement,
+          handle.launchedScale,
+          handle.ipLabel
+        ).catch(() => null);
+        handle.primaryPage = page;
+        handle.slotIndex = placement.slotIndex;
+        handle.placement = placement;
+      }
       this.notify(
         profileId,
         "active",
@@ -7764,9 +7767,19 @@ export class BrowserRuntimeService {
           height: geometry.height
         }
       });
+      const readback = (await session.send("Browser.getWindowBounds", {
+        windowId
+      })) as {
+        bounds?: {
+          left?: number;
+          top?: number;
+          width?: number;
+          height?: number;
+        };
+      };
       await session.send("Emulation.clearDeviceMetricsOverride").catch(() => undefined);
 
-      return true;
+      return chromiumBoundsMatch(geometry, readback.bounds ?? {});
     } catch {
       return false;
     } finally {
