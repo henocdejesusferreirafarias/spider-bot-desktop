@@ -14,8 +14,12 @@ const PHOTO_STD = [0.229, 0.224, 0.225] as const;
 function resolveCaptchaAsset(name: string): string {
   const r = process.resourcesPath;
   if (r) {
-    const p = join(r, 'assets', 'captcha', name);
-    if (existsSync(p)) return p;
+    for (const p of [
+      join(r, 'assets', 'captcha', name),
+      join(r, 'app.asar.unpacked', 'assets', 'captcha', name),
+    ]) {
+      if (existsSync(p)) return p;
+    }
   }
   return join(__dirname, '..', '..', '..', '..', 'assets', 'captcha', name);
 }

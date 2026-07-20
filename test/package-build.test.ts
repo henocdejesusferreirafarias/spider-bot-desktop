@@ -17,6 +17,28 @@ void test("electron-builder files config excludes source maps", () => {
   );
 });
 
+void test("electron-builder unpacks the ONNX captcha model for native runtime loading", () => {
+  const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
+  const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+    build?: { asarUnpack?: string[] };
+  };
+  const asarUnpack = pkg.build?.asarUnpack ?? [];
+  assert.ok(
+    asarUnpack.includes("assets/captcha/*.onnx"),
+    "onnxruntime-node precisa carregar o modelo de app.asar.unpacked, nao de dentro do app.asar."
+  );
+});
+
+void test("captcha ONNX resolver checks app.asar.unpacked before falling back to app.asar", () => {
+  const sourcePath = fileURLToPath(new URL("../src/main/services/captcha/onnx-session.ts", import.meta.url));
+  const source = readFileSync(sourcePath, "utf-8");
+  assert.match(
+    source,
+    /app\.asar\.unpacked['"],\s*['"]assets['"],\s*['"]captcha['"]/,
+    "resolver deve procurar o modelo ONNX no caminho fisico app.asar.unpacked."
+  );
+});
+
 void test("desktop bootstrap keeps platform automation on the local adaptive runtime", () => {
   const mainSourcePath = fileURLToPath(new URL("../src/main/index.ts", import.meta.url));
   const source = readFileSync(mainSourcePath, "utf-8");
