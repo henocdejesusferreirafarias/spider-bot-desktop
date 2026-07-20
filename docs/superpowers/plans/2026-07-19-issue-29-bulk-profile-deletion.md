@@ -26,7 +26,7 @@
 - Create: `test/profile-deletion.test.ts`
 
 **Interfaces:**
-- Consumes: callbacks `profileExists`, `isProfileActive`, `stopProfile` e `deleteProfile`.
+- Consumes: callbacks `getProfileName`, `isProfileActive`, `stopProfile` e `deleteProfile`.
 - Produces: `deleteProfilesWithConcurrency(profileIds, dependencies, concurrency): Promise<ProfileDeletionResult>` e eventos `ProfileDeletionProgress`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -37,7 +37,7 @@ Cobrir limite de dois workers, continuidade depois de uma falha, ordem do result
 const result = await deleteProfilesWithConcurrency(
   ["a", "b", "c"],
   {
-    profileExists: () => true,
+    getProfileName: (profileId) => `Perfil ${profileId.toUpperCase()}`,
     isProfileActive: () => false,
     stopProfile: async () => undefined,
     deleteProfile: async (profileId) => runMeasuredDeletion(profileId),
