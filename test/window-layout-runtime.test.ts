@@ -4,6 +4,12 @@ import test from "node:test";
 import type { Page } from "patchright";
 import { BrowserRuntimeService } from "../src/main/services/browser-runtime.js";
 import type { DpiAwarePlacement } from "../src/main/services/window-geometry.js";
+import type {
+  NativeWindowPlacementCoordinator,
+  NativeWindowPlacementResult,
+  NativeWindowPlacementStatus,
+  NativeWindowPlacementTarget
+} from "../src/main/services/windows-window-placement.js";
 import { defaultSettings } from "../src/shared/defaults.js";
 import type { AppSettings } from "../src/shared/contracts.js";
 import type {
@@ -66,6 +72,43 @@ const multiMonitorSettings: AppSettings = {
     ]
   }
 };
+
+class FakeNativePlacementService implements NativeWindowPlacementCoordinator {
+  readonly batches: NativeWindowPlacementTarget[][] = [];
+  readonly cancelled: string[] = [];
+  readonly statuses = new Map<string, NativeWindowPlacementStatus>();
+  shutdownCalled = false;
+
+  async enqueue(target: NativeWindowPlacementTarget): Promise<NativeWindowPlacementResult> {
+    const [result] = await this.enqueueMany([target]);
+    if (!result) throw new Error("missing fake native placement result");
+    return result;
+  }
+
+  async enqueueMany(
+    targets: readonly NativeWindowPlacementTarget[]
+  ): Promise<NativeWindowPlacementResult[]> {
+    this.batches.push([...targets]);
+    return targets.map(({ profileId, x, y }) => {
+      const status = this.statuses.get(profileId) ?? "positioned";
+      return {
+        profileId,
+        status,
+        ...(status === "positioned"
+          ? { actual: { x, y } }
+          : { error: "fake-native-failure" })
+      };
+    });
+  }
+
+  cancel(profileId: string): void {
+    this.cancelled.push(profileId);
+  }
+
+  async shutdown(): Promise<void> {
+    this.shutdownCalled = true;
+  }
+}
 
 function fakePage(returnedBounds: Record<string, number>) {
   const calls: Array<{ method: string; params?: unknown }> = [];
@@ -167,43 +210,112 @@ test("preview includes every enabled display in global order", () => {
   assert.deepEqual(preview.slots.map((slot) => slot.label), ["1", "2"]);
 });
 
+test("native target uses the physical slot instead of Chromium coordinates", () => {
+  const nativePlacement = new FakeNativePlacementService();
+  const runtime = new BrowserRuntimeService(() => undefined, nativePlacement);
+  const harness = runtime as unknown as {
+    buildNativePlacementTarget(
+      profileId: string,
+      storagePath: string,
+      placement: DpiAwarePlacement
+    ): NativeWindowPlacementTarget;
+  };
+
+  assert.deepEqual(
+    harness.buildNativePlacementTarget("profile-a", "C:\\Predator\\profiles\\profile-a", placement),
+    {
+      profileId: "profile-a",
+      userDataDir: "C:\\Predator\\profiles\\profile-a",
+      x: 12,
+      y: 12
+    }
+  );
+});
+
 test("apply isolates a placement failure and continues with the next window", async () => {
   const notifications: string[] = [];
+  const nativePlacement = new FakeNativePlacementService();
+  nativePlacement.statuses.set("first", "failed");
   const runtime = new BrowserRuntimeService((profileId, _status, detail) => {
     notifications.push(`${profileId}:${detail ?? ""}`);
-  });
+  }, nativePlacement);
   const page = {
     isClosed: () => false,
     context: () => ({})
   } as unknown as Page;
   const context = { pages: () => [page] };
   const handles = new Map([
-    ["first", { profileId: "first", slotIndex: 0, primaryPage: page, context }],
-    ["second", { profileId: "second", slotIndex: 1, primaryPage: page, context }]
+    ["first", {
+      profileId: "first",
+      slotIndex: 10,
+      primaryPage: page,
+      context,
+      storagePath: "C:\\Predator\\profiles\\first",
+      launchedScale: 0.75,
+      placement
+    }],
+    ["second", {
+      profileId: "second",
+      slotIndex: 11,
+      primaryPage: page,
+      context,
+      storagePath: "C:\\Predator\\profiles\\second",
+      launchedScale: 0.75,
+      placement
+    }]
   ]);
-  let placementAttempts = 0;
   const harness = runtime as unknown as {
     handles: Map<string, unknown>;
-    buildBrowserPlacement: () => DpiAwarePlacement;
+    buildBrowserPlacement: (_settings: AppSettings, slotIndex: number) => DpiAwarePlacement;
     applyPlacementToPage: () => Promise<boolean>;
     updateContextBadges: () => Promise<void>;
   };
   harness.handles = handles;
-  harness.buildBrowserPlacement = () => {
-    placementAttempts += 1;
-    if (placementAttempts === 1) {
-      throw new Error("first display failed");
-    }
-    return placement;
-  };
+  harness.buildBrowserPlacement = (_settings, slotIndex) => ({
+    ...placement,
+    slotIndex,
+    targetPhysicalRect: { ...placement.targetPhysicalRect, x: 1000 + slotIndex }
+  });
   harness.applyPlacementToPage = async () => true;
   harness.updateContextBadges = async () => undefined;
 
   await runtime.applyLayout(multiMonitorSettings);
 
-  assert.equal(placementAttempts, 2);
+  assert.equal(nativePlacement.batches.length, 1);
+  assert.deepEqual(
+    nativePlacement.batches[0]?.map(({ profileId, x }) => [profileId, x]),
+    [["first", 1000], ["second", 1001]]
+  );
+  assert.equal((handles.get("first") as { slotIndex: number }).slotIndex, 10);
+  assert.equal((handles.get("second") as { slotIndex: number }).slotIndex, 1);
   assert.ok(notifications.some((message) => message.startsWith("first:")));
   assert.ok(notifications.some((message) => message.startsWith("second:")));
+});
+
+test("runtime cancels pending native work and shuts the coordinator down", async () => {
+  const nativePlacement = new FakeNativePlacementService();
+  const runtime = new BrowserRuntimeService(() => undefined, nativePlacement);
+  await runtime.stopProfile("missing-profile");
+  await runtime.shutdown();
+  assert.deepEqual(nativePlacement.cancelled, ["missing-profile"]);
+  assert.equal(nativePlacement.shutdownCalled, true);
+});
+
+test("browser context close cancels pending native placement", () => {
+  const nativePlacement = new FakeNativePlacementService();
+  const runtime = new BrowserRuntimeService(() => undefined, nativePlacement);
+  let closeHandler: (() => void) | undefined;
+  const context = {
+    on: (event: string, handler: () => void) => {
+      if (event === "close") closeHandler = handler;
+    }
+  };
+  const harness = runtime as unknown as {
+    attachContextCloseHandler(profileId: string, context: unknown): void;
+  };
+  harness.attachContextCloseHandler("profile-close", context);
+  closeHandler?.();
+  assert.deepEqual(nativePlacement.cancelled, ["profile-close"]);
 });
 
 test("apply confirma bounds reais compatíveis usando a escala lançada", async () => {

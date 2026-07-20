@@ -55,6 +55,8 @@ test("PowerShell helper is position-only and associates windows fail-closed", ()
     "SWP_NOSIZE",
     "SWP_NOZORDER",
     "SWP_NOACTIVATE",
+    "SetProcessDpiAwarenessContext",
+    "EnablePerMonitorDpiAwareness",
     "Chrome_WidgetWin_1",
     "--user-data-dir"
   ]) {

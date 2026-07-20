@@ -109,7 +109,7 @@ using System.Text;
 public sealed class NativeWindowInfo {
   public long Handle { get; set; }
   public int ProcessId { get; set; }
-  public string ClassName { get; set; } = "";
+  public string ClassName { get; set; }
 }
 
 public static class SpiderWindowApi {
@@ -119,11 +119,16 @@ public static class SpiderWindowApi {
   [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder name, int length);
   [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
   [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
   private const uint SWP_NOSIZE = 0x0001;
   private const uint SWP_NOZORDER = 0x0004;
   private const uint SWP_NOACTIVATE = 0x0010;
+
+  public static void EnablePerMonitorDpiAwareness() {
+    SetProcessDpiAwarenessContext(new IntPtr(-4));
+  }
 
   public static NativeWindowInfo[] Enumerate() {
     var windows = new List<NativeWindowInfo>();
@@ -166,6 +171,7 @@ function Read-UserDataDir([string]$commandLine) {
   return Normalize-Path $value
 }
 
+[SpiderWindowApi]::EnablePerMonitorDpiAwareness()
 $processes = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='chromium.exe'" | Select-Object ProcessId, CommandLine)
 $windows = @([SpiderWindowApi]::Enumerate())
 $results = foreach ($target in $targets) {

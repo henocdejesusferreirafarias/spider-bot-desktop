@@ -64,6 +64,12 @@ import {
   type DpiAwarePlacement
 } from "./window-geometry.js";
 import {
+  WindowsWindowPlacementService,
+  type NativeWindowPlacementCoordinator,
+  type NativeWindowPlacementResult,
+  type NativeWindowPlacementTarget
+} from "./windows-window-placement.js";
+import {
   NAVIGATION_MODE_LAUNCH_ARG_PREFIX,
   NAVIGATION_MODES,
   type AppSettings,
@@ -1103,7 +1109,11 @@ export class BrowserRuntimeService {
   // por navegacao/evento). Chaveado por Frame; entradas somem quando o frame e GC'd.
   private readonly gameFrameLoadMonitors = new WeakSet<object>();
 
-  constructor(private readonly notify: RuntimeNotifier) {
+  constructor(
+    private readonly notify: RuntimeNotifier,
+    private readonly nativeWindowPlacement: NativeWindowPlacementCoordinator =
+      new WindowsWindowPlacementService()
+  ) {
     appendInputDiagnostic({
       kind: "diagnostic-session-start",
       pid: process.pid
@@ -1122,6 +1132,7 @@ export class BrowserRuntimeService {
       });
       this.activeSplashes.delete(profileId);
       this.mirrorReplayProfileChains.delete(profileId);
+      this.nativeWindowPlacement.cancel(profileId);
       this.handles.delete(profileId);
       this.disableMirrorForUnavailableTargets("browser-context-close");
       void proxyChain?.stop().catch(() => undefined);
@@ -1471,6 +1482,20 @@ export class BrowserRuntimeService {
       ...(launchProxy.proxyChain ? { proxyChain: launchProxy.proxyChain } : {}),
       ...(deferNavigation ? { pendingNavigation: { homeUrl: profile.homeUrl } } : {})
     });
+    const nativeResult = await this.nativeWindowPlacement
+      .enqueue(this.buildNativePlacementTarget(profile.id, profile.storagePath, placement))
+      .catch((error: unknown): NativeWindowPlacementResult => ({
+        profileId: profile.id,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    appendInputDiagnostic({
+      kind: "native-window-placement",
+      profileId: profile.id,
+      slotIndex: placement.slotIndex,
+      requested: placement.targetPhysicalRect,
+      result: nativeResult
+    });
     appendInputDiagnostic({
       kind: "profile-launch-ready",
       profileId: profile.id,
@@ -1509,6 +1534,7 @@ export class BrowserRuntimeService {
   }
 
   async stopProfile(profileId: string): Promise<void> {
+    this.nativeWindowPlacement.cancel(profileId);
     const handle = this.handles.get(profileId);
     if (!handle) {
       this.notify(profileId, "idle", "ðŸ§¹ Navegador jÃ¡ estava fechado.");
@@ -1534,6 +1560,12 @@ export class BrowserRuntimeService {
   async applyLayout(settings: AppSettings): Promise<void> {
     this.setScreenLayout(settings.screenLayout);
     const handles = [...this.handles.entries()].sort(([, a], [, b]) => a.slotIndex - b.slotIndex);
+    const pending: Array<{
+      profileId: string;
+      handle: RuntimeHandle;
+      page: Page;
+      placement: BrowserPlacement;
+    }> = [];
 
     for (const [nextSlotIndex, [profileId, handle]] of handles.entries()) {
       try {
@@ -1557,24 +1589,14 @@ export class BrowserRuntimeService {
           handle.launchedScale
         );
         if (boundsApplied) {
-          this.mirrorViewportCache.delete(page);
-          await this.updateContextBadges(
-            handle.profileId,
-            handle.context,
-            placement,
-            handle.ipLabel
-          ).catch(() => null);
-          handle.primaryPage = page;
-          handle.slotIndex = placement.slotIndex;
-          handle.placement = placement;
+          pending.push({ profileId, handle, page, placement });
+        } else {
+          this.notify(
+            profileId,
+            "active",
+            "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
+          );
         }
-        this.notify(
-          profileId,
-          "active",
-          boundsApplied
-            ? "Layout de tela aplicado ao navegador."
-            : "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
-        );
       } catch {
         this.notify(
           profileId,
@@ -1582,6 +1604,51 @@ export class BrowserRuntimeService {
           "Layout salvo, mas esta janela nao pode ser reposicionada."
         );
       }
+    }
+
+    if (pending.length === 0) {
+      return;
+    }
+
+    const nativeResults = await this.nativeWindowPlacement.enqueueMany(
+      pending.map(({ profileId, handle, placement }) =>
+        this.buildNativePlacementTarget(profileId, handle.storagePath, placement)
+      )
+    ).catch((error: unknown) => pending.map(({ profileId }) => ({
+      profileId,
+      status: "failed" as const,
+      error: error instanceof Error ? error.message : String(error)
+    })));
+    const nativeByProfile = new Map(nativeResults.map((result) => [result.profileId, result]));
+
+    for (const { profileId, handle, page, placement } of pending) {
+      const nativeResult = nativeByProfile.get(profileId);
+      appendInputDiagnostic({
+        kind: "native-window-placement",
+        profileId,
+        slotIndex: placement.slotIndex,
+        requested: placement.targetPhysicalRect,
+        result: nativeResult ?? { status: "failed", error: "missing-native-result" }
+      });
+      if (nativeResult?.status !== "positioned") {
+        this.notify(
+          profileId,
+          "active",
+          "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
+        );
+        continue;
+      }
+      this.mirrorViewportCache.delete(page);
+      await this.updateContextBadges(
+        handle.profileId,
+        handle.context,
+        placement,
+        handle.ipLabel
+      ).catch(() => null);
+      handle.primaryPage = page;
+      handle.slotIndex = placement.slotIndex;
+      handle.placement = placement;
+      this.notify(profileId, "active", "Layout de tela aplicado ao navegador.");
     }
   }
 
@@ -1974,6 +2041,7 @@ export class BrowserRuntimeService {
       this.latestAccountInfoFields.delete(profileId);
       this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado ao encerrar o Spider BOT.");
     }
+    await this.nativeWindowPlacement.shutdown();
   }
 
   async testProxy(proxy: ProxyConfig): Promise<ProxyConfig["status"]> {
@@ -7707,6 +7775,19 @@ export class BrowserRuntimeService {
     return {
       version: 2,
       monitors: layout.monitors.map((monitor) => ({ ...monitor }))
+    };
+  }
+
+  private buildNativePlacementTarget(
+    profileId: string,
+    storagePath: string,
+    placement: DpiAwarePlacement
+  ): NativeWindowPlacementTarget {
+    return {
+      profileId,
+      userDataDir: storagePath,
+      x: placement.targetPhysicalRect.x,
+      y: placement.targetPhysicalRect.y
     };
   }
 

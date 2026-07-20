@@ -223,7 +223,7 @@ test("cada monitor usa seu próprio conversor e fator de escala", () => {
   });
 });
 
-test("grade 5x2 compensa a escala na origem global do monitor à direita", () => {
+test("grade 5x2 preserva o retângulo físico para posicionamento nativo", () => {
   const display = { x: 1920, y: 0, width: 2400, height: 1080 };
   const workArea = { x: 1920, y: 0, width: 2400, height: 1032 };
   const slots = buildLogicalLayout(workArea, layout).slots;
@@ -231,28 +231,46 @@ test("grade 5x2 compensa a escala na origem global do monitor à direita", () =>
   const last = slots[4];
   assert.ok(first && last);
 
-  const actualPhysicalRects = [first, last].map((slot) => {
-    const placement = buildDpiAwarePlacement(
+  const placements = [first, last].map((slot) =>
+    buildDpiAwarePlacement(
       slot,
       "grid",
       display,
       workArea,
       primaryConverter(1)
-    );
-    const geometry = toChromiumWindowGeometry(
-      placement,
-      placement.idealScale
-    );
-    return {
-      x: Math.round(geometry.x * placement.idealScale),
-      width: Math.round(geometry.width * placement.idealScale)
-    };
-  });
+    )
+  );
+  const firstPlacement = placements[0];
+  const lastPlacement = placements[1];
+  assert.ok(firstPlacement && lastPlacement);
 
-  assert.deepEqual(actualPhysicalRects, [
-    { x: 1928, width: 470 },
-    { x: 3840, width: 470 }
-  ]);
+  assert.deepEqual(firstPlacement.targetPhysicalRect, {
+    x: 1928,
+    y: 8,
+    width: 470,
+    height: 504
+  });
+  assert.equal(
+    lastPlacement.targetPhysicalRect.x + lastPlacement.targetPhysicalRect.width,
+    4310
+  );
+});
+
+test("geometria CDP mantém tamanho compensado sem provar posição Win32", () => {
+  const display = { x: 1920, y: 0, width: 2400, height: 1080 };
+  const workArea = { x: 1920, y: 0, width: 2400, height: 1032 };
+  const first = buildLogicalLayout(workArea, layout).slots[0];
+  assert.ok(first);
+  const placement = buildDpiAwarePlacement(
+    first,
+    "grid",
+    display,
+    workArea,
+    primaryConverter(1)
+  );
+  const geometry = toChromiumWindowGeometry(placement, placement.idealScale);
+  assert.equal(Math.round(geometry.width * placement.idealScale), 470);
+  assert.equal(Math.round(geometry.height * placement.idealScale), 504);
 });
 
 test("grade densa preserva pegada mínima, sobreposição e preview em DIP", () => {
