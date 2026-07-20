@@ -36,8 +36,8 @@ apagou as dez pastas e removeu as dez linhas do SQLite.
 ## Encerramento escopado e feedback
 
 - `browser-runtime-stop.test.ts` cobre pagina travada, contexto real de fechamento,
-  kill forcado que nunca resolve e preservacao das notificacoes que persistem
-  `idle` quando a remocao de arquivos falha.
+  kill forcado que nunca resolve e preservacao das notificacoes usadas pelo main
+  para persistir o estado `idle`.
 - `browser-process-kill.test.ts` comprova que a selecao de processos casa somente
   com o `user-data-dir` alvo e nao inclui outro perfil nem o Chrome do usuario.
 - `profile-deletion-renderer.test.ts` cobre `Excluindo X de Y`, resumo de falhas e
