@@ -129,7 +129,7 @@ test("grade 4x1 em 150% termina na margem física sem acumular lacunas", () => {
   );
 });
 
-test("monitor à esquerda preserva a origem física e escala apenas o offset local", () => {
+test("monitor à esquerda compensa a escala na coordenada global", () => {
   const displayDip = { x: -1280, y: 0, width: 1280, height: 720 };
   const workAreaDip = { x: -1280, y: 0, width: 1280, height: 672 };
   const slot = buildLogicalLayout(workAreaDip, layout).slots[0];
@@ -149,13 +149,17 @@ test("monitor à esquerda preserva a origem física e escala apenas o offset loc
   );
   assert.equal(placement.monitorPhysicalBounds.x, -1920);
   assert.equal(placement.targetPhysicalRect.x, -1908);
-  assert.equal(
-    toChromiumWindowGeometry(placement, placement.idealScale).x,
-    -1904
+  const geometry = toChromiumWindowGeometry(placement, placement.idealScale);
+  assert.equal(geometry.x, -2585);
+  assert.ok(
+    Math.abs(
+      Math.round(geometry.x * placement.idealScale) -
+        placement.targetPhysicalRect.x
+    ) <= 1
   );
 });
 
-test("monitor acima preserva origem física negativa no eixo vertical", () => {
+test("monitor acima compensa a escala na coordenada global vertical", () => {
   const displayDip = { x: 0, y: -720, width: 1280, height: 720 };
   const workAreaDip = { x: 0, y: -720, width: 1280, height: 672 };
   const slot = buildLogicalLayout(workAreaDip, layout).slots[0];
@@ -175,9 +179,13 @@ test("monitor acima preserva origem física negativa no eixo vertical", () => {
   );
   assert.equal(placement.monitorPhysicalBounds.y, -1080);
   assert.equal(placement.targetPhysicalRect.y, -1068);
-  assert.equal(
-    toChromiumWindowGeometry(placement, placement.idealScale).y,
-    -1064
+  const geometry = toChromiumWindowGeometry(placement, placement.idealScale);
+  assert.equal(geometry.y, -1447);
+  assert.ok(
+    Math.abs(
+      Math.round(geometry.y * placement.idealScale) -
+        placement.targetPhysicalRect.y
+    ) <= 1
   );
 });
 
@@ -213,6 +221,38 @@ test("cada monitor usa seu próprio conversor e fator de escala", () => {
     width: 1920,
     height: 1080
   });
+});
+
+test("grade 5x2 compensa a escala na origem global do monitor à direita", () => {
+  const display = { x: 1920, y: 0, width: 2400, height: 1080 };
+  const workArea = { x: 1920, y: 0, width: 2400, height: 1032 };
+  const slots = buildLogicalLayout(workArea, layout).slots;
+  const first = slots[0];
+  const last = slots[4];
+  assert.ok(first && last);
+
+  const actualPhysicalRects = [first, last].map((slot) => {
+    const placement = buildDpiAwarePlacement(
+      slot,
+      "grid",
+      display,
+      workArea,
+      primaryConverter(1)
+    );
+    const geometry = toChromiumWindowGeometry(
+      placement,
+      placement.idealScale
+    );
+    return {
+      x: Math.round(geometry.x * placement.idealScale),
+      width: Math.round(geometry.width * placement.idealScale)
+    };
+  });
+
+  assert.deepEqual(actualPhysicalRects, [
+    { x: 1928, width: 470 },
+    { x: 3840, width: 470 }
+  ]);
 });
 
 test("grade densa preserva pegada mínima, sobreposição e preview em DIP", () => {

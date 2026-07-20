@@ -113,11 +113,10 @@ export function toChromiumWindowGeometry(
   onInvalidScale?: () => void
 ): ChromiumWindowGeometry {
   const scale = normalizeInterfaceScale(effectiveScale, onInvalidScale);
-  const origin = placement.monitorPhysicalBounds;
   const target = placement.targetPhysicalRect;
   return {
-    x: Math.round(origin.x + (target.x - origin.x) / scale),
-    y: Math.round(origin.y + (target.y - origin.y) / scale),
+    x: Math.round(target.x / scale),
+    y: Math.round(target.y / scale),
     width: Math.round(target.width / scale),
     height: Math.round(target.height / scale)
   };
