@@ -1,4 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -35,6 +36,10 @@ import { SecureStore } from "./secure-store.js";
 
 const SCHEMA_VERSION = 1;
 type DatabaseSnapshot = Omit<AppSnapshot, "license" | "runtimeWindows">;
+export type RemoveProfileDirectory = (storagePath: string) => Promise<void>;
+
+const removeProfileDirectory: RemoveProfileDirectory = (storagePath) =>
+  rm(storagePath, { recursive: true, force: true });
 
 function normalizeBrowserChannel(_channel?: AppSettings["browserChannel"] | "chrome" | "msedge" | string): AppSettings["browserChannel"] {
   return "chromium";
@@ -890,7 +895,8 @@ export class PredatorDatabase {
 
   constructor(
     private readonly paths: PredatorPaths,
-    private readonly secureStore: SecureStore
+    private readonly secureStore: SecureStore,
+    private readonly removeProfileStorage: RemoveProfileDirectory = removeProfileDirectory
   ) {
     this.db = new DatabaseSync(paths.databaseFile);
     this.db.exec("PRAGMA journal_mode = WAL;");
@@ -1506,15 +1512,10 @@ export class PredatorDatabase {
     });
   }
 
-  deleteProfile(profileId: string): void {
+  async deleteProfile(profileId: string): Promise<void> {
     const existing = this.getProfile(profileId);
+    await this.removeProfileStorage(existing.storagePath);
     this.db.prepare("DELETE FROM profiles WHERE id = ?").run(profileId);
-    if (existsSync(existing.storagePath)) {
-      rmSync(existing.storagePath, {
-        recursive: true,
-        force: true
-      });
-    }
     this.logActivity({
       id: crypto.randomUUID(),
       scope: "profile",

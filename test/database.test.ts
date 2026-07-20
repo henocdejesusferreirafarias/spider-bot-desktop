@@ -81,6 +81,37 @@ test("clearRuns wipes automation_runs rows and reports the count", () => {
   assert.equal(db.listRuns().length, 0);
 });
 
+test("deleteProfile waits for asynchronous storage removal before deleting the database row", async () => {
+  let finishDirectoryRemoval: (() => void) | undefined;
+  let removedPath: string | undefined;
+  const db = new PredatorDatabase(
+    createPaths(),
+    plainStore,
+    async (storagePath) => {
+      removedPath = storagePath;
+      await new Promise<void>((resolve) => {
+        finishDirectoryRemoval = resolve;
+      });
+    }
+  );
+  const profile = db.createProfile({
+    name: "Async deletion",
+    notes: "",
+    homeUrl: "https://example.com",
+    tags: [],
+    color: "#d6d6d6"
+  });
+
+  const deletion = db.deleteProfile(profile.id);
+
+  assert.equal(removedPath, profile.storagePath);
+  assert.equal(db.profileExists(profile.id), true);
+  assert.ok(finishDirectoryRemoval);
+  finishDirectoryRemoval();
+  await deletion;
+  assert.equal(db.profileExists(profile.id), false);
+});
+
 test("appendRunLog buffers in memory and persists lazily on read", () => {
   const db = new PredatorDatabase(createPaths(), plainStore);
   const profile = db.createProfile({
