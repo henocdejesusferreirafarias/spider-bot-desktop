@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { closeProfileBrowser } from "../src/main/services/browser-runtime.js";
+import {
+  BrowserRuntimeService,
+  closeProfileBrowser
+} from "../src/main/services/browser-runtime.js";
 
 test("profile browser timeout includes a page close that never settles", async () => {
   const killedPaths: string[] = [];
@@ -47,4 +50,27 @@ test("graceful profile browser close does not force kill", async () => {
   });
 
   assert.deepEqual(calls, ["page", "context"]);
+});
+
+test("bulk deletion can stop an active browser without intermediate status snapshots", async () => {
+  const notifications: string[] = [];
+  const runtime = new BrowserRuntimeService((_profileId, status) => {
+    notifications.push(status);
+  });
+  const runtimeInternals = runtime as unknown as {
+    handles: Map<string, unknown>;
+  };
+  runtimeInternals.handles.set("profile-a", {
+    profileId: "profile-a",
+    storagePath: "C:\\profiles\\profile-a",
+    context: {
+      pages: () => [],
+      close: async () => undefined
+    }
+  });
+
+  await runtime.stopProfile("profile-a", { notify: false });
+
+  assert.deepEqual(notifications, []);
+  assert.equal(runtime.isActive("profile-a"), false);
 });

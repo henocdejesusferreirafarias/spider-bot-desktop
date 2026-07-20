@@ -1492,14 +1492,21 @@ export class BrowserRuntimeService {
     }
   }
 
-  async stopProfile(profileId: string): Promise<void> {
+  async stopProfile(
+    profileId: string,
+    options: { notify?: boolean } = {}
+  ): Promise<void> {
     const handle = this.handles.get(profileId);
     if (!handle) {
-      this.notify(profileId, "idle", "ðŸ§¹ Navegador jÃ¡ estava fechado.");
+      if (options.notify !== false) {
+        this.notify(profileId, "idle", "ðŸ§¹ Navegador jÃ¡ estava fechado.");
+      }
       return;
     }
 
-    this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
+    if (options.notify !== false) {
+      this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
+    }
 
     // O teto cobre paginas E contexto. Se qualquer etapa travar, o kill continua
     // escopado ao user-data-dir deste perfil — nunca aos demais.
@@ -1507,7 +1514,9 @@ export class BrowserRuntimeService {
     this.handles.delete(profileId);
     this.disableMirrorForUnavailableTargets("profile-stopped");
     this.latestAccountInfoFields.delete(profileId);
-    this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
+    if (options.notify !== false) {
+      this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
+    }
   }
 
   async restartProfile(profile: ProfileSummary, settings: AppSettings): Promise<void> {

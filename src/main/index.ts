@@ -569,7 +569,7 @@ async function bootstrap(): Promise<void> {
             ? session.database.getProfile(profileId).name
             : undefined,
         isProfileActive: (profileId) => session.browserRuntime.isActive(profileId),
-        stopProfile: (profileId) => session.browserRuntime.stopProfile(profileId),
+        stopProfile: (profileId) => session.browserRuntime.stopProfile(profileId, { notify: false }),
         deleteProfile: (profileId) => session.database.deleteProfile(profileId),
         onProgress: reportProgress
           ? (progress) => {
