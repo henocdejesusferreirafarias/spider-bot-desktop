@@ -8,11 +8,14 @@ import type {
   NavigationMode,
   PersonaConfig,
   ProfileDraft,
+  ProfileDeletionProgress,
+  ProfileDeletionResult,
   ProfileSummary,
   ProxyDraft,
   RuntimeControlTargetSelection,
   UpdateStatus
 } from "../../shared/contracts.js";
+import { failedProfileIds } from "../lib/profile-deletion.js";
 import {
   ACCOUNT_REGISTRATION_KIND,
   MAX_AUTOMATION_START_DELAY_SECONDS,
@@ -266,6 +269,7 @@ export function usePredatorApp() {
   const [search, setSearch] = useState("");
   const [selectedProfileIds, setSelectedProfileIds] = useState<Set<string>>(() => new Set());
   const [busyAction, setBusyAction] = useState<string>();
+  const [profileDeletionProgress, setProfileDeletionProgress] = useState<ProfileDeletionProgress>();
   const [importPath, setImportPath] = useState("");
   const [autoProfileRun, setAutoProfileRun] = useState<AutoProfileRunState>(createIdleAutoProfileRunState);
   const autoProfileRunRef = useRef<AutoProfileRunner | null>(null);
@@ -305,6 +309,9 @@ export function usePredatorApp() {
       if (event.type === "update-status-changed" && event.payload) {
         setUpdateStatus(event.payload as unknown as UpdateStatus);
       }
+      if (event.type === "profile-deletion-progress" && event.payload) {
+        setProfileDeletionProgress(event.payload as unknown as ProfileDeletionProgress);
+      }
     });
   }, []);
 
@@ -338,6 +345,24 @@ export function usePredatorApp() {
       return result;
     } finally {
       setBusyAction(undefined);
+    }
+  };
+
+  const deleteProfiles = async (profileIds: string[]): Promise<ProfileDeletionResult> => {
+    setBusyAction("profiles:delete-many");
+    setProfileDeletionProgress({
+      total: new Set(profileIds).size,
+      completed: 0,
+      deleted: 0,
+      failed: 0
+    });
+    try {
+      const result = await window.predator.profiles.deleteMany(profileIds);
+      setSelectedProfileIds(new Set(failedProfileIds(result)));
+      return result;
+    } finally {
+      setBusyAction(undefined);
+      setProfileDeletionProgress(undefined);
     }
   };
 
@@ -613,6 +638,7 @@ export function usePredatorApp() {
     search,
     deferredSearch,
     busyAction,
+    profileDeletionProgress,
     autoProfileRun,
     importPath,
     filteredProfiles,
@@ -661,6 +687,7 @@ export function usePredatorApp() {
     updateProfile: (profileId: string, draft: Partial<ProfileDraft>) =>
       mutate("profile:update", () => window.predator.profiles.update(profileId, draft)),
     deleteProfile: (profileId: string) => mutate("profile:delete", () => window.predator.profiles.delete(profileId)),
+    deleteProfiles,
     duplicateProfile: (profileId: string) =>
       mutate("profile:duplicate", () => window.predator.profiles.duplicate(profileId)),
     launchProfile: (profileId: string) => mutate(`profile:launch:${profileId}`, () => window.predator.profiles.launch(profileId)),
