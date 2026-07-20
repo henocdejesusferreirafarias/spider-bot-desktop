@@ -199,4 +199,3 @@ O teste manual visual final continuará sob responsabilidade do usuário. A impl
 - `test/window-layout-runtime.test.ts` — integração e confirmação nativa.
 - `test/window-geometry.test.ts` — retirar a falsa prova `geometry * scale`.
 - `docs/adr/0012-posicionamento-fisico-win32.md` — registrar Win32 como autoridade final de posição.
-

@@ -3,7 +3,7 @@
 ## Ambiente
 
 - Branch: `feat/issue-32-multimonitor-layout`
-- Commit de implementação: `b1ab4c1`
+- Commit da correção Win32: `bc39336`
 - Windows: 11
 - Versão do app: `1.1.18`
 - Responsável pela QA manual: usuário
@@ -18,9 +18,9 @@
 
 | Gate | Resultado | Evidência |
 | --- | --- | --- |
-| `npm test` | PASSOU | 422 testes aprovados; 0 falhas, ignorados ou pendentes |
-| `npm run check` | PASSOU | TypeScript dos processos Electron e renderer sem erros |
-| `npm run build` | PASSOU | Renderer Vite (60 módulos) e processo principal compilados |
+| `npm test` | PASSOU | 438 testes aprovados em 30,9 s; 0 falhas, ignorados ou pendentes |
+| `npm run check` | PASSOU | TypeScript dos processos Electron e renderer sem erros em 9,6 s |
+| `npm run build` | PASSOU | Renderer Vite (60 módulos) e processo principal compilados em 19,1 s |
 | `git diff --check` | PASSOU | Nenhum erro de whitespace |
 
 ## Cenários manuais
@@ -45,6 +45,18 @@
 | --- | --- | --- | --- | --- | --- |
 | A registrar pelo usuário | | | | | |
 
+## Correção Win32 da origem do monitor
+
+| Verificação | Resultado | Evidência |
+| --- | --- | --- |
+| Testes do helper e batching | PASSOU | 11 testes: segurança, parsing, lote de 20 perfis, serialização, retry, cancelamento e shutdown |
+| Helper real no Windows | PASSOU | Compilou C# P/Invoke e retornou `window-not-ready` para perfil inexistente sem mover janelas |
+| Typecheck e build | PASSOU | `npm run check` e `npm run build` concluídos sem erro |
+| `5x2` no monitor direito com escala interna menor que 1 | PENDENTE (usuário) | |
+| Monitor à esquerda/acima | PENDENTE (usuário) | |
+| Chrome pessoal não é movido | PENDENTE (usuário) | |
+| Nenhum PowerShell residual | PASSOU | Auditoria após a sonda não encontrou `powershell.exe -EncodedCommand` residual |
+
 ## Capturas
 
 - Barra lateral: a registrar pelo usuário
@@ -58,7 +70,12 @@ sem evidência real. Se o ambiente tiver somente um monitor, registrar os casos
 multimonitor como `BLOQUEADO PELO AMBIENTE`, não como aprovados.
 
 O teste manual com monitores de 1920×1080 e 2400×1080, ambos em 100%, revelou
-que a grade do segundo monitor invadia o primeiro. O teste automatizado de
-regressão reproduziu a janela inicial em `x=1813`, embora o segundo monitor
-começasse em `x=1920`; após compensar a coordenada global completa, o mesmo
-slot voltou para `x=1928`. O cenário permanece pendente de reteste manual.
+que a grade do segundo monitor invadia o primeiro. A investigação mediu o
+primeiro slot próximo de `x=1811`, contra alvo físico próximo de `x=1928`.
+Electron entregava o retângulo físico correto; o deslocamento surgia porque o
+Chromium com escala interna `0.94` traduzia a origem do segundo monitor e o
+readback CDP confirmava o mesmo espaço interno incorreto.
+
+A correção atual preserva CDP para tamanho e usa `SetWindowPos`/`GetWindowRect`
+como autoridade final de `x/y`. O cenário continua pendente de reteste manual
+real pelo usuário; nenhum resultado físico foi presumido neste relatório.
