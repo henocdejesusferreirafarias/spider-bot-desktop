@@ -3,12 +3,13 @@ import type {
   AppSettings,
   ScreenDisplayInfo,
   ScreenLayoutMode,
-  ScreenLayoutSettings,
-  ScreenLayoutSlot
+  ScreenLayoutSettings
 } from "../../shared/contracts.js";
-
-const FIXED_GRID_GAP = 8;
-const FIXED_GRID_MARGIN = 8;
+import {
+  buildLogicalLayout,
+  normalizeScreenLayout,
+  toPercentSlot
+} from "../../shared/window-layout.js";
 
 const modeLabels: Record<ScreenLayoutMode, string> = {
   grid: "GRADE",
@@ -16,71 +17,12 @@ const modeLabels: Record<ScreenLayoutMode, string> = {
   custom: "GRADE"
 };
 
-function sanitizeAxis(value: number): number {
+function sanitizeAxisInput(value: number): number {
   return Math.max(1, Math.trunc(Number.isFinite(value) ? value : 1));
 }
 
-function getDisplaySize(display?: ScreenDisplayInfo) {
-  return {
-    width: display?.workArea.width ?? 1920,
-    height: display?.workArea.height ?? 1080
-  };
-}
-
-function sanitizeLayout(layout: ScreenLayoutSettings): ScreenLayoutSettings {
-  const mode: ScreenLayoutMode = layout.mode === "cascade" ? "cascade" : "grid";
-  return {
-    ...layout,
-    mode,
-    gap: FIXED_GRID_GAP,
-    margin: FIXED_GRID_MARGIN,
-    columns: sanitizeAxis(layout.columns),
-    rows: sanitizeAxis(layout.rows),
-    customSlots: []
-  };
-}
-
-function buildGridSlots(layout: ScreenLayoutSettings, display?: ScreenDisplayInfo): ScreenLayoutSlot[] {
-  const effectiveLayout = sanitizeLayout(layout);
-  const { width, height } = getDisplaySize(display);
-  const columns = effectiveLayout.columns;
-  const rows = effectiveLayout.rows;
-  const gap = effectiveLayout.gap;
-  const margin = effectiveLayout.margin;
-  const cellWidth = Math.max(1, (width - margin * 2 - gap * (columns - 1)) / columns);
-  const cellHeight = Math.max(1, (height - margin * 2 - gap * (rows - 1)) / rows);
-  const slots: ScreenLayoutSlot[] = [];
-
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < columns; column += 1) {
-      const index = slots.length + 1;
-      slots.push({
-        id: `grid-${index}`,
-        label: String(index),
-        xPercent: ((margin + column * (cellWidth + gap)) / width) * 100,
-        yPercent: ((margin + row * (cellHeight + gap)) / height) * 100,
-        widthPercent: (cellWidth / width) * 100,
-        heightPercent: (cellHeight / height) * 100
-      });
-    }
-  }
-
-  return slots;
-}
-
-function buildCascadeSlots(display?: ScreenDisplayInfo): ScreenLayoutSlot[] {
-  const { width, height } = getDisplaySize(display);
-  const offsetX = (32 / width) * 100;
-  const offsetY = (32 / height) * 100;
-  return Array.from({ length: 8 }, (_, index) => ({
-    id: `cascade-${index + 1}`,
-    label: String(index + 1),
-    xPercent: Math.min(index * offsetX, 28),
-    yPercent: Math.min(index * offsetY, 22),
-    widthPercent: 66,
-    heightPercent: 72
-  }));
-}
+const getDisplayWorkArea = (display?: ScreenDisplayInfo) =>
+  display?.workArea ?? { x: 0, y: 0, width: 1920, height: 1080 };
 
 export function ScreenLayoutPanel({
   settings,
@@ -115,17 +57,16 @@ export function ScreenLayoutPanel({
     return displays.find((display) => display.primary) ?? displays[0];
   }, [displays, layout.monitorId]);
 
-  const effectiveLayout = useMemo(() => sanitizeLayout(layout), [layout]);
-  const previewSlots = useMemo(
-    () =>
-      effectiveLayout.mode === "cascade"
-        ? buildCascadeSlots(selectedDisplay)
-        : buildGridSlots(effectiveLayout, selectedDisplay),
-    [effectiveLayout, selectedDisplay]
-  );
+  const effectiveLayout = useMemo(() => normalizeScreenLayout(layout), [layout]);
+  const previewSlots = useMemo(() => {
+    const workArea = getDisplayWorkArea(selectedDisplay);
+    return buildLogicalLayout(workArea, effectiveLayout).slots.map((slot) =>
+      toPercentSlot(slot, workArea)
+    );
+  }, [effectiveLayout, selectedDisplay]);
 
   useEffect(() => {
-    const nextLayout = sanitizeLayout(layout);
+    const nextLayout = normalizeScreenLayout(layout);
     if (
       nextLayout.mode !== layout.mode ||
       nextLayout.columns !== layout.columns ||
@@ -142,7 +83,7 @@ export function ScreenLayoutPanel({
 
   const updateLayout = (patch: Partial<ScreenLayoutSettings>) => {
     return onUpdate({
-      screenLayout: sanitizeLayout({
+      screenLayout: normalizeScreenLayout({
         ...layout,
         ...patch
       })
@@ -159,25 +100,25 @@ export function ScreenLayoutPanel({
     setter(raw);
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n >= 1) {
-      void updateLayout({ mode: "grid", [key]: sanitizeAxis(n) });
+      void updateLayout({ mode: "grid", [key]: sanitizeAxisInput(n) });
     }
   };
 
   const handleAxisBlur = (key: "columns" | "rows", raw: string, setter: (s: string) => void) => {
-    const sanitized = sanitizeAxis(parseInt(raw, 10) || 1);
+    const sanitized = sanitizeAxisInput(parseInt(raw, 10) || 1);
     setter(String(sanitized));
     void updateLayout({ mode: "grid", [key]: sanitized });
   };
 
   const stepAxis = (key: "columns" | "rows", delta: number) => {
     const current = key === "columns" ? effectiveLayout.columns : effectiveLayout.rows;
-    const next = sanitizeAxis(current + delta);
+    const next = sanitizeAxisInput(current + delta);
     if (key === "columns") setColStr(String(next));
     else setRowStr(String(next));
     void updateLayout({ mode: "grid", [key]: next });
   };
 
-  const displaySize = getDisplaySize(selectedDisplay);
+  const displaySize = getDisplayWorkArea(selectedDisplay);
 
   return (
     <div className="screen-layout-panel">
