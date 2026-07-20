@@ -64,6 +64,12 @@ import {
   type DpiAwarePlacement
 } from "./window-geometry.js";
 import {
+  WindowsWindowPlacementService,
+  type NativeWindowPlacementCoordinator,
+  type NativeWindowPlacementResult,
+  type NativeWindowPlacementTarget
+} from "./windows-window-placement.js";
+import {
   NAVIGATION_MODE_LAUNCH_ARG_PREFIX,
   NAVIGATION_MODES,
   type AppSettings,
@@ -78,9 +84,9 @@ import {
   type ScreenLayoutSettings
 } from "../../shared/contracts.js";
 import {
-  buildLogicalLayout,
-  getScreenLayoutSlotCount,
-  normalizeScreenLayout,
+  buildMultiDisplayLogicalLayout,
+  resolveMultiDisplaySlot,
+  type AvailableScreenDisplay,
   type LayoutRect
 } from "../../shared/window-layout.js";
 
@@ -335,6 +341,8 @@ export async function closeProfileBrowser(
 }
 
 export interface LayoutPreviewSlot {
+  displayId: string;
+  globalSlotIndex: number;
   label: string;
   x: number;
   y: number;
@@ -348,9 +356,12 @@ export interface LayoutPreviewSlot {
 }
 
 export interface LayoutPreviewResult {
-  mode: "grid" | "cascade";
-  workArea: LayoutRect;
   slots: LayoutPreviewSlot[];
+}
+
+interface BrowserPlacement extends DpiAwarePlacement {
+  displayId: string;
+  displayScaleFactor: number;
 }
 
 interface DeviceHardwareConfig {
@@ -1021,6 +1032,7 @@ const STEALTH_INIT_SCRIPT = `
 
 export class BrowserRuntimeService {
   private readonly handles = new Map<string, RuntimeHandle>();
+  private readonly stoppingProfileIds = new Set<string>();
   private selectedWindowState: RuntimeControlSelectionState = { mode: "all" };
   private mirrorTargetSelection: RuntimeControlTargetSelection = { mode: "all" };
   private readonly mirrorSlotNumbers = new Set<number>();
@@ -1098,7 +1110,11 @@ export class BrowserRuntimeService {
   // por navegacao/evento). Chaveado por Frame; entradas somem quando o frame e GC'd.
   private readonly gameFrameLoadMonitors = new WeakSet<object>();
 
-  constructor(private readonly notify: RuntimeNotifier) {
+  constructor(
+    private readonly notify: RuntimeNotifier,
+    private readonly nativeWindowPlacement: NativeWindowPlacementCoordinator =
+      new WindowsWindowPlacementService()
+  ) {
     appendInputDiagnostic({
       kind: "diagnostic-session-start",
       pid: process.pid
@@ -1117,6 +1133,7 @@ export class BrowserRuntimeService {
       });
       this.activeSplashes.delete(profileId);
       this.mirrorReplayProfileChains.delete(profileId);
+      this.nativeWindowPlacement.cancel(profileId);
       this.handles.delete(profileId);
       this.disableMirrorForUnavailableTargets("browser-context-close");
       void proxyChain?.stop().catch(() => undefined);
@@ -1201,9 +1218,7 @@ export class BrowserRuntimeService {
       );
     }
     if (placement.idealScale < 1) {
-      const layoutDisplayScale = this.resolveLayoutDisplay(
-        this.resolvePlacementSettings(settings).screenLayout
-      ).scaleFactor;
+      const layoutDisplayScale = placement.displayScaleFactor;
       const reportedDpr =
         Number.isFinite(layoutDisplayScale) && layoutDisplayScale > 0 ? layoutDisplayScale : 1;
       fingerprintConfig.devicePixelRatio = reportedDpr;
@@ -1451,7 +1466,7 @@ export class BrowserRuntimeService {
 
     refreshPlacementFromLatestLayout();
     await this.applyPlacementToPage(primaryPage, placement, launchedScale).catch(() => null);
-    this.handles.set(profile.id, {
+    const runtimeHandle: RuntimeHandle = {
       profileId: profile.id,
       context,
       storagePath: profile.storagePath,
@@ -1467,7 +1482,19 @@ export class BrowserRuntimeService {
       mobileLike,
       ...(launchProxy.proxyChain ? { proxyChain: launchProxy.proxyChain } : {}),
       ...(deferNavigation ? { pendingNavigation: { homeUrl: profile.homeUrl } } : {})
-    });
+    };
+    this.handles.set(profile.id, runtimeHandle);
+    const nativeResult = await this.positionLaunchedWindow(
+      profile.id,
+      profile.storagePath,
+      runtimeHandle,
+      primaryPage,
+      placement
+    );
+    if (!nativeResult) {
+      this.launchingSlotIndexes.delete(placement.slotIndex);
+      return;
+    }
     appendInputDiagnostic({
       kind: "profile-launch-ready",
       profileId: profile.id,
@@ -1482,8 +1509,12 @@ export class BrowserRuntimeService {
       throw error;
     }
     const handle = this.handles.get(profile.id);
-    if (handle && primaryPage) {
-      await this.applyRuntimeStateToPage(handle, primaryPage);
+    if (!handle || !this.isPlacementRequestCurrent(profile.id, handle, primaryPage)) {
+      return;
+    }
+    await this.applyRuntimeStateToPage(handle, primaryPage);
+    if (!this.isPlacementRequestCurrent(profile.id, handle, primaryPage)) {
+      return;
     }
     this.notify(profile.id, "active", "ðŸŒ Navegador aberto e pronto.");
   }
@@ -1506,6 +1537,7 @@ export class BrowserRuntimeService {
   }
 
   async stopProfile(profileId: string): Promise<void> {
+    this.nativeWindowPlacement.cancel(profileId);
     const handle = this.handles.get(profileId);
     if (!handle) {
       this.notify(profileId, "idle", "ðŸ§¹ Navegador jÃ¡ estava fechado.");
@@ -1513,14 +1545,21 @@ export class BrowserRuntimeService {
     }
 
     this.notify(profileId, "stopping", "â¹ï¸ Fechando navegador...");
+    this.stoppingProfileIds.add(profileId);
 
     // O teto cobre paginas E contexto. Se qualquer etapa travar, o kill continua
     // escopado ao user-data-dir deste perfil — nunca aos demais.
-    await closeProfileBrowser(handle);
-    this.handles.delete(profileId);
-    this.disableMirrorForUnavailableTargets("profile-stopped");
-    this.latestAccountInfoFields.delete(profileId);
-    this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
+    try {
+      await closeProfileBrowser(handle);
+      if (this.handles.get(profileId) === handle) {
+        this.handles.delete(profileId);
+      }
+      this.disableMirrorForUnavailableTargets("profile-stopped");
+      this.latestAccountInfoFields.delete(profileId);
+      this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado.");
+    } finally {
+      this.stoppingProfileIds.delete(profileId);
+    }
   }
 
   async restartProfile(profile: ProfileSummary, settings: AppSettings): Promise<void> {
@@ -1530,61 +1569,112 @@ export class BrowserRuntimeService {
 
   async applyLayout(settings: AppSettings): Promise<void> {
     this.setScreenLayout(settings.screenLayout);
+    const layoutRevision = this.screenLayoutRevision;
     const handles = [...this.handles.entries()].sort(([, a], [, b]) => a.slotIndex - b.slotIndex);
-    const effectiveLayout = normalizeScreenLayout(settings.screenLayout);
-    const allocationSlotCount = Math.max(
-      getScreenLayoutSlotCount(effectiveLayout),
-      handles.length
-    );
-    const takenSlots = new Set<number>();
+    const pending: Array<{
+      profileId: string;
+      handle: RuntimeHandle;
+      page: Page;
+      placement: BrowserPlacement;
+    }> = [];
 
-    for (const [profileId, handle] of handles) {
-      let slot = -1;
-      for (let candidate = 0; candidate < allocationSlotCount; candidate += 1) {
-        if (!takenSlots.has(candidate)) {
-          slot = candidate;
-          break;
+    for (const [nextSlotIndex, [profileId, handle]] of handles.entries()) {
+      try {
+        const placement = this.buildBrowserPlacement(
+          this.resolvePlacementSettings(settings),
+          nextSlotIndex
+        );
+        const page =
+          !handle.primaryPage.isClosed()
+            ? handle.primaryPage
+            : handle.context.pages().find((entry) => !entry.isClosed());
+
+        if (!page) {
+          this.notify(profileId, "active", "Layout salvo, mas a janela aberta nao respondeu.");
+          continue;
         }
-      }
-      if (slot === -1) {
-        slot = takenSlots.size;
-      }
-      takenSlots.add(slot);
 
-      const placement = this.buildBrowserPlacement(this.resolvePlacementSettings(settings), slot);
-      const page =
-        !handle.primaryPage.isClosed()
-          ? handle.primaryPage
-          : handle.context.pages().find((entry) => !entry.isClosed());
+        const boundsApplied = await this.applyPlacementToPage(
+          page,
+          placement,
+          handle.launchedScale
+        );
+        if (!this.isPlacementRequestCurrent(profileId, handle, page, layoutRevision)) {
+          continue;
+        }
+        if (boundsApplied) {
+          pending.push({ profileId, handle, page, placement });
+        } else {
+          this.notify(
+            profileId,
+            "active",
+            "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
+          );
+        }
+      } catch {
+        this.notify(
+          profileId,
+          "active",
+          "Layout salvo, mas esta janela nao pode ser reposicionada."
+        );
+      }
+    }
 
-      if (!page) {
+    if (pending.length === 0) {
+      return;
+    }
+
+    const nativeResults = await this.nativeWindowPlacement.enqueueMany(
+      pending.map(({ profileId, handle, placement }) =>
+        this.buildNativePlacementTarget(profileId, handle.storagePath, placement)
+      )
+    ).catch((error: unknown) => pending.map(({ profileId }) => ({
+      profileId,
+      status: "failed" as const,
+      error: error instanceof Error ? error.message : String(error)
+    })));
+    const nativeByProfile = new Map(nativeResults.map((result) => [result.profileId, result]));
+
+    for (const { profileId, handle, page, placement } of pending) {
+      const nativeResult = nativeByProfile.get(profileId);
+      appendInputDiagnostic({
+        kind: "native-window-placement",
+        profileId,
+        slotIndex: placement.slotIndex,
+        requested: placement.targetPhysicalRect,
+        result: nativeResult ?? { status: "failed", error: "missing-native-result" }
+      });
+      if (!this.isPlacementRequestCurrent(profileId, handle, page, layoutRevision)) {
+        appendInputDiagnostic({
+          kind: "native-window-placement-stale",
+          profileId,
+          slotIndex: placement.slotIndex,
+          layoutRevision
+        });
         continue;
       }
-
-      const boundsApplied = await this.applyPlacementToPage(
-        page,
-        placement,
-        handle.launchedScale
-      );
-      if (boundsApplied) {
-        this.mirrorViewportCache.delete(page);
-        await this.updateContextBadges(
-          handle.profileId,
-          handle.context,
-          placement,
-          handle.ipLabel
-        ).catch(() => null);
-        handle.primaryPage = page;
-        handle.slotIndex = placement.slotIndex;
-        handle.placement = placement;
+      if (nativeResult?.status !== "positioned") {
+        this.notify(
+          profileId,
+          "active",
+          "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
+        );
+        continue;
       }
-      this.notify(
-        profileId,
-        "active",
-        boundsApplied
-          ? "Layout de tela aplicado ao navegador."
-          : "Layout salvo, mas a janela aberta nao respondeu ao reposicionamento."
-      );
+      this.mirrorViewportCache.delete(page);
+      await this.updateContextBadges(
+        handle.profileId,
+        handle.context,
+        placement,
+        handle.ipLabel
+      ).catch(() => null);
+      if (!this.isPlacementRequestCurrent(profileId, handle, page, layoutRevision)) {
+        continue;
+      }
+      handle.primaryPage = page;
+      handle.slotIndex = placement.slotIndex;
+      handle.placement = placement;
+      this.notify(profileId, "active", "Layout de tela aplicado ao navegador.");
     }
   }
 
@@ -1977,6 +2067,7 @@ export class BrowserRuntimeService {
       this.latestAccountInfoFields.delete(profileId);
       this.notify(profileId, "idle", "ðŸ§¹ Navegador fechado ao encerrar o Spider BOT.");
     }
+    await this.nativeWindowPlacement.shutdown();
   }
 
   async testProxy(proxy: ProxyConfig): Promise<ProxyConfig["status"]> {
@@ -7708,9 +7799,67 @@ export class BrowserRuntimeService {
 
   private cloneScreenLayout(layout: ScreenLayoutSettings): ScreenLayoutSettings {
     return {
-      ...layout,
-      customSlots: layout.customSlots.map((slot) => ({ ...slot }))
+      version: 2,
+      monitors: layout.monitors.map((monitor) => ({ ...monitor }))
     };
+  }
+
+  private buildNativePlacementTarget(
+    profileId: string,
+    storagePath: string,
+    placement: DpiAwarePlacement
+  ): NativeWindowPlacementTarget {
+    return {
+      profileId,
+      userDataDir: storagePath,
+      x: placement.targetPhysicalRect.x,
+      y: placement.targetPhysicalRect.y
+    };
+  }
+
+  private isPlacementRequestCurrent(
+    profileId: string,
+    handle: RuntimeHandle,
+    page: Page,
+    layoutRevision?: number
+  ): boolean {
+    return this.handles.get(profileId) === handle &&
+      !this.stoppingProfileIds.has(profileId) &&
+      !page.isClosed() &&
+      (layoutRevision === undefined || layoutRevision === this.screenLayoutRevision);
+  }
+
+  private async positionLaunchedWindow(
+    profileId: string,
+    storagePath: string,
+    handle: RuntimeHandle,
+    page: Page,
+    placement: DpiAwarePlacement
+  ): Promise<NativeWindowPlacementResult | undefined> {
+    const result = await this.nativeWindowPlacement
+      .enqueue(this.buildNativePlacementTarget(profileId, storagePath, placement))
+      .catch((error: unknown): NativeWindowPlacementResult => ({
+        profileId,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    appendInputDiagnostic({
+      kind: "native-window-placement",
+      profileId,
+      slotIndex: placement.slotIndex,
+      requested: placement.targetPhysicalRect,
+      result
+    });
+    if (!this.isPlacementRequestCurrent(profileId, handle, page)) {
+      appendInputDiagnostic({
+        kind: "native-window-placement-stale",
+        profileId,
+        slotIndex: placement.slotIndex,
+        phase: "launch"
+      });
+      return undefined;
+    }
+    return result;
   }
 
   private async applyPlacementToPage(
@@ -7802,42 +7951,54 @@ export class BrowserRuntimeService {
   private buildBrowserPlacement(
     settings: AppSettings,
     forcedSlotIndex?: number
-  ): DpiAwarePlacement {
-    const display = this.resolveLayoutDisplay(settings.screenLayout);
-    const logical = buildLogicalLayout(display.workArea, settings.screenLayout);
-    const slotCount = logical.slots.length;
-    const slotIndex = forcedSlotIndex ?? this.allocateSlotIndex(slotCount);
-    const template = logical.slots[slotIndex % slotCount];
-    if (!template) {
-      throw new Error("Layout sem slots disponíveis.");
-    }
-    const slot = { ...template, slotIndex };
-    return buildDpiAwarePlacement(
-      slot,
-      logical.mode,
-      display.bounds,
-      display.workArea,
-      (rect) => screen.dipToScreenRect(null, rect)
+  ): BrowserPlacement {
+    const logical = this.buildCurrentLogicalLayout(settings);
+    const requestedSlotIndex = forcedSlotIndex ?? this.allocateSlotIndex(logical.capacity);
+    const slot = resolveMultiDisplaySlot(logical, requestedSlotIndex);
+    const resolvedDisplay = logical.displays.find(
+      ({ display }) => display.id === slot.displayId
     );
+    if (!resolvedDisplay) {
+      throw new Error(`Monitor ${slot.displayId} indisponível.`);
+    }
+    const placement = buildDpiAwarePlacement(
+      slot,
+      resolvedDisplay.monitor.mode,
+      resolvedDisplay.display.bounds,
+      resolvedDisplay.display.workArea,
+      (rect) => this.dipToPhysicalRect(rect)
+    );
+    return {
+      ...placement,
+      displayId: resolvedDisplay.display.id,
+      displayScaleFactor: resolvedDisplay.display.scaleFactor
+    };
   }
 
   getLayoutPreviewRects(settings: AppSettings): LayoutPreviewResult {
-    const display = this.resolveLayoutDisplay(settings.screenLayout);
-    const logical = buildLogicalLayout(display.workArea, settings.screenLayout);
+    const logical = this.buildCurrentLogicalLayout(settings);
     const slots = logical.slots.map((slot) => {
+      const resolvedDisplay = logical.displays.find(
+        ({ display }) => display.id === slot.displayId
+      );
+      if (!resolvedDisplay) {
+        throw new Error(`Monitor ${slot.displayId} indisponível.`);
+      }
       const placement = buildDpiAwarePlacement(
         slot,
-        logical.mode,
-        display.bounds,
-        display.workArea,
-        (rect) => screen.dipToScreenRect(null, rect)
+        resolvedDisplay.monitor.mode,
+        resolvedDisplay.display.bounds,
+        resolvedDisplay.display.workArea,
+        (rect) => this.dipToPhysicalRect(rect)
       );
       const preview = toPreviewDipRect(
         placement,
-        (rect) => screen.screenToDipRect(null, rect)
+        (rect) => this.physicalToDipRect(rect)
       );
       return {
-        label: String(slot.slotIndex + 1),
+        displayId: slot.displayId,
+        globalSlotIndex: slot.globalSlotIndex,
+        label: String(slot.globalSlotIndex + 1),
         ...preview,
         scale: placement.idealScale,
         overlaps: placement.overlaps,
@@ -7845,21 +8006,33 @@ export class BrowserRuntimeService {
       };
     });
 
-    return { mode: logical.mode, workArea: display.workArea, slots };
+    return { slots };
   }
 
-  private resolveLayoutDisplay(layout: ScreenLayoutSettings) {
-    const displays = screen.getAllDisplays();
-    const primary = screen.getPrimaryDisplay();
+  private buildCurrentLogicalLayout(settings: AppSettings) {
+    return buildMultiDisplayLogicalLayout(
+      settings.screenLayout,
+      this.getAvailableLayoutDisplays()
+    );
+  }
 
-    if (layout.monitorId !== "primary") {
-      const selected = displays.find((display) => String(display.id) === layout.monitorId);
-      if (selected) {
-        return selected;
-      }
-    }
+  private getAvailableLayoutDisplays(): AvailableScreenDisplay[] {
+    const primaryId = String(screen.getPrimaryDisplay().id);
+    return screen.getAllDisplays().map((display) => ({
+      id: String(display.id),
+      primary: String(display.id) === primaryId,
+      scaleFactor: display.scaleFactor,
+      bounds: display.bounds,
+      workArea: display.workArea
+    }));
+  }
 
-    return primary;
+  private dipToPhysicalRect(rect: LayoutRect): LayoutRect {
+    return screen.dipToScreenRect(null, rect);
+  }
+
+  private physicalToDipRect(rect: LayoutRect): LayoutRect {
+    return screen.screenToDipRect(null, rect);
   }
 
   private allocateSlotIndex(slotCount: number): number {

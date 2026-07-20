@@ -233,7 +233,7 @@ export interface PixPhoneKeyImportResult {
   invalid: string[];
 }
 
-export type ScreenLayoutMode = "grid" | "cascade" | "custom";
+export type ScreenLayoutMode = "grid" | "cascade";
 export type RuntimeControlNavigationAction = "home" | "bet-report" | "treasure-chests" | "slot-search" | "refresh";
 
 export interface ScreenLayoutSlot {
@@ -245,14 +245,17 @@ export interface ScreenLayoutSlot {
   heightPercent: number;
 }
 
-export interface ScreenLayoutSettings {
-  monitorId: string;
+export interface ScreenMonitorLayout {
+  displayId: string;
+  enabled: boolean;
   mode: ScreenLayoutMode;
   columns: number;
   rows: number;
-  gap: number;
-  margin: number;
-  customSlots: ScreenLayoutSlot[];
+}
+
+export interface ScreenLayoutSettings {
+  version: 2;
+  monitors: ScreenMonitorLayout[];
 }
 
 export interface ScreenDisplayInfo {

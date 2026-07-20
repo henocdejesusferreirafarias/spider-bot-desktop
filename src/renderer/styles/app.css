@@ -4128,10 +4128,137 @@ a:focus-visible,
 
 .screen-layout-stage {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: clamp(168px, 22vw, 220px) minmax(0, 1fr);
   gap: 8px;
   min-height: 0;
   overflow: hidden;
+}
+
+.screen-monitor-sidebar {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    rgba(11, 11, 14, 0.66);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(12px);
+}
+
+.screen-monitor-list {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.screen-monitor-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent),
+    rgba(11, 11, 14, 0.58);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.screen-monitor-item:hover,
+.screen-monitor-item:focus-visible {
+  border-color: rgba(255, 255, 255, 0.24);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.065), transparent),
+    rgba(15, 15, 18, 0.72);
+  outline: none;
+}
+
+.screen-monitor-item.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(226, 38, 38, 0.18);
+}
+
+.screen-monitor-item input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.screen-monitor-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.screen-monitor-copy strong,
+.screen-monitor-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-monitor-copy strong {
+  font-size: 9.5px;
+  font-weight: 800;
+}
+
+.screen-monitor-copy span {
+  color: var(--text-muted);
+  font-size: 8.5px;
+}
+
+.screen-monitor-order {
+  display: grid;
+  gap: 3px;
+}
+
+.screen-monitor-order button {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 17px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 3px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.screen-monitor-order button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.screen-monitor-order button:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+.screen-monitor-guard {
+  margin: 0;
+  padding: 5px 6px;
+  border: 1px solid rgba(226, 38, 38, 0.35);
+  border-radius: var(--radius-sm);
+  color: #ffb4b4;
+  background: rgba(226, 38, 38, 0.08);
+  font-size: 8.5px;
+  line-height: 1.3;
 }
 
 .screen-calibrator {
@@ -4301,7 +4428,7 @@ a:focus-visible,
 
 .screen-bottom-bar {
   display: grid;
-  grid-template-columns: minmax(72px, 1fr) 46px auto auto auto;
+  grid-template-columns: 46px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -4323,10 +4450,6 @@ a:focus-visible,
   grid-auto-columns: max-content;
   align-items: center;
   gap: 4px;
-}
-
-.screen-monitor-field {
-  grid-template-columns: auto minmax(0, 1fr);
 }
 
 .screen-bottom-field input {
@@ -5095,11 +5218,11 @@ a:focus-visible,
   }
 
   .screen-layout-stage {
-    grid-template-columns: minmax(0, 1fr) 150px;
+    grid-template-columns: 140px minmax(0, 1fr);
   }
 
   .screen-bottom-bar {
-    grid-template-columns: minmax(72px, 1fr) 30px auto auto auto;
+    grid-template-columns: 34px minmax(0, 1fr) auto auto;
     gap: 3px;
     padding: 4px;
   }
@@ -5128,6 +5251,15 @@ a:focus-visible,
 }
 
 @media (max-width: 420px) {
+  .screen-layout-stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(94px, auto) minmax(0, 1fr);
+  }
+
+  .screen-monitor-sidebar {
+    max-height: 130px;
+  }
+
   .instance-card-actions {
     flex-direction: column;
     align-items: stretch;

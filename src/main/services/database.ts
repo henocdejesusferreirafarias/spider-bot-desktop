@@ -10,6 +10,7 @@ import {
 import {
   ACCOUNT_REGISTRATION_KIND
 } from "../../shared/contracts.js";
+import { migrateScreenLayoutSettings } from "../../shared/window-layout.js";
 import type {
   ActivityLogRecord,
   AppSettings,
@@ -139,7 +140,8 @@ function normalizeSettings(settings: AppSettings): AppSettings {
     browserChannel: normalizeBrowserChannel(settings.browserChannel),
     customDepositAmounts: normalizeCustomDepositAmounts(settings.customDepositAmounts),
     domainBlockEnabled: settings.domainBlockEnabled ?? true,
-    blockedDomains: normalizeBlockedDomains(settings.blockedDomains)
+    blockedDomains: normalizeBlockedDomains(settings.blockedDomains),
+    screenLayout: migrateScreenLayoutSettings(settings.screenLayout)
   };
 }
 
@@ -1900,20 +1902,22 @@ export class PredatorDatabase {
       };
     }
 
-    const storedSettings = jsonParse<Partial<AppSettings>>(row.value_json, defaultSettings);
-    const loadedSettings = {
+    const storedSettings = jsonParse<Partial<AppSettings> & { screenLayout?: unknown }>(
+      row.value_json,
+      {}
+    );
+    const loadedSettings: AppSettings = {
       ...defaultSettings,
       ...storedSettings,
-      screenLayout: {
-        ...defaultSettings.screenLayout,
-        ...storedSettings.screenLayout,
-        customSlots: storedSettings.screenLayout?.customSlots ?? defaultSettings.screenLayout.customSlots
-      },
+      screenLayout: migrateScreenLayoutSettings(storedSettings.screenLayout),
       exportDirectory: this.paths.exportsRoot
     };
     const settings = normalizeSettings(loadedSettings);
 
-    if (settings.browserChannel !== loadedSettings.browserChannel) {
+    if (
+      settings.browserChannel !== loadedSettings.browserChannel ||
+      JSON.stringify(settings.screenLayout) !== JSON.stringify(storedSettings.screenLayout)
+    ) {
       this.setSettings(settings);
     }
 

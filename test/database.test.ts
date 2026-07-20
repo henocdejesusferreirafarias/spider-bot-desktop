@@ -30,6 +30,48 @@ function createPaths(): PredatorPaths {
   };
 }
 
+test("getSettings migrates and persists a legacy screen layout", () => {
+  const paths = createPaths();
+  const db = new PredatorDatabase(paths, plainStore);
+  const raw = (db as unknown as { db: DatabaseSync }).db;
+  const legacySettings = {
+    ...db.getSettings(),
+    screenLayout: {
+      monitorId: "primary",
+      mode: "cascade",
+      columns: 5,
+      rows: 2,
+      gap: 16,
+      margin: 24,
+      customSlots: [{ id: "legacy" }]
+    }
+  };
+  raw.prepare("UPDATE app_settings SET value_json = ? WHERE key = 'settings'").run(
+    JSON.stringify(legacySettings)
+  );
+
+  const migrated = db.getSettings().screenLayout;
+  assert.deepEqual(migrated, {
+    version: 2,
+    monitors: [
+      {
+        displayId: "primary",
+        enabled: true,
+        mode: "cascade",
+        columns: 5,
+        rows: 2
+      }
+    ]
+  });
+
+  const persisted = JSON.parse(
+    raw.prepare("SELECT value_json FROM app_settings WHERE key = 'settings'").get()!
+      .value_json as string
+  ) as { screenLayout: unknown };
+  assert.deepEqual(persisted.screenLayout, migrated);
+  db.close();
+});
+
 test("clearActivityLogs wipes activity rows and reports the count", () => {
   const db = new PredatorDatabase(createPaths(), plainStore);
   db.logActivity({

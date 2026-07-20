@@ -32,6 +32,17 @@ void test("desktop bootstrap keeps platform automation on the local adaptive run
   );
 });
 
+void test("desktop bootstrap waits for the compiled Win32 placement service", () => {
+  const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
+  const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+    scripts?: { "dev:electron"?: string };
+  };
+  assert.match(
+    pkg.scripts?.["dev:electron"] ?? "",
+    /file:dist-electron\/main\/services\/windows-window-placement\.js/
+  );
+});
+
 void test("a profile with a configured proxy fails closed when its local tunnel cannot start", () => {
   const runtimeSourcePath = fileURLToPath(
     new URL("../src/main/services/browser-runtime.ts", import.meta.url)

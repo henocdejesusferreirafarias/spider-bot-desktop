@@ -14,13 +14,16 @@ export const defaultSettings: AppSettings = {
   themeMode: "light",
   exportDirectory: "",
   screenLayout: {
-    monitorId: "primary",
-    mode: "grid",
-    columns: 4,
-    rows: 1,
-    gap: 8,
-    margin: 8,
-    customSlots: []
+    version: 2,
+    monitors: [
+      {
+        displayId: "primary",
+        enabled: true,
+        mode: "grid",
+        columns: 4,
+        rows: 1
+      }
+    ]
   },
   automationStartDelaySeconds: 20,
   domainBlockEnabled: true,

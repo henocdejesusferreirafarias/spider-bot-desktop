@@ -24,7 +24,10 @@ corretamente em `BrowserWindow`, mas o Chromium recebia uma compensação apenas
 A grade lógica permanece em DIP e vive em um módulo compartilhado. O processo
 principal usa `screen.dipToScreenRect` para obter o retângulo físico do slot e a
 origem física do monitor. A geometria enviada ao Chromium compensa a escala interna
-somente depois dessa conversão e preserva a origem do monitor.
+somente depois dessa conversão. Como `force-device-scale-factor` também afeta as
+coordenadas globais da janela, `x` e `y` completos são compensados; preservar a
+origem e compensar apenas o deslocamento local move monitores secundários em
+direção ao monitor principal.
 
 A escala adaptativa usa o tamanho físico da célula. Cada handle guarda separadamente
 o placement ideal e `launchedScale`. Janelas abertas usam sua escala lançada para

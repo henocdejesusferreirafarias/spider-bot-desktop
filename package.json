@@ -12,7 +12,7 @@
     "dev": "npm run build:main && concurrently -k -n renderer,main,electron -c cyan,magenta,green \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1 --port 5173",
     "dev:main": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
-    "dev:electron": "wait-on http://127.0.0.1:5173 file:dist-electron/main/index.js file:dist-electron/preload/index.js file:dist-electron/main/services/browser-runtime.js file:dist-electron/main/services/database.js file:dist-electron/main/services/geetest-solver.js file:dist-electron/main/services/instance-registry.js file:dist-electron/main/services/proxy-chain.js file:dist-electron/main/services/update-service.js file:dist-electron/shared/contracts.js file:dist-electron/shared/defaults.js && node scripts/wait-for-dist-stable.mjs && electronmon dist-electron/main/index.js",
+    "dev:electron": "wait-on http://127.0.0.1:5173 file:dist-electron/main/index.js file:dist-electron/preload/index.js file:dist-electron/main/services/browser-runtime.js file:dist-electron/main/services/database.js file:dist-electron/main/services/geetest-solver.js file:dist-electron/main/services/instance-registry.js file:dist-electron/main/services/proxy-chain.js file:dist-electron/main/services/update-service.js file:dist-electron/main/services/windows-window-placement.js file:dist-electron/shared/contracts.js file:dist-electron/shared/defaults.js && node scripts/wait-for-dist-stable.mjs && electronmon dist-electron/main/index.js",
     "build": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\build.ps1",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.electron.json",
