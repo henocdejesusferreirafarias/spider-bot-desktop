@@ -331,6 +331,11 @@ export class AutomationRuntimeService {
     { page: Page; listener: (...args: unknown[]) => void }
   >();
   private readonly autoCaptchaSolverRuns = new Set<string>();
+  // O launch de Chromium ja tem seu proprio limite, mas ele termina antes do
+  // bootstrap de cadastro. Mantemos esta fase serial ate o formulario ficar
+  // acionavel para que uma plataforma lenta nao dispute CPU/rede com o proximo
+  // perfil justamente durante navegacao, loading e abertura do cadastro.
+  private readonly registrationBootstrapSemaphore = new AsyncSemaphore(1);
 
   // --- Interacao adaptativa (generica p/ QUALQUER plataforma; sem regras por dominio) ---
   // Plataformas lentas levam ate 10s+ para deixar um ponto realmente acionavel (medido
@@ -2632,73 +2637,103 @@ export class AutomationRuntimeService {
       );
     }
     const loggedPage = this.createLoggedPage(runId, page);
-    const autoCaptchaSolverEnabled =
-      automation.params.autoCaptchaSolverEnabled === "true";
-    if (autoCaptchaSolverEnabled) {
-      this.autoCaptchaSolverRuns.add(runId);
-      this.setupGeetestInterception(runId, page);
-      void warmNineMatchClassifier().catch((error: unknown) => {
-        this.log(
-          runId,
-          "warning",
-          `[${profile.name}] Nao foi possivel preaquecer o modelo nine: ${error instanceof Error ? error.message : String(error)}.`,
-        );
-      });
-      await this.installGeetestBridge(page).catch(() => undefined);
+    const bootstrapWasQueued = this.registrationBootstrapSemaphore.permits === 0;
+    if (bootstrapWasQueued) {
+      this.log(
+        runId,
+        "info",
+        `[${profile.name}] Aguardando capacidade para preparar o cadastro.`,
+      );
+    }
+    const releaseRegistrationBootstrap =
+      await this.registrationBootstrapSemaphore.acquire();
+    if (bootstrapWasQueued) {
+      this.log(
+        runId,
+        "info",
+        `[${profile.name}] Capacidade liberada; preparando o cadastro.`,
+      );
     }
 
-    this.log(
-      runId,
-      "info",
-      `[${profile.name}] Preparando cadastro da plataforma para ${account.username}.`,
-    );
+    let accountInput: Locator;
+    let passwordInput: Locator;
+    let confirmPasswordInput: Locator;
+    let submitButton: Locator;
+    try {
+      const autoCaptchaSolverEnabled =
+        automation.params.autoCaptchaSolverEnabled === "true";
+      if (autoCaptchaSolverEnabled) {
+        this.autoCaptchaSolverRuns.add(runId);
+        this.setupGeetestInterception(runId, page);
+        void warmNineMatchClassifier().catch((error: unknown) => {
+          this.log(
+            runId,
+            "warning",
+            `[${profile.name}] Nao foi possivel preaquecer o modelo nine: ${error instanceof Error ? error.message : String(error)}.`,
+          );
+        });
+        await this.installGeetestBridge(page).catch(() => undefined);
+      }
 
-    await loggedPage.goto(startUrl, {
-      waitUntil: "domcontentloaded",
-    });
-    await this.browserRuntime.setPageAutoClosePopups(loggedPage, true);
-    await this.waitForPlatformLoadingToClear(runId, loggedPage, {
-      retryWithReload: true,
-    });
-    await loggedPage
-      .waitForLoadState("networkidle", { timeout: 3000 })
-      .catch(() => null);
-    await this.normalizeRegistrationEntryPage(runId, loggedPage, profile.name);
-    await loggedPage.waitForTimeout(250);
+      this.log(
+        runId,
+        "info",
+        `[${profile.name}] Preparando cadastro da plataforma para ${account.username}.`,
+      );
 
-    await this.dismissInitialPopupsBeforeRegistration(
-      runId,
-      loggedPage,
-      profile.name,
-    );
+      await loggedPage.goto(startUrl, {
+        waitUntil: "domcontentloaded",
+      });
+      await this.browserRuntime.setPageAutoClosePopups(loggedPage, true);
+      await this.waitForPlatformLoadingToClear(runId, loggedPage, {
+        retryWithReload: true,
+      });
+      await loggedPage
+        .waitForLoadState("networkidle", { timeout: 3000 })
+        .catch(() => null);
+      await this.normalizeRegistrationEntryPage(runId, loggedPage, profile.name);
+      await loggedPage.waitForTimeout(250);
 
-    await this.ensureRegistrationDialogOpen(runId, loggedPage, profile.name);
+      await this.dismissInitialPopupsBeforeRegistration(
+        runId,
+        loggedPage,
+        profile.name,
+      );
 
-    const accountInput = await this.getRequiredVisibleInputByHints(
-      runId,
-      loggedPage,
-      "conta",
-      ["Digite o Conta", "Conta", "account", "usuario", "usuário"],
-    );
-    const passwordInput = await this.getRequiredVisibleInputByHints(
-      runId,
-      loggedPage,
-      "senha",
-      ["Insira a senha", "senha", "userpass", "password"],
-    );
-    const confirmPasswordInput = await this.getRequiredVisibleInputByHints(
-      runId,
-      loggedPage,
-      "confirmacao de senha",
-      [
-        "Confirmar senha",
-        "confirme a senha",
-        "confirmacao senha",
-        "confirmar",
-        "confirmPassword",
-        "confirm password",
-      ],
-    );
+      await this.ensureRegistrationDialogOpen(runId, loggedPage, profile.name);
+
+      accountInput = await this.getRequiredVisibleInputByHints(
+        runId,
+        loggedPage,
+        "conta",
+        ["Digite o Conta", "Conta", "account", "usuario", "usuário"],
+      );
+      passwordInput = await this.getRequiredVisibleInputByHints(
+        runId,
+        loggedPage,
+        "senha",
+        ["Insira a senha", "senha", "userpass", "password"],
+      );
+      confirmPasswordInput = await this.getRequiredVisibleInputByHints(
+        runId,
+        loggedPage,
+        "confirmacao de senha",
+        [
+          "Confirmar senha",
+          "confirme a senha",
+          "confirmacao senha",
+          "confirmar",
+          "confirmPassword",
+          "confirm password",
+        ],
+      );
+      submitButton = await this.getRequiredRegistrationSubmitControl(
+        runId,
+        loggedPage,
+      );
+    } finally {
+      releaseRegistrationBootstrap();
+    }
 
     const fastMainFieldsFilled = await this.fastFillRegistrationMainFields(
       runId,
@@ -2723,11 +2758,6 @@ export class AutomationRuntimeService {
         account.password,
       );
     }
-
-    const submitButton = await this.getRequiredRegistrationSubmitControl(
-      runId,
-      loggedPage,
-    );
 
     const registrationContext: RemoteExecutionContext = {};
     try {

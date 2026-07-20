@@ -50,6 +50,13 @@ type DepositRuntimeHarness = {
 };
 
 type RegistrationRuntimeHarness = RuntimeHarness & {
+  executeAccountRegistration(
+    runId: string,
+    automation: AutomationRecord,
+    profile: ProfileSummary,
+    page: Page,
+    settings: Record<string, unknown>
+  ): Promise<void>;
   fastAcceptRegistrationTerms(runId: string, page: Page): Promise<boolean>;
   fastFillRegistrationOptionalFields(
     runId: string,
@@ -57,6 +64,99 @@ type RegistrationRuntimeHarness = RuntimeHarness & {
     values: { cpf?: string; phoneNumber?: string; realName?: string }
   ): Promise<{ cpf: boolean; phone: boolean; realName: boolean }>;
 };
+
+test("serializes slow registration bootstrap until the entry form is ready", async () => {
+  const database = {
+    getOrCreateProfileAccount: () => ({
+      password: "safe-password",
+      registeredOrigins: [],
+      username: "test-user"
+    })
+  };
+  const browserRuntime = {
+    setPageAutoClosePopups: async () => undefined
+  };
+  const runtime = new AutomationRuntimeService(
+    database as never,
+    browserRuntime as never,
+    () => undefined
+  ) as unknown as RegistrationRuntimeHarness & Record<string, unknown>;
+  const page = {
+    goto: async () => undefined,
+    waitForLoadState: async () => undefined,
+    waitForTimeout: async () => undefined
+  } as unknown as Page;
+  const automation = {
+    params: { autoCaptchaSolverEnabled: "" },
+    startUrl: "https://platform.example"
+  } as AutomationRecord;
+  const settings = {};
+  let activeBootstraps = 0;
+  let bootstrapEntries = 0;
+  let peakBootstraps = 0;
+  let activeFormFills = 0;
+  let peakFormFills = 0;
+  const logMessages: string[] = [];
+
+  runtime.createLoggedPage = () => page;
+  runtime.waitForPlatformLoadingToClear = async () => undefined;
+  runtime.normalizeRegistrationEntryPage = async () => undefined;
+  runtime.dismissInitialPopupsBeforeRegistration = async () => undefined;
+  runtime.ensureRegistrationDialogOpen = async () => {
+    bootstrapEntries += 1;
+    activeBootstraps += 1;
+    peakBootstraps = Math.max(peakBootstraps, activeBootstraps);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    activeBootstraps -= 1;
+  };
+  runtime.getRequiredVisibleInputByHints = async () => ({} as Locator);
+  runtime.getRequiredRegistrationSubmitControl = async () => ({} as Locator);
+  runtime.fastFillRegistrationMainFields = async () => {
+    activeFormFills += 1;
+    peakFormFills = Math.max(peakFormFills, activeFormFills);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    activeFormFills -= 1;
+    throw new Error("stop-after-bootstrap");
+  };
+  runtime.disposeGeetestInterception = () => undefined;
+  runtime.log = (...args: unknown[]) => {
+    logMessages.push(String(args.at(-1)));
+  };
+
+  const profileA = { ...profile, id: "profile-a", name: "Profile A" };
+  const profileB = { ...profile, id: "profile-b", name: "Profile B" };
+
+  const firstBootstrap = runtime.executeAccountRegistration(
+    "run-a",
+    automation,
+    profileA,
+    page,
+    settings
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const secondBootstrap = runtime.executeAccountRegistration(
+    "run-b",
+    automation,
+    profileB,
+    page,
+    settings
+  );
+  await Promise.allSettled([firstBootstrap, secondBootstrap]);
+
+  assert.equal(
+    peakBootstraps,
+    1,
+    "a slow registration bootstrap must hold back the next profile until its entry form is ready"
+  );
+  assert.equal(bootstrapEntries, 2, "a completed bootstrap must release the next queued profile");
+  assert.equal(
+    peakFormFills,
+    2,
+    "the coordinator must release each profile once its entry form is actionable"
+  );
+  assert.ok(logMessages.some((message) => /Aguardando capacidade/.test(message)));
+  assert.ok(logMessages.some((message) => /Capacidade liberada/.test(message)));
+});
 
 type GeetestRuntimeHarness = {
   autoCaptchaSolverRuns: Set<string>;
