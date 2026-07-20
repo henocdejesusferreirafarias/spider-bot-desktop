@@ -22,3 +22,4 @@ Convenção:
 | [0007](0007-jdb-frame-token-reload.md) | Frames JDB tokenizados não aceitam recuperação por reload | Aceito |
 | [0008](0008-serializar-bootstrap-cadastro-por-readiness.md) | Serializar o bootstrap de cadastro por readiness | Aceito |
 | [0009](0009-exclusao-em-lote-nao-bloqueante.md) | Exclusão em lote não bloqueante de perfis | Aceito |
+| [0010](0010-geometria-de-janelas-consciente-de-dpi.md) | Geometria de janelas consciente de DPI | Aceito |
