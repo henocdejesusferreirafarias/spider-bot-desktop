@@ -599,6 +599,30 @@ export function usePredatorApp() {
     }
   };
 
+  const quickLaunchProfile = async (
+    url: string,
+    opts: { triggerAutomation: boolean; navigationMode: NavigationMode; proxyId?: string }
+  ) => {
+    const normalizedUrl = normalizeUrlOrDefault(url);
+    const stamp = snapshot.profiles.length + 1;
+    return mutate("profile:quick-launch", async () => {
+      const created = await window.predator.profiles.create({
+        name: `Auto Profile ${stamp}`,
+        notes: `Quick launch for ${normalizedUrl}.`,
+        homeUrl: normalizedUrl,
+        tags: ["auto"],
+        color: autoProfileColors[stamp % autoProfileColors.length] ?? "#d6d6d6",
+        proxyId: opts.proxyId,
+        persona: buildNavigationPersona(opts.navigationMode)
+      });
+      await window.predator.profiles.launch(created.id, {
+        triggerAutomation: opts.triggerAutomation,
+        deferNavigation: false
+      });
+      return created.id;
+    });
+  };
+
   const createProxy = async (input?: ProxyDraft) => {
     const stamp = snapshot.proxies.length + 1;
     await mutate("proxy:create", () =>
@@ -683,6 +707,7 @@ export function usePredatorApp() {
     clearProfileSelection: () => setSelectedProfileIds(new Set()),
     createProfilesAutomatically,
     stopAutomaticProfileCreation,
+    quickLaunchProfile,
     createProxy,
     createAutomation,
     checkForUpdates: () => mutate("updates:check", () => window.predator.updates.check()).then(setUpdateStatus),

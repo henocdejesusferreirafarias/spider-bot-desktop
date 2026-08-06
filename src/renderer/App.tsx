@@ -34,6 +34,7 @@ import {
 import { ProfileDetailModal } from "./components/ProfileDetailModal.js";
 import { ProfileEditorModal } from "./components/ProfileEditorModal.js";
 import { ProfileFactoryPanel } from "./components/ProfileFactoryPanel.js";
+import { QuickLaunchPanel } from "./components/QuickLaunchPanel.js";
 import { ProfileTable } from "./components/ProfileTable.js";
 import { ProxyEditorModal } from "./components/ProxyEditorModal.js";
 import { ProxyManager } from "./components/ProxyManager.js";
@@ -696,9 +697,18 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
             <div className="primary-column">
               {app.section === "dashboard" && (
                 controlPanelMode ? (
-                  <SectionCard chrome="bare" title="Painel de Controle">
-                    {controlPanel()}
-                  </SectionCard>
+                  <>
+                    <SectionCard chrome="bare" title="Painel de Controle">
+                      {controlPanel()}
+                    </SectionCard>
+                    <QuickLaunchPanel
+                      busy={app.busyAction === "profile:quick-launch"}
+                      navigationMode={mobileMode}
+                      onLaunch={(url, triggerAutomation) => {
+                        void app.quickLaunchProfile(url, { triggerAutomation, navigationMode: mobileMode }).catch(() => undefined);
+                      }}
+                    />
+                  </>
                 ) : (
                   <SectionCard chrome="bare" title="Operacao">
                     <div className="operation-config-stack">
