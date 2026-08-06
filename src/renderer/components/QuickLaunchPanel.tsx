@@ -5,7 +5,7 @@ import { Icon } from "./Icon.js";
 export function QuickLaunchPanel({
   navigationMode,
   busy,
-  onLaunch
+  onLaunch,
 }: {
   navigationMode: NavigationMode;
   busy?: boolean;
@@ -69,7 +69,9 @@ export function QuickLaunchPanel({
           <span>Abrir + Cadastrar</span>
         </button>
       </div>
-      {feedback ? <span className="quick-launch-feedback">{feedback}</span> : null}
+      {feedback ? (
+        <span className="quick-launch-feedback">{feedback}</span>
+      ) : null}
     </div>
   );
 }

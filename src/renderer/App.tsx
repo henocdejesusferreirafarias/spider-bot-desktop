@@ -7,7 +7,7 @@ import {
   type ProfileSummary,
   type ProxyConfig,
   type RuntimeControlSelectionState,
-  type RuntimeControlTargetSelection
+  type RuntimeControlTargetSelection,
 } from "../shared/contracts.js";
 import { ConfirmDialog } from "./components/ConfirmDialog.js";
 import { AlertDialog } from "./components/AlertDialog.js";
@@ -17,11 +17,12 @@ import { DomainBlockModal } from "./components/DomainBlockModal.js";
 import { DashboardFunctionalPanel } from "./components/DashboardFunctionalPanel.js";
 import { Icon } from "./components/Icon.js";
 import { InstanceManager } from "./components/InstanceManager.js";
-import { LinkManagerModal, type IndicationLink } from "./components/LinkManagerModal.js";
-import { LicensePopover } from "./components/LicensePopover.js";
 import {
-  NavigationConfigPanel
-} from "./components/NavigationConfigPanel.js";
+  LinkManagerModal,
+  type IndicationLink,
+} from "./components/LinkManagerModal.js";
+import { LicensePopover } from "./components/LicensePopover.js";
+import { NavigationConfigPanel } from "./components/NavigationConfigPanel.js";
 import { SystemLogPanel } from "./components/SystemLogPanel.js";
 import { SystemLogsView } from "./components/SystemLogsView.js";
 import { OperationFooter } from "./components/OperationFooter.js";
@@ -29,7 +30,7 @@ import { PixKeysPanel } from "./components/PixKeysPanel.js";
 import { countAvailablePixKeys } from "./lib/pix-key-status.js";
 import {
   describeProfileDeletionFailures,
-  formatProfileDeletionProgress
+  formatProfileDeletionProgress,
 } from "./lib/profile-deletion.js";
 import { ProfileDetailModal } from "./components/ProfileDetailModal.js";
 import { ProfileEditorModal } from "./components/ProfileEditorModal.js";
@@ -48,7 +49,7 @@ import { usePredatorApp } from "./hooks/usePredatorApp.js";
 import { useEditableFocusGuard } from "./hooks/useEditableFocusGuard.js";
 import {
   parseRuntimeWindowSelection,
-  validateRuntimeWindowSelection
+  validateRuntimeWindowSelection,
 } from "./lib/controlSelection.js";
 
 type InstanceAppContext = Extract<AppContext, { kind: "instance" }>;
@@ -68,7 +69,9 @@ function loadIndicationLinks(storageKey: string): IndicationLink[] {
 
 function loadNavigationMode(storageKey: string): NavigationMode {
   const stored = window.localStorage.getItem(storageKey);
-  return NAVIGATION_MODES.includes(stored as NavigationMode) ? (stored as NavigationMode) : "mobile-ios-android";
+  return NAVIGATION_MODES.includes(stored as NavigationMode)
+    ? (stored as NavigationMode)
+    : "mobile-ios-android";
 }
 
 function formatDelaySeconds(value: number): string {
@@ -107,27 +110,45 @@ export default function App() {
 
 function InstanceApp({ context }: { context: InstanceAppContext }) {
   const app = usePredatorApp();
-  const indicationLinksStorageKey = buildInstanceStorageKey(context.instance.id, "indication-links");
-  const captchaSolverStorageKey = buildInstanceStorageKey(context.instance.id, "captcha-solver-enabled");
-  const navigationModeStorageKey = buildInstanceStorageKey(context.instance.id, "navigation-mode");
-  const [profileEditor, setProfileEditor] = useState<{ profile?: ProfileSummary }>();
-  const [profileDetail, setProfileDetail] = useState<{ profile: ProfileSummary }>();
+  const indicationLinksStorageKey = buildInstanceStorageKey(
+    context.instance.id,
+    "indication-links",
+  );
+  const captchaSolverStorageKey = buildInstanceStorageKey(
+    context.instance.id,
+    "captcha-solver-enabled",
+  );
+  const navigationModeStorageKey = buildInstanceStorageKey(
+    context.instance.id,
+    "navigation-mode",
+  );
+  const [profileEditor, setProfileEditor] = useState<{
+    profile?: ProfileSummary;
+  }>();
+  const [profileDetail, setProfileDetail] = useState<{
+    profile: ProfileSummary;
+  }>();
   const [proxyEditor, setProxyEditor] = useState<{ proxy?: ProxyConfig }>();
   const [clearLogsConfirmOpen, setClearLogsConfirmOpen] = useState(false);
-  const [deleteSelectedConfirmOpen, setDeleteSelectedConfirmOpen] = useState(false);
-  const [deleteSelectedFeedback, setDeleteSelectedFeedback] = useState<string>();
-  const [captchaSolverConfirmOpen, setCaptchaSolverConfirmOpen] = useState(false);
+  const [deleteSelectedConfirmOpen, setDeleteSelectedConfirmOpen] =
+    useState(false);
+  const [deleteSelectedFeedback, setDeleteSelectedFeedback] =
+    useState<string>();
+  const [captchaSolverConfirmOpen, setCaptchaSolverConfirmOpen] =
+    useState(false);
   const [operationUrl, setOperationUrl] = useState("https://example.com");
   const [multipleLinksEnabled, setMultipleLinksEnabled] = useState(false);
   const [captchaSolverEnabled, setCaptchaSolverEnabled] = useState(
-    () => window.localStorage.getItem(captchaSolverStorageKey) === "true"
+    () => window.localStorage.getItem(captchaSolverStorageKey) === "true",
   );
   const [useProxyOnFactory, setUseProxyOnFactory] = useState(false);
   const [linkManagerOpen, setLinkManagerOpen] = useState(false);
   const [indicationLinks, setIndicationLinks] = useState<IndicationLink[]>(() =>
-    loadIndicationLinks(indicationLinksStorageKey)
+    loadIndicationLinks(indicationLinksStorageKey),
   );
-  const [mobileMode, setMobileMode] = useState<NavigationMode>(() => loadNavigationMode(navigationModeStorageKey));
+  const [mobileMode, setMobileMode] = useState<NavigationMode>(() =>
+    loadNavigationMode(navigationModeStorageKey),
+  );
   const [licensePopoverOpen, setLicensePopoverOpen] = useState(false);
   const [cockpitMode, setCockpitMode] = useState(false);
   const [cockpitAlwaysOnTop, setCockpitAlwaysOnTop] = useState(true);
@@ -135,18 +156,23 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   const [mirrorBusy, setMirrorBusy] = useState(false);
   const [mirrorFeedback, setMirrorFeedback] = useState("");
   const mirrorRequestIdRef = useRef(0);
-  const mirrorSelectionRef = useRef<RuntimeControlTargetSelection>({ mode: "all" });
+  const mirrorSelectionRef = useRef<RuntimeControlTargetSelection>({
+    mode: "all",
+  });
   // Estado do deposito manual + modal, elevado para sobreviver a remontagem do
   // ControlPanel quando o cockpit alterna (cockpit/normal sao arvores separadas).
   const [manualUseCustomDeposits, setManualUseCustomDeposits] = useState(false);
   const [manualDepositMin, setManualDepositMin] = useState("10");
   const [manualDepositMax, setManualDepositMax] = useState("50");
   const [controlWindowsInput, setControlWindowsInput] = useState("");
-  const [appliedControlWindowsInput, setAppliedControlWindowsInput] = useState("");
-  const [appliedControlSelection, setAppliedControlSelection] = useState<RuntimeControlSelectionState>({ mode: "all" });
+  const [appliedControlWindowsInput, setAppliedControlWindowsInput] =
+    useState("");
+  const [appliedControlSelection, setAppliedControlSelection] =
+    useState<RuntimeControlSelectionState>({ mode: "all" });
   const [depositModalOpen, setDepositModalOpen] = useState(false);
   const [depositModalBusy, setDepositModalBusy] = useState(false);
-  const [restoreCockpitAfterDeposit, setRestoreCockpitAfterDeposit] = useState(false);
+  const [restoreCockpitAfterDeposit, setRestoreCockpitAfterDeposit] =
+    useState(false);
   const [domainBlockModalOpen, setDomainBlockModalOpen] = useState(false);
   const licensePopoverRef = useRef<HTMLDivElement>(null);
   const [profileFactory, setProfileFactory] = useState({
@@ -155,15 +181,17 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     depositAmountMin: 10,
     depositAmountMax: 30,
     useCustomDeposits: false,
-    automationStartDelaySeconds: 20
+    automationStartDelaySeconds: 20,
   });
 
   // Perfis com status de automacao ativa (launching, active, running-automation).
   // Usado para logs e informativos - NAO para visibilidade do painel/footer.
   const activeProfiles = app.snapshot.profiles.filter((profile) =>
-    ["active", "launching", "running-automation"].includes(profile.status)
+    ["active", "launching", "running-automation"].includes(profile.status),
   );
-  const healthyProxies = app.snapshot.proxies.filter((proxy) => proxy.status === "healthy");
+  const healthyProxies = app.snapshot.proxies.filter(
+    (proxy) => proxy.status === "healthy",
+  );
   const panelActivity = app.snapshot.activity.slice(0, 20);
   const creatingProfiles = app.autoProfileRun.running;
 
@@ -177,35 +205,52 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   const operationRunningLabel = app.autoProfileRun.stopping
     ? "Parando..."
     : creatingProfiles
-      ? `Criando ${app.autoProfileRun.launched}/${app.autoProfileRun.requested} (delay ${
-          formatDelaySeconds(app.autoProfileRun.automationStartDelaySeconds)
-        })`
+      ? `Criando ${app.autoProfileRun.launched}/${app.autoProfileRun.requested} (delay ${formatDelaySeconds(
+          app.autoProfileRun.automationStartDelaySeconds,
+        )})`
       : `${openWindowCount} aba${openWindowCount === 1 ? "" : "s"} aberta${openWindowCount === 1 ? "" : "s"}`;
-  const selectedIndicationLinks = indicationLinks.filter((link) => link.selected);
+  const selectedIndicationLinks = indicationLinks.filter(
+    (link) => link.selected,
+  );
   const contentModeClass = [
     app.section === "dashboard" ? "dashboard-mode" : "",
     app.section === "screens" ? "screen-mode" : "",
-    controlPanelMode ? "control-mode" : ""
+    controlPanelMode ? "control-mode" : "",
   ]
     .filter(Boolean)
     .join(" ");
   const licenseState = app.snapshot.license;
-  const postRegistrationDepositEnabled = app.snapshot.settings.postRegistrationDepositEnabled ?? true;
+  const postRegistrationDepositEnabled =
+    app.snapshot.settings.postRegistrationDepositEnabled ?? true;
   // Janelas ABERTAS de verdade (runtimeWindows vem dos handles abertos). Usado para o botao
   // Play/Stop refletir a janela, nao so o status da automacao (ex.: "error" fica aberto).
   const openWindowProfileIds = useMemo(
-    () => new Set(app.snapshot.runtimeWindows.map((windowTarget) => windowTarget.profileId)),
-    [app.snapshot.runtimeWindows]
+    () =>
+      new Set(
+        app.snapshot.runtimeWindows.map(
+          (windowTarget) => windowTarget.profileId,
+        ),
+      ),
+    [app.snapshot.runtimeWindows],
   );
   const controlSelectionDraft = useMemo(
-    () => parseRuntimeWindowSelection(controlWindowsInput, app.snapshot.runtimeWindows),
-    [controlWindowsInput, app.snapshot.runtimeWindows]
+    () =>
+      parseRuntimeWindowSelection(
+        controlWindowsInput,
+        app.snapshot.runtimeWindows,
+      ),
+    [controlWindowsInput, app.snapshot.runtimeWindows],
   );
   const validatedAppliedControlSelection = useMemo(
-    () => validateRuntimeWindowSelection(appliedControlSelection, app.snapshot.runtimeWindows),
-    [appliedControlSelection, app.snapshot.runtimeWindows]
+    () =>
+      validateRuntimeWindowSelection(
+        appliedControlSelection,
+        app.snapshot.runtimeWindows,
+      ),
+    [appliedControlSelection, app.snapshot.runtimeWindows],
   );
-  const controlSelectionDirty = controlWindowsInput !== appliedControlWindowsInput;
+  const controlSelectionDirty =
+    controlWindowsInput !== appliedControlWindowsInput;
   const controlSelectionState = useMemo<RuntimeControlSelectionState>(() => {
     if (!controlSelectionDirty) {
       return validatedAppliedControlSelection;
@@ -213,16 +258,27 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     if (controlSelectionDraft.state.mode === "none") {
       return controlSelectionDraft.state;
     }
-    return { mode: "none", reason: "Clique em Aplicar para confirmar as janelas." };
-  }, [controlSelectionDirty, controlSelectionDraft.state, validatedAppliedControlSelection]);
+    return {
+      mode: "none",
+      reason: "Clique em Aplicar para confirmar as janelas.",
+    };
+  }, [
+    controlSelectionDirty,
+    controlSelectionDraft.state,
+    validatedAppliedControlSelection,
+  ]);
   const appliedControlSelectionHint = useMemo(
-    () => parseRuntimeWindowSelection(appliedControlWindowsInput, app.snapshot.runtimeWindows).message,
-    [appliedControlWindowsInput, app.snapshot.runtimeWindows]
+    () =>
+      parseRuntimeWindowSelection(
+        appliedControlWindowsInput,
+        app.snapshot.runtimeWindows,
+      ).message,
+    [appliedControlWindowsInput, app.snapshot.runtimeWindows],
   );
   const controlSelectionHint = controlSelectionDirty
     ? controlSelectionDraft.message
     : controlSelectionState.mode === "none"
-      ? controlSelectionState.reason ?? controlSelectionDraft.message
+      ? (controlSelectionState.reason ?? controlSelectionDraft.message)
       : appliedControlSelectionHint;
   const controlSelectionCanApply =
     controlSelectionDraft.state.mode !== "none" &&
@@ -232,7 +288,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     async (
       enabled: boolean,
       selection: RuntimeControlTargetSelection,
-      successMessage = ""
+      successMessage = "",
     ): Promise<boolean> => {
       const requestId = mirrorRequestIdRef.current + 1;
       mirrorRequestIdRef.current = requestId;
@@ -256,7 +312,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
           setMirrorFeedback(
             caught instanceof Error
               ? caught.message
-              : "Nao foi possivel atualizar o Modo Espelho."
+              : "Nao foi possivel atualizar o Modo Espelho.",
           );
         }
         return false;
@@ -266,14 +322,14 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
         }
       }
     },
-    []
+    [],
   );
 
   useEffect(() => {
     setProfileFactory((current) =>
       current.postRegistrationDepositEnabled === postRegistrationDepositEnabled
         ? current
-        : { ...current, postRegistrationDepositEnabled }
+        : { ...current, postRegistrationDepositEnabled },
     );
   }, [postRegistrationDepositEnabled]);
 
@@ -290,8 +346,8 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     }
 
     const feedback = staleSelection
-      ? validatedAppliedControlSelection.reason ??
-        "A selecao do Modo Espelho ficou desatualizada."
+      ? (validatedAppliedControlSelection.reason ??
+        "A selecao do Modo Espelho ficou desatualizada.")
       : "";
 
     if (leftControlPanel) {
@@ -308,7 +364,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     applyMirrorMode,
     hasOpenWindows,
     mirrorMode,
-    validatedAppliedControlSelection
+    validatedAppliedControlSelection,
   ]);
 
   useEffect(() => {
@@ -322,11 +378,17 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(indicationLinksStorageKey, JSON.stringify(indicationLinks));
+    window.localStorage.setItem(
+      indicationLinksStorageKey,
+      JSON.stringify(indicationLinks),
+    );
   }, [indicationLinks]);
 
   useEffect(() => {
-    window.localStorage.setItem(captchaSolverStorageKey, captchaSolverEnabled ? "true" : "false");
+    window.localStorage.setItem(
+      captchaSolverStorageKey,
+      captchaSolverEnabled ? "true" : "false",
+    );
   }, [captchaSolverEnabled]);
 
   useEffect(() => {
@@ -337,7 +399,11 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     if (!licensePopoverOpen) return;
     const handlePointer = (event: MouseEvent) => {
       const anchor = licensePopoverRef.current;
-      if (anchor && event.target instanceof Node && !anchor.contains(event.target)) {
+      if (
+        anchor &&
+        event.target instanceof Node &&
+        !anchor.contains(event.target)
+      ) {
         setLicensePopoverOpen(false);
       }
     };
@@ -379,7 +445,11 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     for (const profile of app.snapshot.profiles) {
       if (!app.selectedProfileIds.has(profile.id)) continue;
       const status = profile.status;
-      if (status === "active" || status === "launching" || status === "running-automation") {
+      if (
+        status === "active" ||
+        status === "launching" ||
+        status === "running-automation"
+      ) {
         return true;
       }
     }
@@ -400,10 +470,17 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
 
   const launchSelectedProfiles = () => {
     for (const profileId of app.selectedProfileIds) {
-      const profile = app.snapshot.profiles.find((candidate) => candidate.id === profileId);
+      const profile = app.snapshot.profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
       if (!profile) continue;
       const status = profile.status;
-      if (status === "active" || status === "launching" || status === "running-automation" || status === "stopping") {
+      if (
+        status === "active" ||
+        status === "launching" ||
+        status === "running-automation" ||
+        status === "stopping"
+      ) {
         continue;
       }
       app.launchProfile(profileId);
@@ -412,10 +489,16 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
 
   const stopSelectedProfiles = () => {
     for (const profileId of app.selectedProfileIds) {
-      const profile = app.snapshot.profiles.find((candidate) => candidate.id === profileId);
+      const profile = app.snapshot.profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
       if (!profile) continue;
       const status = profile.status;
-      if (status === "active" || status === "launching" || status === "running-automation") {
+      if (
+        status === "active" ||
+        status === "launching" ||
+        status === "running-automation"
+      ) {
         app.stopProfile(profileId);
       }
     }
@@ -424,12 +507,14 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   const selectedProfileCount = app.selectedProfileIds.size;
   const allProfilesSelected =
     app.filteredProfiles.length > 0 &&
-    app.filteredProfiles.every((profile) => app.selectedProfileIds.has(profile.id));
+    app.filteredProfiles.every((profile) =>
+      app.selectedProfileIds.has(profile.id),
+    );
 
   const toggleSelectAllProfiles = () => {
     app.setProfileSelection(
       app.filteredProfiles.map((profile) => profile.id),
-      !allProfilesSelected
+      !allProfilesSelected,
     );
   };
 
@@ -439,7 +524,9 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       setDeleteSelectedFeedback(describeProfileDeletionFailures(result));
     } catch (error) {
       setDeleteSelectedFeedback(
-        error instanceof Error ? error.message : "Nao foi possivel excluir os perfis."
+        error instanceof Error
+          ? error.message
+          : "Nao foi possivel excluir os perfis.",
       );
     } finally {
       setDeleteSelectedConfirmOpen(false);
@@ -463,9 +550,13 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       captchaSolverEnabled,
       customDepositAmounts: app.snapshot.settings.customDepositAmounts ?? [],
       homeUrl: operationUrl,
-      homeUrls: multipleLinksEnabled ? selectedIndicationLinks.map((link) => link.url) : undefined,
+      homeUrls: multipleLinksEnabled
+        ? selectedIndicationLinks.map((link) => link.url)
+        : undefined,
       navigationMode: mobileMode,
-      proxyIds: useProxyOnFactory ? app.snapshot.proxies.map((proxy) => proxy.id) : undefined
+      proxyIds: useProxyOnFactory
+        ? app.snapshot.proxies.map((proxy) => proxy.id)
+        : undefined,
     });
   };
 
@@ -495,7 +586,10 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       .catch(() => undefined);
   };
 
-  const setCockpitFromMode = (mode: { cockpit: boolean; alwaysOnTop: boolean }) => {
+  const setCockpitFromMode = (mode: {
+    cockpit: boolean;
+    alwaysOnTop: boolean;
+  }) => {
     setCockpitMode(mode.cockpit);
     setCockpitAlwaysOnTop(mode.alwaysOnTop);
   };
@@ -514,7 +608,10 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   const openDepositModal = () => {
     if (cockpitMode) {
       setRestoreCockpitAfterDeposit(true);
-      void window.predator.app.setCockpitMode(false).then(setCockpitFromMode).catch(() => undefined);
+      void window.predator.app
+        .setCockpitMode(false)
+        .then(setCockpitFromMode)
+        .catch(() => undefined);
     }
     setDepositModalOpen(true);
   };
@@ -523,7 +620,10 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     setDepositModalOpen(false);
     if (restoreCockpitAfterDeposit) {
       setRestoreCockpitAfterDeposit(false);
-      void window.predator.app.setCockpitMode(true).then(setCockpitFromMode).catch(() => undefined);
+      void window.predator.app
+        .setCockpitMode(true)
+        .then(setCockpitFromMode)
+        .catch(() => undefined);
     }
   };
 
@@ -538,7 +638,10 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     }
 
     if (mirrorMode) {
-      const reconfigured = await applyMirrorMode(true, controlSelectionDraft.state);
+      const reconfigured = await applyMirrorMode(
+        true,
+        controlSelectionDraft.state,
+      );
       if (!reconfigured) {
         return;
       }
@@ -556,7 +659,8 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     if (enabled) {
       if (controlSelectionState.mode === "none") {
         setMirrorFeedback(
-          controlSelectionState.reason || "Selecione pelo menos uma janela ativa."
+          controlSelectionState.reason ||
+            "Selecione pelo menos uma janela ativa.",
         );
         return;
       }
@@ -574,7 +678,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
     onDepositRangeMinChange: setManualDepositMin,
     depositRangeMax: manualDepositMax,
     onDepositRangeMaxChange: setManualDepositMax,
-    onOpenDepositModal: openDepositModal
+    onOpenDepositModal: openDepositModal,
   };
 
   const controlPanel = (variant: "default" | "cockpit" = "default") => (
@@ -596,7 +700,9 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       onOpenWithdrawals={app.openWithdrawals}
       onRegisterPixKey={app.registerPixKey}
       onUpdateSettings={app.updateSettings}
-      pixPhoneKeyCount={countAvailablePixKeys(app.snapshot.pixPhoneKeys.map((key) => key.status))}
+      pixPhoneKeyCount={countAvailablePixKeys(
+        app.snapshot.pixPhoneKeys.map((key) => key.status),
+      )}
       runtimeWindows={app.snapshot.runtimeWindows}
       settings={app.snapshot.settings}
       variant={variant}
@@ -623,7 +729,9 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       onOpenWithdrawals={app.openWithdrawals}
       onRegisterPixKey={app.registerPixKey}
       onUpdateSettings={app.updateSettings}
-      pixPhoneKeyCount={countAvailablePixKeys(app.snapshot.pixPhoneKeys.map((key) => key.status))}
+      pixPhoneKeyCount={countAvailablePixKeys(
+        app.snapshot.pixPhoneKeys.map((key) => key.status),
+      )}
       runtimeWindows={app.snapshot.runtimeWindows}
       settings={app.snapshot.settings}
       startStopAction={
@@ -691,12 +799,14 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
 
       <main className={`workspace ${cockpitMode ? "cockpit-workspace" : ""}`}>
         {cockpitMode ? (
-          <section className="cockpit-control-strip">{controlPanelWithStartStop}</section>
+          <section className="cockpit-control-strip">
+            {controlPanelWithStartStop}
+          </section>
         ) : (
           <section className={`content-grid ${contentModeClass}`}>
             <div className="primary-column">
-              {app.section === "dashboard" && (
-                controlPanelMode ? (
+              {app.section === "dashboard" &&
+                (controlPanelMode ? (
                   <>
                     <SectionCard chrome="bare" title="Painel de Controle">
                       {controlPanel()}
@@ -705,7 +815,12 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
                       busy={app.busyAction === "profile:quick-launch"}
                       navigationMode={mobileMode}
                       onLaunch={(url, triggerAutomation) => {
-                        void app.quickLaunchProfile(url, { triggerAutomation, navigationMode: mobileMode }).catch(() => undefined);
+                        void app
+                          .quickLaunchProfile(url, {
+                            triggerAutomation,
+                            navigationMode: mobileMode,
+                          })
+                          .catch(() => undefined);
                       }}
                     />
                   </>
@@ -718,7 +833,9 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
                         running={creatingProfiles}
                       />
                       <ProfileFactoryPanel
-                        customDepositAmounts={app.snapshot.settings.customDepositAmounts ?? []}
+                        customDepositAmounts={
+                          app.snapshot.settings.customDepositAmounts ?? []
+                        }
                         onChange={setProfileFactory}
                         onUpdateSettings={app.updateSettings}
                         running={creatingProfiles}
@@ -726,154 +843,168 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
                       />
                     </div>
                   </SectionCard>
-                )
+                ))}
+
+              {app.section === "profiles" && (
+                <SectionCard chrome="bare" title="Contas">
+                  <div className="profile-card-layout">
+                    <div className="profiles-toolbar">
+                      <button
+                        className="ghost-button"
+                        disabled={app.filteredProfiles.length === 0}
+                        onClick={toggleSelectAllProfiles}
+                        type="button"
+                      >
+                        <Icon
+                          name={allProfilesSelected ? "close" : "duplicate"}
+                          size={13}
+                        />
+                        <span>
+                          {allProfilesSelected
+                            ? "Limpar selecao"
+                            : "Selecionar todos"}
+                        </span>
+                      </button>
+                      {selectedProfileCount > 0 ? (
+                        <span className="profiles-toolbar-count">
+                          {selectedProfileCount} selecionada
+                          {selectedProfileCount > 1 ? "s" : ""}
+                        </span>
+                      ) : null}
+                      <div className="profiles-toolbar-spacer" />
+                      <BulkStartStopButton
+                        disabled={selectedProfileCount === 0}
+                        onRun={launchSelectedProfiles}
+                        onStop={stopSelectedProfiles}
+                        running={
+                          anySelectedRunning || anySelectedWithOpenWindow
+                        }
+                      />
+                      <button
+                        className="danger-button"
+                        disabled={selectedProfileCount === 0}
+                        onClick={() => setDeleteSelectedConfirmOpen(true)}
+                        type="button"
+                      >
+                        <Icon name="trash" size={13} />
+                        <span>Excluir selecionados</span>
+                      </button>
+                    </div>
+                    <div className="profile-list-zone">
+                      <ProfileTable
+                        busyAction={app.busyAction ?? null}
+                        onDelete={deleteProfile}
+                        onDetail={(profile) => setProfileDetail({ profile })}
+                        onEdit={(profile) => setProfileEditor({ profile })}
+                        onLaunch={app.launchProfile}
+                        onStop={app.stopProfile}
+                        onToggleProfile={app.toggleProfileSelection}
+                        openProfileIds={openWindowProfileIds}
+                        profiles={app.filteredProfiles}
+                        selectedProfileIds={app.selectedProfileIds}
+                      />
+                    </div>
+                  </div>
+                </SectionCard>
               )}
 
-            {app.section === "profiles" && (
-              <SectionCard chrome="bare" title="Contas">
-                <div className="profile-card-layout">
-                  <div className="profiles-toolbar">
-                    <button
-                      className="ghost-button"
-                      disabled={app.filteredProfiles.length === 0}
-                      onClick={toggleSelectAllProfiles}
-                      type="button"
-                    >
-                      <Icon name={allProfilesSelected ? "close" : "duplicate"} size={13} />
-                      <span>{allProfilesSelected ? "Limpar selecao" : "Selecionar todos"}</span>
-                    </button>
-                    {selectedProfileCount > 0 ? (
-                      <span className="profiles-toolbar-count">
-                        {selectedProfileCount} selecionada{selectedProfileCount > 1 ? "s" : ""}
-                      </span>
-                    ) : null}
-                    <div className="profiles-toolbar-spacer" />
-                    <BulkStartStopButton
-                      disabled={selectedProfileCount === 0}
-                      onRun={launchSelectedProfiles}
-                      onStop={stopSelectedProfiles}
-                      running={anySelectedRunning || anySelectedWithOpenWindow}
+              {app.section === "dashboard" && !controlPanelMode && (
+                <>
+                  <SectionCard title="Funcionalidades">
+                    <DashboardFunctionalPanel
+                      blockedDomainCount={
+                        app.snapshot.settings.blockedDomains?.length ?? 0
+                      }
+                      captchaSolverEnabled={captchaSolverEnabled}
+                      domainBlockEnabled={
+                        app.snapshot.settings.domainBlockEnabled ?? true
+                      }
+                      multipleLinksEnabled={multipleLinksEnabled}
+                      onManageDomains={openDomainBlockModal}
+                      onManageLinks={() => setLinkManagerOpen(true)}
+                      onToggleCaptchaSolver={(enabled) => {
+                        if (enabled) {
+                          setCaptchaSolverConfirmOpen(true);
+                        } else {
+                          setCaptchaSolverEnabled(false);
+                        }
+                      }}
+                      onToggleDomainBlock={(enabled) =>
+                        void app.updateSettings({ domainBlockEnabled: enabled })
+                      }
+                      onToggleMultipleLinks={setMultipleLinksEnabled}
+                      onToggleUseProxyOnFactory={setUseProxyOnFactory}
+                      selectedLinkCount={selectedIndicationLinks.length}
+                      totalLinkCount={indicationLinks.length}
+                      totalProxyCount={app.snapshot.proxies.length}
+                      useProxyOnFactory={useProxyOnFactory}
                     />
-                    <button
-                      className="danger-button"
-                      disabled={selectedProfileCount === 0}
-                      onClick={() => setDeleteSelectedConfirmOpen(true)}
-                      type="button"
-                    >
-                      <Icon name="trash" size={13} />
-                      <span>Excluir selecionados</span>
-                    </button>
-                  </div>
-                  <div className="profile-list-zone">
-                    <ProfileTable
-                      busyAction={app.busyAction ?? null}
-                      onDelete={deleteProfile}
-                      onDetail={(profile) => setProfileDetail({ profile })}
-                      onEdit={(profile) => setProfileEditor({ profile })}
-                      onLaunch={app.launchProfile}
-                      onStop={app.stopProfile}
-                      onToggleProfile={app.toggleProfileSelection}
-                      openProfileIds={openWindowProfileIds}
-                      profiles={app.filteredProfiles}
-                      selectedProfileIds={app.selectedProfileIds}
-                    />
-                  </div>
-                </div>
-              </SectionCard>
-            )}
+                  </SectionCard>
+                </>
+              )}
 
-            {app.section === "dashboard" && !controlPanelMode && (
-              <>
-      <SectionCard title="Funcionalidades">
-        <DashboardFunctionalPanel
-          blockedDomainCount={app.snapshot.settings.blockedDomains?.length ?? 0}
-          captchaSolverEnabled={captchaSolverEnabled}
-          domainBlockEnabled={app.snapshot.settings.domainBlockEnabled ?? true}
-          multipleLinksEnabled={multipleLinksEnabled}
-          onManageDomains={openDomainBlockModal}
-          onManageLinks={() => setLinkManagerOpen(true)}
-          onToggleCaptchaSolver={(enabled) => {
-            if (enabled) {
-              setCaptchaSolverConfirmOpen(true);
-            } else {
-              setCaptchaSolverEnabled(false);
-            }
-          }}
-          onToggleDomainBlock={(enabled) => void app.updateSettings({ domainBlockEnabled: enabled })}
-          onToggleMultipleLinks={setMultipleLinksEnabled}
-          onToggleUseProxyOnFactory={setUseProxyOnFactory}
-          selectedLinkCount={selectedIndicationLinks.length}
-          totalLinkCount={indicationLinks.length}
-          totalProxyCount={app.snapshot.proxies.length}
-          useProxyOnFactory={useProxyOnFactory}
-        />
-      </SectionCard>
-              </>
-            )}
+              {app.section === "proxies" && (
+                <SectionCard title="Proxies">
+                  <ProxyManager
+                    busyAction={app.busyAction}
+                    onCreateClick={() => setProxyEditor({})}
+                    onDelete={deleteProxy}
+                    onEdit={(proxy) => setProxyEditor({ proxy })}
+                    onTest={app.testProxy}
+                    proxies={app.snapshot.proxies}
+                  />
+                </SectionCard>
+              )}
 
-            {app.section === "proxies" && (
-              <SectionCard title="Proxies">
-                <ProxyManager
-                  busyAction={app.busyAction}
-                  onCreateClick={() => setProxyEditor({})}
-                  onDelete={deleteProxy}
-                  onEdit={(proxy) => setProxyEditor({ proxy })}
-                  onTest={app.testProxy}
-                  proxies={app.snapshot.proxies}
-                />
-              </SectionCard>
-            )}
+              {app.section === "pix-keys" && (
+                <SectionCard title="Chaves PIX">
+                  <PixKeysPanel
+                    busyAction={app.busyAction}
+                    onAdd={app.addPixPhoneKeys}
+                    onDelete={app.deletePixPhoneKey}
+                    onUpdate={app.updatePixPhoneKey}
+                    pixKeys={app.snapshot.pixPhoneKeys}
+                    profiles={app.snapshot.profiles}
+                  />
+                </SectionCard>
+              )}
 
-            {app.section === "pix-keys" && (
-              <SectionCard title="Chaves PIX">
-                <PixKeysPanel
-                  busyAction={app.busyAction}
-                  onAdd={app.addPixPhoneKeys}
-                  onDelete={app.deletePixPhoneKey}
-                  onUpdate={app.updatePixPhoneKey}
-                  pixKeys={app.snapshot.pixPhoneKeys}
-                  profiles={app.snapshot.profiles}
-                />
-              </SectionCard>
-            )}
+              {app.section === "screens" && (
+                <SectionCard chrome="bare" title="Telas">
+                  <ScreenLayoutPanel
+                    onApplyLayout={app.applyScreenLayout}
+                    onPreviewLayout={app.previewScreenLayout}
+                    onUpdate={app.updateSettings}
+                    settings={app.snapshot.settings}
+                  />
+                </SectionCard>
+              )}
 
-            {app.section === "screens" && (
-              <SectionCard chrome="bare" title="Telas">
-                <ScreenLayoutPanel
-                  onApplyLayout={app.applyScreenLayout}
-                  onPreviewLayout={app.previewScreenLayout}
-                  onUpdate={app.updateSettings}
-                  settings={app.snapshot.settings}
-                />
-              </SectionCard>
-            )}
-
-            {app.section === "activity" && (
-              <SectionCard
-                subtitle="Stream consolidado de atividade, execuÃ§Ãµes e alertas do workspace."
-                title="Logs do sistema"
-              >
-                <SystemLogsView
-                  activity={app.snapshot.activity}
-                  profiles={app.snapshot.profiles}
-                  runs={app.snapshot.runs}
-                  onClear={clearLogs}
-                />
-              </SectionCard>
-            )}
-
-          </div>
-
-          {app.section === "dashboard" && !controlPanelMode ? (
-            <div className="secondary-column">
-              <SystemLogPanel
-                activity={panelActivity}
-                onClear={() => setClearLogsConfirmOpen(true)}
-                onOpenActivity={() => app.setSection("activity")}
-              />
+              {app.section === "activity" && (
+                <SectionCard
+                  subtitle="Stream consolidado de atividade, execuÃ§Ãµes e alertas do workspace."
+                  title="Logs do sistema"
+                >
+                  <SystemLogsView
+                    activity={app.snapshot.activity}
+                    profiles={app.snapshot.profiles}
+                    runs={app.snapshot.runs}
+                    onClear={clearLogs}
+                  />
+                </SectionCard>
+              )}
             </div>
-          ) : null}
-        </section>
+
+            {app.section === "dashboard" && !controlPanelMode ? (
+              <div className="secondary-column">
+                <SystemLogPanel
+                  activity={panelActivity}
+                  onClear={() => setClearLogsConfirmOpen(true)}
+                  onOpenActivity={() => app.setSection("activity")}
+                />
+              </div>
+            ) : null}
+          </section>
         )}
 
         {!cockpitMode ? operationFooter : null}
@@ -898,7 +1029,9 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
 
       <DomainBlockModal
         domains={app.snapshot.settings.blockedDomains ?? []}
-        onChange={(blockedDomains) => void app.updateSettings({ blockedDomains })}
+        onChange={(blockedDomains) =>
+          void app.updateSettings({ blockedDomains })
+        }
         onClose={closeDomainBlockModal}
         open={domainBlockModalOpen}
       />
@@ -929,7 +1062,9 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       />
 
       <ProxyEditorModal
-        busy={app.busyAction === "proxy:create" || app.busyAction === "proxy:update"}
+        busy={
+          app.busyAction === "proxy:create" || app.busyAction === "proxy:update"
+        }
         onClose={() => setProxyEditor(undefined)}
         onSubmit={async (drafts) => {
           const proxy = proxyEditor?.proxy;
@@ -963,9 +1098,11 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
       <ConfirmDialog
         busy={app.busyAction === "profiles:delete-many"}
         confirmLabel={`Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""}`}
-        message={app.profileDeletionProgress
-          ? formatProfileDeletionProgress(app.profileDeletionProgress)
-          : `Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""} selecionada${selectedProfileCount > 1 ? "s" : ""}? Esta ação não pode ser desfeita.`}
+        message={
+          app.profileDeletionProgress
+            ? formatProfileDeletionProgress(app.profileDeletionProgress)
+            : `Excluir ${selectedProfileCount} conta${selectedProfileCount > 1 ? "s" : ""} selecionada${selectedProfileCount > 1 ? "s" : ""}? Esta ação não pode ser desfeita.`
+        }
         onCancel={() => {
           if (app.busyAction !== "profiles:delete-many") {
             setDeleteSelectedConfirmOpen(false);
