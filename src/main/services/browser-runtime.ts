@@ -6253,8 +6253,16 @@ export class BrowserRuntimeService {
   const nNow = NativeDate.now;
   const nPN = performance.now;
   const start = nNow();
+  // scaledTimeout: 0-delay setTimeouts permanecem 0 (yield ao event loop).
+  // scaledInterval: min 4ms para evitar busy-loop (setInterval(fn,0) a 3x+ trava a aba).
   const scaled = (t) => Math.max(0, (Number(t) || 0) / readRate());
+  const scaledInterval = (t) => { const v = (Number(t) || 0) / readRate(); return v > 0 ? Math.max(4, v) : 0; };
   const performanceStart = nPN.call(performance);
+  // RAF: rastreia offset de tempo de jogo para capear delta maximo por frame.
+  // Evita que engines de fisica acumulem steps em excesso em spikes de GC.
+  let rafGameOffset = 0;
+  let rafPrevTs = performanceStart;
+  const MAX_RAF_STEP_MS = 150;
   const virtualDateNow = () => Math.round(start + (nNow() - start) * readRate());
   const ScaledDate = function(...args) {
     if (!new.target) return new NativeDate(virtualDateNow()).toString();
@@ -6273,10 +6281,16 @@ export class BrowserRuntimeService {
     if (speedInstalled) return;
     speedInstalled = true;
     window.setTimeout = (h, t, ...a) => nST.call(window, h, scaled(t), ...a);
-    window.setInterval = (h, t, ...a) => nSI.call(window, h, scaled(t), ...a);
+    window.setInterval = (h, t, ...a) => nSI.call(window, h, scaledInterval(t), ...a);
     if (nRAF) {
       window.requestAnimationFrame = (cb) =>
-        nRAF.call(window, (ts) => cb(performanceStart + (ts - performanceStart) * readRate()));
+        nRAF.call(window, (ts) => {
+          const realDelta = Math.max(0, ts - rafPrevTs);
+          rafPrevTs = ts;
+          const gameDelta = Math.min(realDelta * readRate(), MAX_RAF_STEP_MS);
+          rafGameOffset += gameDelta;
+          cb(performanceStart + rafGameOffset);
+        });
     }
     try {
       if (jdbGameDocument) window.Date = ScaledDate;
@@ -6304,6 +6318,9 @@ export class BrowserRuntimeService {
     try {
       Object.defineProperty(performance, 'now', { configurable: true, value: nPN });
     } catch (e) {}
+    // Reseta acumuladores RAF para que re-ativacao comece do timestamp atual.
+    rafPrevTs = nPN.call(performance);
+    rafGameOffset = 0;
   };
   const syncSpeed = () => {
     syncGameSpeedRate();

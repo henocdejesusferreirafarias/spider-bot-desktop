@@ -2707,12 +2707,14 @@ export class AutomationRuntimeService {
         loggedPage,
         "conta",
         ["Digite o Conta", "Conta", "account", "usuario", "usuário"],
+        { rejectHints: ["senha", "password", "confirm", "confirmar"] },
       );
       passwordInput = await this.getRequiredVisibleInputByHints(
         runId,
         loggedPage,
         "senha",
         ["Insira a senha", "senha", "userpass", "password"],
+        { rejectHints: ["confirm", "confirmar", "repet", "again"] },
       );
       confirmPasswordInput = await this.getRequiredVisibleInputByHints(
         runId,
@@ -7118,9 +7120,7 @@ export class AutomationRuntimeService {
         const win = globalThis as unknown as {
           document: {
             querySelectorAll: (s: string) => Iterable<{
-              closest?: (
-                s: string,
-              ) => {
+              closest?: (s: string) => {
                 style: {
                   setProperty: (n: string, v: string, p?: string) => void;
                 };
@@ -10903,9 +10903,7 @@ export class AutomationRuntimeService {
               try {
                 const ctx = (
                   el as unknown as {
-                    getContext?: (
-                      type: string,
-                    ) => {
+                    getContext?: (type: string) => {
                       getImageData: (
                         x: number,
                         y: number,
@@ -12410,12 +12408,17 @@ export class AutomationRuntimeService {
     page: Page,
     fieldName: string,
     hints: string[],
+    options?: {
+      timeoutMs?: number;
+      rejectHints?: string[];
+    },
   ): Promise<Locator> {
     const locator = await this.getVisibleInputByHints(
       runId,
       page,
       fieldName,
       hints,
+      options,
     );
     if (!locator) {
       throw new Error(
@@ -13270,11 +13273,14 @@ export class AutomationRuntimeService {
   ): Promise<boolean> {
     this.ensureRunActive(runId);
     try {
-      await Promise.all(
-        fields.map((field) =>
-          this.forceSetFieldValue(field.locator, field.value),
-        ),
-      );
+      // Preenchimento SEQUENCIAL com pequena pausa entre campos: evita a corrida de
+      // avaliacao paralela de locators quando o Vue/React re-renderiza em resposta ao
+      // fill anterior (ex.: exibe o campo de senha apos preencher o usuario, mudando
+      // o DOM — locators resolveriam para elementos errados em Promise.all simultaneo).
+      for (const field of fields) {
+        await this.forceSetFieldValue(field.locator, field.value);
+        await page.waitForTimeout(40).catch(() => null);
+      }
       await page.waitForTimeout(25).catch(() => null);
       const values = await Promise.all(
         fields.map((field) => this.readFieldValue(field.locator)),
