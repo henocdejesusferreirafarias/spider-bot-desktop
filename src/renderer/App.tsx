@@ -813,7 +813,6 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
                     </SectionCard>
                     <QuickLaunchPanel
                       busy={app.busyAction === "profile:quick-launch"}
-                      navigationMode={mobileMode}
                       onLaunch={(url, triggerAutomation) => {
                         void app
                           .quickLaunchProfile(url, {

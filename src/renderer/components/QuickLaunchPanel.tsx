@@ -1,13 +1,10 @@
 import { useState } from "react";
-import type { NavigationMode } from "../../shared/contracts.js";
 import { Icon } from "./Icon.js";
 
 export function QuickLaunchPanel({
-  navigationMode,
   busy,
   onLaunch,
 }: {
-  navigationMode: NavigationMode;
   busy?: boolean;
   onLaunch: (url: string, triggerAutomation: boolean) => void;
 }) {

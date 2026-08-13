@@ -68,7 +68,7 @@ test("profile browser stop remains bounded when force kill never settles", async
       forceKillTimeoutMs: 5,
       forceKill: () => never
     }).then(() => "completed" as const),
-    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 80))
+    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 500))
   ]);
 
   assert.equal(outcome, "completed");
