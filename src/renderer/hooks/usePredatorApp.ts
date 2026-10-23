@@ -23,6 +23,7 @@ import type {
   UpdateStatus,
 } from "../../shared/contracts.js";
 import { failedProfileIds } from "../lib/profile-deletion.js";
+import { selectReusableAutomaticProfile } from "../lib/profile-reuse.js";
 import {
   ACCOUNT_REGISTRATION_KIND,
   MAX_AUTOMATION_START_DELAY_SECONDS,
@@ -572,7 +573,8 @@ export function usePredatorApp() {
       }
     }
 
-    const baseCount = snapshot.profiles.length;
+    const currentSnapshot = await window.predator.app.snapshot();
+    const baseCount = currentSnapshot.profiles.length;
     const runner: AutoProfileRunner = {
       cancelled: false,
       launchedProfileIds: new Set<string>(),
@@ -591,7 +593,8 @@ export function usePredatorApp() {
     });
 
     try {
-      // Fase 1: provisiona perfis + automacoes no banco (sequencial, rapido).
+      // Fase 1: reaproveita perfis compativeis ou provisiona novos perfis + automacoes.
+      // Reabrir o mesmo perfil preserva cookies/localStorage do contexto persistente.
       for (const job of launchJobs) {
         if (runner.cancelled) {
           break;
@@ -607,23 +610,43 @@ export function usePredatorApp() {
           proxyIds && proxyIds.length > 0
             ? proxyIds[job.index % proxyIds.length]
             : undefined;
-        const created = await window.predator.profiles.create({
-          name: `Auto Profile ${stamp}`,
-          notes: depositAmount
-            ? `Created by automatic factory for ${targetUrl}. Deposit target: ${depositAmount}.`
-            : `Created by automatic factory for ${targetUrl}.`,
-          homeUrl: targetUrl,
-          tags: ["auto"],
-          color:
-            autoProfileColors[stamp % autoProfileColors.length] ?? "#d6d6d6",
-          proxyId,
-          persona: buildNavigationPersona(navigationMode),
-        });
+        const reusable = selectReusableAutomaticProfile(
+          currentSnapshot.profiles,
+          {
+            homeUrl: targetUrl,
+            navigationMode,
+            proxyId,
+            claimedProfileIds: runner.launchedProfileIds,
+          },
+        );
+        const preparedProfile =
+          reusable ??
+          (await window.predator.profiles.create({
+            name: `Auto Profile ${stamp}`,
+            notes: depositAmount
+              ? `Created by automatic factory for ${targetUrl}. Deposit target: ${depositAmount}.`
+              : `Created by automatic factory for ${targetUrl}.`,
+            homeUrl: targetUrl,
+            tags: ["auto"],
+            color:
+              autoProfileColors[stamp % autoProfileColors.length] ?? "#d6d6d6",
+            proxyId,
+            persona: buildNavigationPersona(navigationMode),
+          }));
 
-        const automation = await window.predator.automations.create({
-          profileId: created.id,
-          kind: ACCOUNT_REGISTRATION_KIND,
-        });
+        const existingAutomation = reusable
+          ? currentSnapshot.automations.find(
+              (candidate) =>
+                candidate.profileId === reusable.id &&
+                candidate.kind === ACCOUNT_REGISTRATION_KIND,
+            )
+          : undefined;
+        const automation =
+          existingAutomation ??
+          (await window.predator.automations.create({
+            profileId: preparedProfile.id,
+            kind: ACCOUNT_REGISTRATION_KIND,
+          }));
         await window.predator.automations.update(automation.id, {
           params: {
             ...automation.params,
@@ -641,10 +664,10 @@ export function usePredatorApp() {
         });
 
         preparedJobs.push({
-          profileId: created.id,
+          profileId: preparedProfile.id,
           automationId: automation.id,
         });
-        runner.launchedProfileIds.add(created.id);
+        runner.launchedProfileIds.add(preparedProfile.id);
 
         setAutoProfileRun((current) => ({
           ...current,
@@ -716,22 +739,34 @@ export function usePredatorApp() {
     },
   ) => {
     const normalizedUrl = normalizeUrlOrDefault(url);
-    const stamp = snapshot.profiles.length + 1;
     return mutate("profile:quick-launch", async () => {
-      const created = await window.predator.profiles.create({
-        name: `Auto Profile ${stamp}`,
-        notes: `Quick launch for ${normalizedUrl}.`,
-        homeUrl: normalizedUrl,
-        tags: ["auto"],
-        color: autoProfileColors[stamp % autoProfileColors.length] ?? "#d6d6d6",
-        proxyId: opts.proxyId,
-        persona: buildNavigationPersona(opts.navigationMode),
-      });
-      await window.predator.profiles.launch(created.id, {
+      const currentSnapshot = await window.predator.app.snapshot();
+      const reusable = selectReusableAutomaticProfile(
+        currentSnapshot.profiles,
+        {
+          homeUrl: normalizedUrl,
+          navigationMode: opts.navigationMode,
+          proxyId: opts.proxyId,
+        },
+      );
+      const stamp = currentSnapshot.profiles.length + 1;
+      const preparedProfile =
+        reusable ??
+        (await window.predator.profiles.create({
+          name: `Auto Profile ${stamp}`,
+          notes: `Quick launch for ${normalizedUrl}.`,
+          homeUrl: normalizedUrl,
+          tags: ["auto"],
+          color:
+            autoProfileColors[stamp % autoProfileColors.length] ?? "#d6d6d6",
+          proxyId: opts.proxyId,
+          persona: buildNavigationPersona(opts.navigationMode),
+        }));
+      await window.predator.profiles.launch(preparedProfile.id, {
         triggerAutomation: opts.triggerAutomation,
         deferNavigation: false,
       });
-      return created.id;
+      return preparedProfile.id;
     });
   };
 
