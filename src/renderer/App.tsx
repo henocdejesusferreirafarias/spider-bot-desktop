@@ -205,7 +205,7 @@ function InstanceApp({ context }: { context: InstanceAppContext }) {
   const operationRunningLabel = app.autoProfileRun.stopping
     ? "Parando..."
     : creatingProfiles
-      ? `Criando ${app.autoProfileRun.launched}/${app.autoProfileRun.requested} (delay ${formatDelaySeconds(
+      ? `Abrindo ${app.autoProfileRun.launched}/${app.autoProfileRun.requested} (delay ${formatDelaySeconds(
           app.autoProfileRun.automationStartDelaySeconds,
         )})`
       : `${openWindowCount} aba${openWindowCount === 1 ? "" : "s"} aberta${openWindowCount === 1 ? "" : "s"}`;
